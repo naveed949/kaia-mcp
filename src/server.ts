@@ -8,22 +8,10 @@ import {
 import { getConfig } from "./config.js";
 import { toMcpError } from "./utils/errors.js";
 import { logger } from "./utils/logger.js";
+import { listTools, callTool } from "./tools/index.js";
 
 const SERVER_NAME = "kaia-mcp";
 const SERVER_VERSION = "0.1.0";
-
-const GET_KAIA_BALANCE_TOOL = {
-  name: "get_kaia_balance",
-  description: "Get KAIA balance for an address (stub).",
-  inputSchema: {
-    type: "object" as const,
-    properties: {
-      address: { type: "string", description: "Ethereum-style address" },
-      network: { type: "string", description: "Optional: mainnet or kairos" },
-    },
-    required: ["address"],
-  },
-};
 
 function wrapToolHandler<T, R>(
   handler: (req: T) => R | Promise<R>
@@ -41,7 +29,7 @@ function wrapToolHandler<T, R>(
 
 /**
  * Creates and returns the Kaia MCP server instance.
- * Registers stub tool get_kaia_balance and tools/list + tools/call handlers with error mapping.
+ * Registers account tools (get_kaia_balance, get_account_info, get_account_tokens, get_account_nfts) and tools/list + tools/call handlers with error mapping.
  */
 export function createKaiaMcpServer(): Server {
   const server = new Server(
@@ -56,32 +44,15 @@ export function createKaiaMcpServer(): Server {
     }
   );
 
-  server.setRequestHandler(ListToolsRequestSchema, wrapToolHandler(() => {
-    return {
-      tools: [GET_KAIA_BALANCE_TOOL],
-      nextCursor: undefined,
-      _meta: {},
-    };
-  }));
+  server.setRequestHandler(ListToolsRequestSchema, wrapToolHandler(() => listTools()));
 
-  server.setRequestHandler(CallToolRequestSchema, wrapToolHandler((request) => {
-    const { name, arguments: args } = request.params;
-    if (name !== "get_kaia_balance") {
-      const mcp = toMcpError(new Error(`Unknown tool: ${name}`));
-      throw new McpError(mcp.code, mcp.message, mcp.data);
-    }
-    const address = (args?.address as string) ?? "";
-    const network = (args?.network as string) ?? "mainnet";
-    return {
-      content: [
-        {
-          type: "text" as const,
-          text: `Balance: 0 (stub) for ${address} on ${network}`,
-        },
-      ],
-      _meta: {},
-    };
-  }));
+  server.setRequestHandler(
+    CallToolRequestSchema,
+    wrapToolHandler(async (request) => {
+      const { name, arguments: args } = request.params;
+      return callTool(name, (args ?? {}) as Record<string, unknown>);
+    })
+  );
 
   return server;
 }

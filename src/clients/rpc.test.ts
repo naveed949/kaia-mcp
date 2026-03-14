@@ -29,6 +29,8 @@ describe("createRpcClient", () => {
       logLevel: "info",
       rateLimitRpc: 10,
       rateLimitKaiascan: 5,
+      rpcTimeoutMs: 30000,
+      kaiascanTimeoutMs: 15000,
     });
     expect(typeof client.getBlockNumber).toBe("function");
   });

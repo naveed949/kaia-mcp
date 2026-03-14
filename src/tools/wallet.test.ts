@@ -76,4 +76,14 @@ describe("handleEncodeFunctionData", () => {
       })
     ).rejects.toThrow(/functionName/);
   });
+
+  it("throws when args is not an array", async () => {
+    await expect(
+      handleEncodeFunctionData({
+        abi: balanceOfAbi,
+        functionName: "balanceOf",
+        args: "not-an-array",
+      })
+    ).rejects.toThrow(/args.*array/);
+  });
 });

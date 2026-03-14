@@ -7,11 +7,30 @@
   "bin": {
     "kaia-mcp": "./dist/bin/kaia-mcp.js"
   },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "mcp",
+    "kaia",
+    "blockchain",
+    "model-context-protocol",
+    "klaytn"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-org/kaia-mcp.git"
+  },
   "scripts": {
     "build": "tsup",
     "dev": "tsup --watch",
     "start": "node dist/bin/kaia-mcp.js",
     "test": "vitest",
+    "test:integration": "npm run build && RUN_INTEGRATION=1 vitest run src/server.integration.test.ts",
+    "prepublishOnly": "npm run build",
     "lint": "eslint .",
     "format": "prettier --write ."
   },

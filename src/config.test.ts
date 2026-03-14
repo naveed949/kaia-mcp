@@ -15,6 +15,8 @@ describe("getConfig", () => {
       "LOG_LEVEL",
       "RATE_LIMIT_RPC",
       "RATE_LIMIT_KAIASCAN",
+      "RPC_TIMEOUT_MS",
+      "KAIASCAN_TIMEOUT_MS",
     ];
     for (const k of keys) {
       envBackup[k] = process.env[k];
@@ -37,6 +39,8 @@ describe("getConfig", () => {
     delete process.env.LOG_LEVEL;
     delete process.env.RATE_LIMIT_RPC;
     delete process.env.RATE_LIMIT_KAIASCAN;
+    delete process.env.RPC_TIMEOUT_MS;
+    delete process.env.KAIASCAN_TIMEOUT_MS;
 
     const config = getConfig();
     expect(config.kaiaRpcUrl).toBe("https://public-en.node.kaia.io");
@@ -45,6 +49,8 @@ describe("getConfig", () => {
     expect(config.logLevel).toBe("info");
     expect(config.rateLimitRpc).toBe(10);
     expect(config.rateLimitKaiascan).toBe(5);
+    expect(config.rpcTimeoutMs).toBe(30000);
+    expect(config.kaiascanTimeoutMs).toBe(15000);
   });
 
   it("returns config from provided env", () => {

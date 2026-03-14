@@ -27,6 +27,8 @@ const envSchema = z.object({
   LOG_LEVEL: logLevelSchema.default("info"),
   RATE_LIMIT_RPC: z.coerce.number().int().positive().default(10),
   RATE_LIMIT_KAIASCAN: z.coerce.number().int().positive().default(5),
+  RPC_TIMEOUT_MS: z.coerce.number().int().positive().optional().default(30000),
+  KAIASCAN_TIMEOUT_MS: z.coerce.number().int().positive().optional().default(15000),
 });
 
 export type LogLevel = z.infer<typeof logLevelSchema>;
@@ -40,6 +42,8 @@ export type Config = {
   logLevel: LogLevel;
   rateLimitRpc: number;
   rateLimitKaiascan: number;
+  rpcTimeoutMs: number;
+  kaiascanTimeoutMs: number;
 };
 
 function parseEnv(): Config {
@@ -51,6 +55,8 @@ function parseEnv(): Config {
     LOG_LEVEL: process.env.LOG_LEVEL,
     RATE_LIMIT_RPC: process.env.RATE_LIMIT_RPC,
     RATE_LIMIT_KAIASCAN: process.env.RATE_LIMIT_KAIASCAN,
+    RPC_TIMEOUT_MS: process.env.RPC_TIMEOUT_MS,
+    KAIASCAN_TIMEOUT_MS: process.env.KAIASCAN_TIMEOUT_MS,
   };
 
   const result = envSchema.safeParse(raw);
@@ -71,6 +77,8 @@ function parseEnv(): Config {
     logLevel: d.LOG_LEVEL,
     rateLimitRpc: d.RATE_LIMIT_RPC,
     rateLimitKaiascan: d.RATE_LIMIT_KAIASCAN,
+    rpcTimeoutMs: d.RPC_TIMEOUT_MS,
+    kaiascanTimeoutMs: d.KAIASCAN_TIMEOUT_MS,
   };
 }
 

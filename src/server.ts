@@ -5,6 +5,8 @@ import {
   CallToolRequestSchema,
   ListResourcesRequestSchema,
   ReadResourceRequestSchema,
+  ListPromptsRequestSchema,
+  GetPromptRequestSchema,
   McpError,
 } from "@modelcontextprotocol/sdk/types.js";
 import { getConfig } from "./config.js";
@@ -12,6 +14,7 @@ import { toMcpError } from "./utils/errors.js";
 import { logger } from "./utils/logger.js";
 import { listTools, callTool } from "./tools/index.js";
 import { listResources, readResource } from "./resources/index.js";
+import { listPrompts, getPrompt } from "./prompts/index.js";
 
 const SERVER_NAME = "kaia-mcp";
 const SERVER_VERSION = "0.1.0";
@@ -44,6 +47,7 @@ export function createKaiaMcpServer(): Server {
       capabilities: {
         tools: {},
         resources: {},
+        prompts: {},
       },
     }
   );
@@ -65,6 +69,17 @@ export function createKaiaMcpServer(): Server {
     wrapToolHandler(async (request) => {
       const uri = request.params?.uri ?? "";
       return readResource(uri);
+    })
+  );
+
+  server.setRequestHandler(ListPromptsRequestSchema, wrapToolHandler(() => listPrompts()));
+
+  server.setRequestHandler(
+    GetPromptRequestSchema,
+    wrapToolHandler(async (request) => {
+      const name = request.params?.name ?? "";
+      const args = request.params?.arguments;
+      return getPrompt(name, args);
     })
   );
 

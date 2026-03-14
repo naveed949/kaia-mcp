@@ -437,6 +437,49 @@ describe("createKaiaMcpServer", () => {
     expect(text).toMatch(/kaia_|eth_|getBalance/);
   });
 
+  it("listPrompts returns 6 prompts (Phase 9)", async () => {
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const server = createKaiaMcpServer();
+    await server.connect(serverTransport);
+
+    const client = new Client({ name: "test", version: "1.0.0" });
+    await client.connect(clientTransport);
+
+    const result = await client.listPrompts();
+    expect(result.prompts).toBeDefined();
+    expect(result.prompts.length).toBe(6);
+    const names = result.prompts.map((p) => p.name).sort();
+    expect(names).toEqual([
+      "analyze-wallet",
+      "gas-report",
+      "investigate-transaction",
+      "nft-lookup",
+      "smart-contract-audit",
+      "token-research",
+    ]);
+  });
+
+  it("getPrompt(analyze-wallet) returns messages with templated text", async () => {
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const server = createKaiaMcpServer();
+    await server.connect(serverTransport);
+
+    const client = new Client({ name: "test", version: "1.0.0" });
+    await client.connect(clientTransport);
+
+    const result = await client.getPrompt({
+      name: "analyze-wallet",
+      arguments: { address: "0xabc", network: "kairos" },
+    });
+    expect(result.messages).toBeDefined();
+    expect(result.messages.length).toBe(1);
+    expect(result.messages[0].role).toBe("user");
+    expect(result.messages[0].content.type).toBe("text");
+    const text = (result.messages[0].content as { type: "text"; text: string }).text;
+    expect(text).toContain("0xabc");
+    expect(text).toContain("kairos");
+  });
+
   it("calling encode_function_data returns hex calldata", async () => {
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     const server = createKaiaMcpServer();

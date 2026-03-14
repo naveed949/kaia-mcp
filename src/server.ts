@@ -3,12 +3,15 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import {
   ListToolsRequestSchema,
   CallToolRequestSchema,
+  ListResourcesRequestSchema,
+  ReadResourceRequestSchema,
   McpError,
 } from "@modelcontextprotocol/sdk/types.js";
 import { getConfig } from "./config.js";
 import { toMcpError } from "./utils/errors.js";
 import { logger } from "./utils/logger.js";
 import { listTools, callTool } from "./tools/index.js";
+import { listResources, readResource } from "./resources/index.js";
 
 const SERVER_NAME = "kaia-mcp";
 const SERVER_VERSION = "0.1.0";
@@ -40,6 +43,7 @@ export function createKaiaMcpServer(): Server {
     {
       capabilities: {
         tools: {},
+        resources: {},
       },
     }
   );
@@ -51,6 +55,16 @@ export function createKaiaMcpServer(): Server {
     wrapToolHandler(async (request) => {
       const { name, arguments: args } = request.params;
       return callTool(name, (args ?? {}) as Record<string, unknown>);
+    })
+  );
+
+  server.setRequestHandler(ListResourcesRequestSchema, wrapToolHandler(() => listResources()));
+
+  server.setRequestHandler(
+    ReadResourceRequestSchema,
+    wrapToolHandler(async (request) => {
+      const uri = request.params?.uri ?? "";
+      return readResource(uri);
     })
   );
 

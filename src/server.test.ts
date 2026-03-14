@@ -401,6 +401,42 @@ describe("createKaiaMcpServer", () => {
     expect(text).toMatch(/Private key \(hex\): 0x[a-fA-F0-9]{64}/);
   });
 
+  it("listResources returns 5 resources with expected URIs (Phase 8)", async () => {
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const server = createKaiaMcpServer();
+    await server.connect(serverTransport);
+
+    const client = new Client({ name: "test", version: "1.0.0" });
+    await client.connect(clientTransport);
+
+    const result = await client.listResources();
+    expect(result.resources).toBeDefined();
+    expect(result.resources.length).toBe(5);
+    const uris = result.resources.map((r) => r.uri).sort();
+    expect(uris).toEqual([
+      "kaia://docs/rpc-methods",
+      "kaia://kairos/status",
+      "kaia://mainnet/status",
+      "kaia://mainnet/tokens/popular",
+      "kaia://mainnet/top-accounts",
+    ]);
+  });
+
+  it("readResource(kaia://docs/rpc-methods) returns RPC docs content", async () => {
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const server = createKaiaMcpServer();
+    await server.connect(serverTransport);
+
+    const client = new Client({ name: "test", version: "1.0.0" });
+    await client.connect(clientTransport);
+
+    const result = await client.readResource({ uri: "kaia://docs/rpc-methods" });
+    expect(result.contents).toBeDefined();
+    expect(result.contents.length).toBeGreaterThanOrEqual(1);
+    const text = (result.contents[0] as { text: string }).text;
+    expect(text).toMatch(/kaia_|eth_|getBalance/);
+  });
+
   it("calling encode_function_data returns hex calldata", async () => {
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     const server = createKaiaMcpServer();

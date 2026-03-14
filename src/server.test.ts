@@ -46,6 +46,8 @@ vi.mock("./clients/rpc.js", () => ({
     }),
     estimateGas: vi.fn().mockResolvedValue(21000n),
     getGasPrice: vi.fn().mockResolvedValue(25000000000n),
+    getChainId: vi.fn().mockResolvedValue(8217),
+    readContract: vi.fn().mockResolvedValue(0n),
   })),
 }));
 
@@ -113,6 +115,8 @@ describe("createKaiaMcpServer", () => {
       }),
       estimateGas: vi.fn().mockResolvedValue(21000n),
       getGasPrice: vi.fn().mockResolvedValue(25000000000n),
+      getChainId: vi.fn().mockResolvedValue(8217),
+      readContract: vi.fn().mockResolvedValue(0n),
     } as unknown as ReturnType<typeof createRpcClient>);
     vi.mocked(createKaiaScanClient).mockReturnValue({
       get: vi.fn().mockResolvedValue({ results: [], paging: { total_count: 0 } }),
@@ -126,7 +130,7 @@ describe("createKaiaMcpServer", () => {
     }
   });
 
-  it("lists all account, transaction, block, token, and NFT tools (17 total)", async () => {
+  it("lists all account, transaction, block, token, NFT, contract, network, and wallet tools (25 total)", async () => {
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     const server = createKaiaMcpServer();
     await server.connect(serverTransport);
@@ -136,10 +140,12 @@ describe("createKaiaMcpServer", () => {
 
     const result = await client.listTools();
     expect(result.tools).toBeDefined();
-    expect(result.tools.length).toBe(17);
+    expect(result.tools.length).toBe(25);
     const names = result.tools.map((t) => t.name).sort();
     expect(names).toEqual([
+      "encode_function_data",
       "estimate_gas",
+      "generate_wallet",
       "get_account_info",
       "get_account_nfts",
       "get_account_tokens",
@@ -147,7 +153,12 @@ describe("createKaiaMcpServer", () => {
       "get_block",
       "get_block_number",
       "get_block_rewards",
+      "get_chain_info",
+      "get_contract_abi",
+      "get_contract_source",
+      "get_gas_price",
       "get_kaia_balance",
+      "get_kaia_price",
       "get_nft_info",
       "get_nft_item",
       "get_nft_transfers",
@@ -156,6 +167,7 @@ describe("createKaiaMcpServer", () => {
       "get_token_transfers",
       "get_transaction",
       "get_transaction_receipt",
+      "read_contract",
     ]);
     const getBalance = result.tools.find((t) => t.name === "get_kaia_balance");
     expect(getBalance?.description).toBeDefined();
@@ -313,5 +325,112 @@ describe("createKaiaMcpServer", () => {
     expect(text).toContain("CNFT");
     expect(text).toContain("5000");
     expect(text).toContain("100");
+  });
+
+  it("calling get_gas_price returns peb and Gpeb (mocked RPC)", async () => {
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const server = createKaiaMcpServer();
+    await server.connect(serverTransport);
+
+    const client = new Client({ name: "test", version: "1.0.0" });
+    await client.connect(clientTransport);
+
+    const result = await client.callTool({
+      name: "get_gas_price",
+      arguments: { network: "mainnet" },
+    });
+    expect(result.content).toBeDefined();
+    const textBlock = result.content?.find((c) => c.type === "text");
+    expect(textBlock?.type).toBe("text");
+    const text = (textBlock as { text: string })?.text;
+    expect(text).toContain("25000000000");
+    expect(text).toContain("peb");
+    expect(text).toContain("KAIA");
+  });
+
+  it("calling get_kaia_price returns USD and stats (mocked KaiaScan)", async () => {
+    vi.mocked(createKaiaScanClient).mockReturnValue({
+      get: vi.fn().mockResolvedValue({
+        klay_price: {
+          usd_price: 0.13,
+          btc_price: 0.00000137,
+          usd_price_changes: 2.5,
+          market_cap: 500_000_000,
+          total_supply: 10_000_000_000,
+          volume: 1_000_000,
+        },
+      }),
+    } as unknown as ReturnType<typeof createKaiaScanClient>);
+
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const server = createKaiaMcpServer();
+    await server.connect(serverTransport);
+
+    const client = new Client({ name: "test", version: "1.0.0" });
+    await client.connect(clientTransport);
+
+    const result = await client.callTool({
+      name: "get_kaia_price",
+      arguments: { network: "mainnet" },
+    });
+    expect(result.content).toBeDefined();
+    const textBlock = result.content?.find((c) => c.type === "text");
+    expect(textBlock?.type).toBe("text");
+    const text = (textBlock as { text: string })?.text;
+    expect(text).toContain("0.13");
+    expect(text).toContain("USD price");
+  });
+
+  it("calling generate_wallet returns address and privateKey hex", async () => {
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const server = createKaiaMcpServer();
+    await server.connect(serverTransport);
+
+    const client = new Client({ name: "test", version: "1.0.0" });
+    await client.connect(clientTransport);
+
+    const result = await client.callTool({
+      name: "generate_wallet",
+      arguments: {},
+    });
+    expect(result.content).toBeDefined();
+    const textBlock = result.content?.find((c) => c.type === "text");
+    expect(textBlock?.type).toBe("text");
+    const text = (textBlock as { text: string })?.text;
+    expect(text).toMatch(/Address: 0x[a-fA-F0-9]{40}/);
+    expect(text).toMatch(/Private key \(hex\): 0x[a-fA-F0-9]{64}/);
+  });
+
+  it("calling encode_function_data returns hex calldata", async () => {
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const server = createKaiaMcpServer();
+    await server.connect(serverTransport);
+
+    const client = new Client({ name: "test", version: "1.0.0" });
+    await client.connect(clientTransport);
+
+    const abi = JSON.stringify([
+      {
+        type: "function",
+        name: "balanceOf",
+        inputs: [{ name: "account", type: "address" }],
+        outputs: [{ type: "uint256" }],
+        stateMutability: "view",
+      },
+    ]);
+
+    const result = await client.callTool({
+      name: "encode_function_data",
+      arguments: {
+        abi,
+        functionName: "balanceOf",
+        args: ["0x1234567890123456789012345678901234567890"],
+      },
+    });
+    expect(result.content).toBeDefined();
+    const textBlock = result.content?.find((c) => c.type === "text");
+    expect(textBlock?.type).toBe("text");
+    const text = (textBlock as { text: string })?.text;
+    expect(text).toMatch(/^0x[a-fA-F0-9]+$/);
   });
 });

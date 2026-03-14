@@ -1,5 +1,5 @@
 /**
- * MCP tools registry — Phase 4 (account) + Phase 5 (transaction, block) + Phase 6 (token, NFT).
+ * MCP tools registry — Phase 4–7 (account, transaction, block, token, NFT, contract, network, wallet).
  */
 
 import type { ListToolsResult, CallToolResult } from "@modelcontextprotocol/sdk/types.js";
@@ -35,6 +35,23 @@ import {
   handleGetNftItem,
   handleGetNftTransfers,
 } from "./nft.js";
+import {
+  CONTRACT_TOOLS,
+  handleReadContract,
+  handleGetContractAbi,
+  handleGetContractSource,
+} from "./contract.js";
+import {
+  NETWORK_TOOLS,
+  handleGetGasPrice,
+  handleGetKaiaPrice,
+  handleGetChainInfo,
+} from "./network.js";
+import {
+  WALLET_TOOLS,
+  handleGenerateWallet,
+  handleEncodeFunctionData,
+} from "./wallet.js";
 
 export { ACCOUNT_TOOLS, GET_KAIA_BALANCE, GET_ACCOUNT_INFO, GET_ACCOUNT_TOKENS, GET_ACCOUNT_NFTS } from "./account.js";
 export {
@@ -57,6 +74,23 @@ export {
   GET_NFT_ITEM,
   GET_NFT_TRANSFERS,
 } from "./nft.js";
+export {
+  CONTRACT_TOOLS,
+  READ_CONTRACT,
+  GET_CONTRACT_ABI,
+  GET_CONTRACT_SOURCE,
+} from "./contract.js";
+export {
+  NETWORK_TOOLS,
+  GET_GAS_PRICE,
+  GET_KAIA_PRICE,
+  GET_CHAIN_INFO,
+} from "./network.js";
+export {
+  WALLET_TOOLS,
+  GENERATE_WALLET,
+  ENCODE_FUNCTION_DATA,
+} from "./wallet.js";
 
 const ALL_TOOLS = [
   ...ACCOUNT_TOOLS,
@@ -64,6 +98,9 @@ const ALL_TOOLS = [
   ...BLOCK_TOOLS,
   ...TOKEN_TOOLS,
   ...NFT_TOOLS,
+  ...CONTRACT_TOOLS,
+  ...NETWORK_TOOLS,
+  ...WALLET_TOOLS,
 ];
 
 /**
@@ -124,6 +161,22 @@ export async function callTool(
       return { ...(await handleGetNftItem(a)), _meta: {} };
     case "get_nft_transfers":
       return { ...(await handleGetNftTransfers(a)), _meta: {} };
+    case "read_contract":
+      return { ...(await handleReadContract(a)), _meta: {} };
+    case "get_contract_abi":
+      return { ...(await handleGetContractAbi(a)), _meta: {} };
+    case "get_contract_source":
+      return { ...(await handleGetContractSource(a)), _meta: {} };
+    case "get_gas_price":
+      return { ...(await handleGetGasPrice(a)), _meta: {} };
+    case "get_kaia_price":
+      return { ...(await handleGetKaiaPrice(a)), _meta: {} };
+    case "get_chain_info":
+      return { ...(await handleGetChainInfo(a)), _meta: {} };
+    case "generate_wallet":
+      return { ...(await handleGenerateWallet(a)), _meta: {} };
+    case "encode_function_data":
+      return { ...(await handleEncodeFunctionData(a)), _meta: {} };
     default:
       throw new Error(`Unknown tool: ${name}`);
   }

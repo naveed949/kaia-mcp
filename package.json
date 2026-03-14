@@ -20,6 +20,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
+    "dotenv": "^17.3.1",
     "viem": "^2.0.0",
     "zod": "^3.23.0"
   },

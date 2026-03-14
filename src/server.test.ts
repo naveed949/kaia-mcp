@@ -126,7 +126,7 @@ describe("createKaiaMcpServer", () => {
     }
   });
 
-  it("lists all account, transaction, and block tools (11 total)", async () => {
+  it("lists all account, transaction, block, token, and NFT tools (17 total)", async () => {
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     const server = createKaiaMcpServer();
     await server.connect(serverTransport);
@@ -136,7 +136,7 @@ describe("createKaiaMcpServer", () => {
 
     const result = await client.listTools();
     expect(result.tools).toBeDefined();
-    expect(result.tools.length).toBe(11);
+    expect(result.tools.length).toBe(17);
     const names = result.tools.map((t) => t.name).sort();
     expect(names).toEqual([
       "estimate_gas",
@@ -148,6 +148,12 @@ describe("createKaiaMcpServer", () => {
       "get_block_number",
       "get_block_rewards",
       "get_kaia_balance",
+      "get_nft_info",
+      "get_nft_item",
+      "get_nft_transfers",
+      "get_token_holders",
+      "get_token_info",
+      "get_token_transfers",
       "get_transaction",
       "get_transaction_receipt",
     ]);
@@ -237,5 +243,75 @@ describe("createKaiaMcpServer", () => {
     expect(text).toContain("Success");
     expect(text).toContain("12345");
     expect(text).toContain("21000");
+  });
+
+  it("calling get_token_info returns token metadata (mocked KaiaScan)", async () => {
+    vi.mocked(createKaiaScanClient).mockReturnValue({
+      get: vi.fn().mockResolvedValue({
+        name: "Test Token",
+        symbol: "TST",
+        decimal: 18,
+        total_supply: 1000000,
+        contract_type: "KIP7",
+      }),
+    } as unknown as ReturnType<typeof createKaiaScanClient>);
+
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const server = createKaiaMcpServer();
+    await server.connect(serverTransport);
+
+    const client = new Client({ name: "test", version: "1.0.0" });
+    await client.connect(clientTransport);
+
+    const result = await client.callTool({
+      name: "get_token_info",
+      arguments: {
+        contractAddress: "0x1234567890123456789012345678901234567890",
+        network: "mainnet",
+      },
+    });
+    expect(result.content).toBeDefined();
+    const textBlock = result.content?.find((c) => c.type === "text");
+    expect(textBlock?.type).toBe("text");
+    const text = (textBlock as { text: string })?.text;
+    expect(text).toContain("Test Token");
+    expect(text).toContain("TST");
+    expect(text).toContain("18");
+    expect(text).toContain("1000000");
+  });
+
+  it("calling get_nft_info returns NFT collection metadata (mocked KaiaScan)", async () => {
+    vi.mocked(createKaiaScanClient).mockReturnValue({
+      get: vi.fn().mockResolvedValue({
+        name: "Cool NFT",
+        symbol: "CNFT",
+        total_supply: 5000,
+        contract_type: "KIP17",
+        holder_count: 100,
+      }),
+    } as unknown as ReturnType<typeof createKaiaScanClient>);
+
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const server = createKaiaMcpServer();
+    await server.connect(serverTransport);
+
+    const client = new Client({ name: "test", version: "1.0.0" });
+    await client.connect(clientTransport);
+
+    const result = await client.callTool({
+      name: "get_nft_info",
+      arguments: {
+        contractAddress: "0x1234567890123456789012345678901234567890",
+        network: "mainnet",
+      },
+    });
+    expect(result.content).toBeDefined();
+    const textBlock = result.content?.find((c) => c.type === "text");
+    expect(textBlock?.type).toBe("text");
+    const text = (textBlock as { text: string })?.text;
+    expect(text).toContain("Cool NFT");
+    expect(text).toContain("CNFT");
+    expect(text).toContain("5000");
+    expect(text).toContain("100");
   });
 });

@@ -9,6 +9,7 @@ import {
   GetPromptRequestSchema,
   McpError,
 } from "@modelcontextprotocol/sdk/types.js";
+import type { IncomingMessage } from "node:http";
 import { getConfig } from "./config.js";
 import { toMcpError } from "./utils/errors.js";
 import { logger } from "./utils/logger.js";
@@ -100,10 +101,47 @@ export async function runKaiaMcpServer(): Promise<void> {
 }
 
 /**
+ * Ensure the incoming request carries the Accept types the MCP SDK
+ * requires (text/event-stream for GET; both application/json and
+ * text/event-stream for POST). Many MCP clients (Cursor, curl, etc.)
+ * omit these, which causes the SDK to return 406.
+ *
+ * The SDK's transport uses @hono/node-server which reads rawHeaders,
+ * so we must patch both the parsed headers object and the raw array.
+ */
+function normalizeAcceptHeader(req: IncomingMessage): void {
+  const current = (req.headers["accept"] as string | undefined) ?? "";
+  const missing: string[] = [];
+
+  if (!current.includes("application/json")) missing.push("application/json");
+  if (!current.includes("text/event-stream")) missing.push("text/event-stream");
+
+  if (missing.length === 0) return;
+
+  const patched = current ? `${current}, ${missing.join(", ")}` : missing.join(", ");
+
+  req.headers["accept"] = patched;
+
+  let found = false;
+  for (let i = 0; i < req.rawHeaders.length; i += 2) {
+    if (req.rawHeaders[i].toLowerCase() === "accept") {
+      req.rawHeaders[i + 1] = patched;
+      found = true;
+      break;
+    }
+  }
+  if (!found) {
+    req.rawHeaders.push("Accept", patched);
+  }
+}
+
+/**
  * Runs the Kaia MCP server over Streamable HTTP on the given port.
- * Uses stateless transport (no session ID). Validates config at startup.
+ * Creates a per-session transport+server pair so multiple clients can
+ * connect concurrently. Validates config at startup.
  */
 export async function runKaiaMcpServerHttp(port: number): Promise<void> {
+  const { randomUUID } = await import("node:crypto");
   const { createServer } = await import("node:http");
   const { StreamableHTTPServerTransport } = await import(
     "@modelcontextprotocol/sdk/server/streamableHttp.js"
@@ -112,22 +150,71 @@ export async function runKaiaMcpServerHttp(port: number): Promise<void> {
   getConfig();
   logger.info("Starting Kaia MCP server (HTTP)", { port });
 
-  const server = createKaiaMcpServer();
-  const transport = new StreamableHTTPServerTransport({
-    sessionIdGenerator: undefined,
-  });
-  server.onerror = (err) => logger.error("Server transport error", { error: err });
-  await server.connect(transport);
+  type SessionEntry = {
+    transport: InstanceType<typeof StreamableHTTPServerTransport>;
+    server: Server;
+  };
+  const sessions = new Map<string, SessionEntry>();
 
-  const httpServer = createServer((req, res) => {
-    transport.handleRequest(req, res).catch((err) => {
+  function createSession(): SessionEntry {
+    const server = createKaiaMcpServer();
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: () => randomUUID(),
+      onsessioninitialized: (sessionId: string) => {
+        logger.info("Session initialized", { sessionId });
+        sessions.set(sessionId, entry);
+      },
+    });
+    transport.onclose = () => {
+      const sid = transport.sessionId;
+      if (sid) {
+        logger.info("Session closed", { sessionId: sid });
+        sessions.delete(sid);
+      }
+    };
+    server.onerror = (err) => logger.error("Server transport error", { error: err });
+    const entry: SessionEntry = { transport, server };
+    return entry;
+  }
+
+  const httpServer = createServer(async (req, res) => {
+    normalizeAcceptHeader(req);
+
+    const sessionId = req.headers["mcp-session-id"] as string | undefined;
+
+    try {
+      if (sessionId && sessions.has(sessionId)) {
+        await sessions.get(sessionId)!.transport.handleRequest(req, res);
+        return;
+      }
+
+      if (req.method === "POST" && !sessionId) {
+        const entry = createSession();
+        await entry.server.connect(entry.transport);
+        await entry.transport.handleRequest(req, res);
+        return;
+      }
+
+      if (req.method === "GET" && sessionId && !sessions.has(sessionId)) {
+        res.writeHead(404, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ jsonrpc: "2.0", error: { code: -32000, message: "Session not found" }, id: null }));
+        return;
+      }
+
+      if (req.method === "DELETE" && sessionId && sessions.has(sessionId)) {
+        await sessions.get(sessionId)!.transport.handleRequest(req, res);
+        return;
+      }
+
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ jsonrpc: "2.0", error: { code: -32000, message: "Bad Request" }, id: null }));
+    } catch (err) {
       logger.error("HTTP request error", { error: err });
       if (!res.headersSent) {
-        res.statusCode = 500;
-        res.setHeader("Content-Type", "application/json");
-        res.end(JSON.stringify({ error: String(err) }));
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ jsonrpc: "2.0", error: { code: -32603, message: "Internal server error" }, id: null }));
       }
-    });
+    }
   });
 
   httpServer.listen(port, () => {

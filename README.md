@@ -156,7 +156,37 @@ docker build -t kaia-mcp .
 docker run -p 3100:3100 -e KAIA_RPC_URL=https://public-en.node.kaia.io kaia-mcp
 ```
 
-Server listens on port 3100 (HTTP transport). Override env as needed.
+Server listens on port 3100 (Streamable HTTP transport). Override env as needed.
+
+### Connecting to the Docker server
+
+The container runs the **HTTP** transport (not stdio), so clients must connect by **URL**.
+
+**Cursor** — in MCP settings (e.g. `~/.cursor/mcp.json` or project MCP config), add a server entry with `url`:
+
+```json
+{
+  "mcpServers": {
+    "kaia": {
+      "url": "http://localhost:3100"
+    }
+  }
+}
+```
+
+If your client expects a path, use `http://localhost:3100/mcp`. Restart Cursor after changing MCP config.
+
+**Claude Desktop** — if your Claude Desktop build supports remote MCP URLs, use the same `url` in its MCP config.
+
+**Test from the host** (with the container running):
+
+```bash
+curl -s -X POST http://localhost:3100 \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | jq
+```
+
+You should see a list of tools. Replace `localhost` with your machine’s IP or hostname when connecting from another device.
 
 ## License
 

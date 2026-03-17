@@ -3,15 +3,29 @@ import {
   handleGetTokenInfo,
   handleGetTokenHolders,
   handleGetTokenTransfers,
+  handleGetTokenAllowance,
 } from "./token.js";
 import { createKaiaScanClient } from "../clients/kaiascan.js";
+import { createRpcClient } from "../clients/rpc.js";
+import { readContract } from "viem";
 import { resetConfigCache } from "../config.js";
 
 vi.mock("../clients/kaiascan.js", () => ({
   createKaiaScanClient: vi.fn(),
 }));
 
+vi.mock("../clients/rpc.js", () => ({
+  createRpcClient: vi.fn(),
+}));
+
+vi.mock("viem", async (importOriginal) => {
+  const v = (await importOriginal()) as typeof import("viem");
+  return { ...v, readContract: vi.fn() };
+});
+
 const mockCreateKaiaScanClient = vi.mocked(createKaiaScanClient);
+const mockCreateRpcClient = vi.mocked(createRpcClient);
+const mockReadContract = vi.mocked(readContract);
 
 const validContractAddress = "0x1234567890123456789012345678901234567890";
 
@@ -166,6 +180,77 @@ describe("handleGetTokenTransfers", () => {
   it("throws on invalid contract address", async () => {
     await expect(
       handleGetTokenTransfers({ contractAddress: "invalid" })
+    ).rejects.toThrow(/Invalid address/);
+  });
+});
+
+describe("handleGetTokenAllowance", () => {
+  const tokenAddress = "0x1234567890123456789012345678901234567890";
+  const owner = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const spender = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+  beforeEach(() => {
+    resetConfigCache();
+    vi.clearAllMocks();
+    mockCreateRpcClient.mockReturnValue({} as unknown as ReturnType<typeof createRpcClient>);
+    mockReadContract.mockResolvedValue(1000000000000000000n);
+  });
+
+  it("returns allowance raw and human-readable for valid args", async () => {
+    const result = await handleGetTokenAllowance({
+      tokenAddress,
+      owner,
+      spender,
+      network: "mainnet",
+      decimals: 18,
+    });
+    expect(result.content).toHaveLength(1);
+    expect(result.content[0].type).toBe("text");
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain("Token:");
+    expect(text).toContain("Owner:");
+    expect(text).toContain("Spender:");
+    expect(text).toContain("Allowance (raw): 1000000000000000000");
+    expect(text).toContain("Allowance (18 decimals): 1");
+    expect(mockCreateRpcClient).toHaveBeenCalledWith("mainnet");
+    expect(mockReadContract).toHaveBeenCalledWith(
+      {},
+      expect.objectContaining({
+        address: tokenAddress,
+        functionName: "allowance",
+      })
+    );
+    expect(mockReadContract).toHaveBeenCalledTimes(1);
+    const callArgs = mockReadContract.mock.calls[0]?.[1];
+    expect(callArgs).toBeDefined();
+    expect(Array.isArray((callArgs as { args?: unknown[] }).args)).toBe(true);
+    expect((callArgs as { args: unknown[] }).args).toHaveLength(2);
+  });
+
+  it("defaults network to mainnet and decimals to 18", async () => {
+    const result = await handleGetTokenAllowance({ tokenAddress, owner, spender });
+    expect(mockCreateRpcClient).toHaveBeenCalledWith("mainnet");
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain("Allowance (18 decimals)");
+  });
+
+  it("throws for invalid token address", async () => {
+    await expect(
+      handleGetTokenAllowance({
+        tokenAddress: "not-an-address",
+        owner,
+        spender,
+      })
+    ).rejects.toThrow(/Invalid address/);
+  });
+
+  it("throws for invalid owner", async () => {
+    await expect(
+      handleGetTokenAllowance({
+        tokenAddress,
+        owner: "0xbad",
+        spender,
+      })
     ).rejects.toThrow(/Invalid address/);
   });
 });

@@ -130,7 +130,7 @@ describe("createKaiaMcpServer", () => {
     }
   });
 
-  it("lists all account, transaction, block, token, NFT, contract, network, and wallet tools (25 total)", async () => {
+  it("lists all account, transaction, block, token, NFT, contract, network, and wallet tools (26 total)", async () => {
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     const server = createKaiaMcpServer();
     await server.connect(serverTransport);
@@ -140,7 +140,7 @@ describe("createKaiaMcpServer", () => {
 
     const result = await client.listTools();
     expect(result.tools).toBeDefined();
-    expect(result.tools.length).toBe(25);
+    expect(result.tools.length).toBe(26);
     const names = result.tools.map((t) => t.name).sort();
     expect(names).toEqual([
       "encode_function_data",
@@ -162,6 +162,7 @@ describe("createKaiaMcpServer", () => {
       "get_nft_info",
       "get_nft_item",
       "get_nft_transfers",
+      "get_token_allowance",
       "get_token_holders",
       "get_token_info",
       "get_token_transfers",

@@ -1,8 +1,11 @@
 /**
  * Token-related tools (Phase 6): fungible token (KIP-7 / ERC-20) info, holders, transfers.
+ * DeFi: get_token_allowance (ERC-20 allowance for a spender).
  * KaiaScan API: Get Fungible Token, Get Holders Of Fungible Token, Get Transfers Of Fungible Token.
  */
 
+import { readContract } from "viem";
+import { createRpcClient } from "../clients/rpc.js";
 import { createKaiaScanClient } from "../clients/kaiascan.js";
 import { validateAddress, validateNetwork } from "../utils/validation.js";
 
@@ -54,7 +57,32 @@ export const GET_TOKEN_TRANSFERS = {
   },
 };
 
-export const TOKEN_TOOLS = [GET_TOKEN_INFO, GET_TOKEN_HOLDERS, GET_TOKEN_TRANSFERS];
+export const GET_TOKEN_ALLOWANCE = {
+  name: "get_token_allowance",
+  description:
+    "Get ERC-20/KIP-7 allowance: the amount a spender can transfer from an owner. Use for DeFi approvals (e.g. DEX, staking). Returns raw allowance and human-readable amount if decimals known.",
+  inputSchema: {
+    type: "object" as const,
+    properties: {
+      tokenAddress: { type: "string", description: "Token contract address (0x...)" },
+      owner: { type: "string", description: "Owner address (0x...)" },
+      spender: { type: "string", description: "Spender address (0x...)" },
+      network: { type: "string", description: "mainnet or kairos (default: mainnet)" },
+      decimals: {
+        type: "number",
+        description: "Optional token decimals for human-readable output (default: 18)",
+      },
+    },
+    required: ["tokenAddress", "owner", "spender"],
+  },
+};
+
+export const TOKEN_TOOLS = [
+  GET_TOKEN_INFO,
+  GET_TOKEN_HOLDERS,
+  GET_TOKEN_TRANSFERS,
+  GET_TOKEN_ALLOWANCE,
+];
 
 // --- KaiaScan API response shapes ---
 
@@ -243,4 +271,68 @@ export async function handleGetTokenTransfers(args: {
   const text = [header, ...lines].join("\n");
 
   return { content: [{ type: "text" as const, text }] };
+}
+
+// Minimal ERC-20/KIP-7 allowance ABI for readContract
+const ALLOWANCE_ABI = [
+  {
+    type: "function",
+    name: "allowance",
+    inputs: [
+      { name: "owner", type: "address" },
+      { name: "spender", type: "address" },
+    ],
+    outputs: [{ type: "uint256" }],
+    stateMutability: "view",
+  },
+] as const;
+
+/**
+ * Get ERC-20/KIP-7 allowance(owner, spender) via RPC. DeFi primitive for approval checks.
+ */
+export async function handleGetTokenAllowance(args: {
+  tokenAddress: unknown;
+  owner: unknown;
+  spender: unknown;
+  network?: unknown;
+  decimals?: unknown;
+}): Promise<{ content: Array<{ type: "text"; text: string }> }> {
+  const tokenAddress = validateAddress(args.tokenAddress);
+  const owner = validateAddress(args.owner);
+  const spender = validateAddress(args.spender);
+  const network = validateNetwork(args.network);
+  const decimals = typeof args.decimals === "number" ? args.decimals : 18;
+
+  const client = createRpcClient(network);
+
+  let allowance: bigint;
+  try {
+    allowance = await readContract(client, {
+      address: tokenAddress,
+      abi: ALLOWANCE_ABI,
+      functionName: "allowance",
+      args: [owner, spender],
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`RPC error (allowance): ${msg}`);
+  }
+
+  const human =
+    decimals >= 0 && decimals <= 42
+      ? Number(allowance) / 10 ** decimals
+      : null;
+  const lines = [
+    `Token: ${tokenAddress}`,
+    `Owner: ${owner}`,
+    `Spender: ${spender}`,
+    `Allowance (raw): ${allowance.toString()}`,
+  ];
+  if (human !== null) {
+    lines.push(`Allowance (${decimals} decimals): ${human}`);
+  }
+
+  return {
+    content: [{ type: "text" as const, text: lines.join("\n") }],
+  };
 }

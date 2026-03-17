@@ -28,6 +28,7 @@ import {
   handleGetTokenInfo,
   handleGetTokenHolders,
   handleGetTokenTransfers,
+  handleGetTokenAllowance,
 } from "./token.js";
 import {
   NFT_TOOLS,
@@ -67,6 +68,7 @@ export {
   GET_TOKEN_INFO,
   GET_TOKEN_HOLDERS,
   GET_TOKEN_TRANSFERS,
+  GET_TOKEN_ALLOWANCE,
 } from "./token.js";
 export {
   NFT_TOOLS,
@@ -155,6 +157,8 @@ export async function callTool(
       return { ...(await handleGetTokenHolders(a)), _meta: {} };
     case "get_token_transfers":
       return { ...(await handleGetTokenTransfers(a)), _meta: {} };
+    case "get_token_allowance":
+      return { ...(await handleGetTokenAllowance(a)), _meta: {} };
     case "get_nft_info":
       return { ...(await handleGetNftInfo(a)), _meta: {} };
     case "get_nft_item":

@@ -1,6 +1,6 @@
 # Kaia MCP Server
 
-Production-ready [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for the [Kaia](https://kaia.io) blockchain. Exposes 25 tools, 5 resources, and 6 prompts for balance, transactions, blocks, tokens, NFTs, contracts, network info, and wallet utilities.
+Production-ready [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for the [Kaia](https://kaia.io) blockchain. Exposes 26 tools, 5 resources, and 6 prompts for balance, transactions, blocks, tokens, NFTs, contracts, network info, and wallet utilities.
 
 ## Installation
 
@@ -26,7 +26,7 @@ npx kaia-mcp --transport stdio
 npx kaia-mcp --transport http --port 3100
 ```
 
-## Tools (25)
+## Tools (26)
 
 | Tool | Description |
 |------|-------------|
@@ -44,6 +44,7 @@ npx kaia-mcp --transport http --port 3100
 | `get_token_info` | Token metadata (name, symbol, supply) |
 | `get_token_holders` | Top token holders |
 | `get_token_transfers` | Token transfer history |
+| `get_token_allowance` | ERC-20/KIP-7 allowance (owner/spender) for DeFi |
 | `get_nft_info` | NFT collection info |
 | `get_nft_item` | Single NFT item (owner, metadata) |
 | `get_nft_transfers` | NFT transfer history |

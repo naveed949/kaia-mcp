@@ -12,9 +12,8 @@ if [[ -f "${INSTANCE_FILE}" ]]; then
 fi
 
 cd "${REPO_ROOT}"
-if [[ ! -f dist/bin/kaia-mcp.js ]]; then
-  npm run build
-fi
+# Always rebuild: a stale dist/ would verify old code (tsup takes ~1s).
+npm run build >"${INSTANCE_DIR}/build.log" 2>&1 || { cat "${INSTANCE_DIR}/build.log" >&2; exit 1; }
 
 PORT="$(node -e 'const n=require("net");const s=n.createServer();s.listen(0,"127.0.0.1",()=>{console.log(s.address().port);s.close()});')"
 LOG_FILE="${INSTANCE_DIR}/server.log"
@@ -23,7 +22,7 @@ echo "${RUN_ID}" > /tmp/kaia-mcp-verify-current
 
 KAIA_AUTH_MODE=required \
 KAIA_ALLOW_UNSAFE_WALLET= \
-LOG_LEVEL=info \
+LOG_LEVEL=debug \
 node dist/bin/kaia-mcp.js --transport http --port "${PORT}" \
   >"${LOG_FILE}" 2>&1 &
 PID=$!

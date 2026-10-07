@@ -22,9 +22,9 @@ Preconditions:
 - `doctor.sh` reports `authMode=required`.
 
 - **Missing token.** POST `/` with `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"verify-kaia-mcp","version":"0"}}}` and no Authorization. Run `.cursor/skills/verify-kaia-mcp/helpers/drive.sh fail-closed-auth`. HTTP status is `401`. Body is `{"jsonrpc":"2.0","error":{"code":-32040,"message":"unauthorized: missing access token","data":{"error":"unauthorized"}},"id":null}`.
-- **Deny by scope.** Finish PKCE with `scope=kaia:read` and call `tools/call` `encode_function_data` with the same balanceOf payload as the allow recipe. Response text includes `insufficient_scope: encode_function_data requires kaia:encode` (code `-32042`) and does not include `0x70a08231`.
+- **Deny by scope.** Finish PKCE with `scope=kaia:read`, open an MCP session (`initialize`, `notifications/initialized`), and call `tools/call` `encode_function_data` with the same balanceOf payload as the allow recipe. Response text includes `insufficient_scope: encode_function_data requires kaia:encode` (code `-32042`) and does not include `0x70a08231`.
 - **Revoke.** POST `/oauth/revoke` with `token=<access_token>`, then POST `initialize` with that bearer. HTTP status is `401`. Body error code is `-32043` and message is `invalid_token: access token is invalid or revoked`.
-- **Proof.** Evidence files `unauthenticated.json`, `deny-scope.json`, and `revoked.json` exist under `.cursor/skills/verify-kaia-mcp/evidence/<run-id>/fail-closed-auth/`.
+- **Proof.** Evidence files `unauthenticated.json`, `deny-scope.init.headers`, `deny-scope.json`, `revoke.json`, and `revoked.json` exist under `.cursor/skills/verify-kaia-mcp/evidence/<run-id>/fail-closed-auth/`.
 
 ## Gotchas
 

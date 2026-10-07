@@ -27,6 +27,11 @@ else
 fi
 
 if [[ -d "${INSTANCE_DIR}" ]]; then
+  # Keep the server log as evidence (used by token-leak-check.sh) before removing scratch state.
+  if [[ -f "${INSTANCE_DIR}/server.log" ]]; then
+    cp "${INSTANCE_DIR}/server.log" "${EVIDENCE_DIR}/server.log"
+    echo "cleanup: server log kept at ${EVIDENCE_DIR}/server.log"
+  fi
   rm -rf "${INSTANCE_DIR}"
   echo "cleanup: removed ${INSTANCE_DIR}"
 fi

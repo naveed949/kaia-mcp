@@ -26,7 +26,7 @@ Preconditions:
 - **Start device.** Run `.cursor/skills/verify-kaia-mcp/helpers/drive.sh device-flow` (or POST `/oauth/device`). Body includes `user_code`, `device_code`, and `verification_uri`.
 - **Approve user code.** GET `/oauth/device/verify?user_code=<user_code>` then POST the same path with `decision=approve`. HTML contains `Device authorized`.
 - **Exchange.** POST `/oauth/token` with the device code. Body includes `"token_type":"Bearer"`.
-- **Call allowed tool.** POST `/` `encode_function_data` balanceOf payload. Body contains `0x70a082310000000000000000000000001234567890123456789012345678901234567890`.
+- **Call allowed tool.** Every MCP call runs `initialize` (bearer) first, reads `Mcp-Session-Id`, sends `notifications/initialized`, then sends the request with both headers. POST `/` `encode_function_data` balanceOf payload. Body contains `0x70a082310000000000000000000000001234567890123456789012345678901234567890`.
 - **Proof.** Evidence files `device.json`, `device-approved.html`, `device-token.json`, and `allow.json` exist under `.cursor/skills/verify-kaia-mcp/evidence/<run-id>/device-flow/`.
 
 ## Gotchas

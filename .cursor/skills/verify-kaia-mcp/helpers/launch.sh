@@ -11,6 +11,7 @@ if [[ -f "${INSTANCE_FILE}" ]]; then
   exit 1
 fi
 
+mkdir -p "${INSTANCE_DIR}"
 cd "${REPO_ROOT}"
 # Always rebuild: a stale dist/ would verify old code (tsup takes ~1s).
 npm run build >"${INSTANCE_DIR}/build.log" 2>&1 || { cat "${INSTANCE_DIR}/build.log" >&2; exit 1; }

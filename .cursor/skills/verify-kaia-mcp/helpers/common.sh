@@ -18,6 +18,7 @@ INSTANCE_DIR="/tmp/kaia-mcp-verify-${RUN_ID}"
 INSTANCE_FILE="${INSTANCE_DIR}/instance.json"
 EVIDENCE_DIR="${SKILL_DIR}/evidence/${RUN_ID}"
 
-mkdir -p "${INSTANCE_DIR}" "${EVIDENCE_DIR}"
+# Only launch.sh creates INSTANCE_DIR; doctor/cleanup/leak-check must not recreate scratch state.
+mkdir -p "${EVIDENCE_DIR}"
 
 export REPO_ROOT SKILL_DIR HELPERS_DIR RUN_ID INSTANCE_DIR INSTANCE_FILE EVIDENCE_DIR

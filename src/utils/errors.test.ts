@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { toMcpError, MCP_ERROR_CODES } from "./errors.js";
+import { toMcpError, MCP_ERROR_CODES, AuthError } from "./errors.js";
+import { AUTH_ERRORS } from "../auth/constants.js";
 
 describe("toMcpError", () => {
   it("maps unknown throwable to Internal error", () => {
@@ -34,6 +35,15 @@ describe("toMcpError", () => {
     err.status = 429;
     const result = toMcpError(err);
     expect(result.code).toBe(MCP_ERROR_CODES.RateLimit);
+  });
+
+  it("maps AuthError to its fail-closed code and does not embed the raw error object", () => {
+    const result = toMcpError(new AuthError(AUTH_ERRORS.UNAUTHORIZED));
+    expect(result).toEqual({
+      code: MCP_ERROR_CODES.Unauthorized,
+      message: "unauthorized: missing access token",
+      data: { error: "unauthorized" },
+    });
   });
 
   it("maps null/undefined to Internal error with generic message", () => {

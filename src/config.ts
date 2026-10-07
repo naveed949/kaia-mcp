@@ -19,6 +19,15 @@ const urlOrDefault = (def: string) =>
     .transform((v) => (v?.trim() ? v : def))
     .pipe(z.string().url());
 
+const authModeSchema = z.enum(["required", "off"]);
+const boolish = z
+  .string()
+  .optional()
+  .transform((v) => {
+    const n = (v ?? "").trim().toLowerCase();
+    return n === "1" || n === "true" || n === "yes";
+  });
+
 const envSchema = z.object({
   KAIA_RPC_URL: urlOrDefault(DEFAULT_KAIA_RPC_URL),
   KAIA_KAIROS_RPC_URL: urlOrDefault(DEFAULT_KAIA_KAIROS_RPC_URL),
@@ -29,10 +38,16 @@ const envSchema = z.object({
   RATE_LIMIT_KAIASCAN: z.coerce.number().int().positive().default(5),
   RPC_TIMEOUT_MS: z.coerce.number().int().positive().optional().default(30000),
   KAIASCAN_TIMEOUT_MS: z.coerce.number().int().positive().optional().default(15000),
+  KAIA_AUTH_MODE: authModeSchema.default("required"),
+  KAIA_ALLOW_UNSAFE_WALLET: boolish,
+  KAIA_OAUTH_CLIENT_ID: z.string().optional().default("kaia-mcp-demo"),
+  KAIA_ACCESS_TOKEN_TTL_SECONDS: z.coerce.number().int().positive().optional().default(900),
 });
 
 export type LogLevel = z.infer<typeof logLevelSchema>;
 export type DefaultNetwork = z.infer<typeof defaultNetworkSchema>;
+
+export type AuthMode = z.infer<typeof authModeSchema>;
 
 export type Config = {
   kaiaRpcUrl: string;
@@ -44,6 +59,10 @@ export type Config = {
   rateLimitKaiascan: number;
   rpcTimeoutMs: number;
   kaiascanTimeoutMs: number;
+  authMode: AuthMode;
+  allowUnsafeWallet: boolean;
+  oauthClientId: string;
+  accessTokenTtlSeconds: number;
 };
 
 function parseEnv(): Config {
@@ -57,6 +76,10 @@ function parseEnv(): Config {
     RATE_LIMIT_KAIASCAN: process.env.RATE_LIMIT_KAIASCAN,
     RPC_TIMEOUT_MS: process.env.RPC_TIMEOUT_MS,
     KAIASCAN_TIMEOUT_MS: process.env.KAIASCAN_TIMEOUT_MS,
+    KAIA_AUTH_MODE: process.env.KAIA_AUTH_MODE,
+    KAIA_ALLOW_UNSAFE_WALLET: process.env.KAIA_ALLOW_UNSAFE_WALLET,
+    KAIA_OAUTH_CLIENT_ID: process.env.KAIA_OAUTH_CLIENT_ID,
+    KAIA_ACCESS_TOKEN_TTL_SECONDS: process.env.KAIA_ACCESS_TOKEN_TTL_SECONDS,
   };
 
   const result = envSchema.safeParse(raw);
@@ -79,6 +102,10 @@ function parseEnv(): Config {
     rateLimitKaiascan: d.RATE_LIMIT_KAIASCAN,
     rpcTimeoutMs: d.RPC_TIMEOUT_MS,
     kaiascanTimeoutMs: d.KAIASCAN_TIMEOUT_MS,
+    authMode: d.KAIA_AUTH_MODE,
+    allowUnsafeWallet: d.KAIA_ALLOW_UNSAFE_WALLET,
+    oauthClientId: d.KAIA_OAUTH_CLIENT_ID,
+    accessTokenTtlSeconds: d.KAIA_ACCESS_TOKEN_TTL_SECONDS,
   };
 }
 

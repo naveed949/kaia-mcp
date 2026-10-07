@@ -1,8 +1,35 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { handleGenerateWallet, handleEncodeFunctionData } from "./wallet.js";
+import { resetConfigCache } from "../config.js";
+import { AuthError, MCP_ERROR_CODES } from "../utils/errors.js";
 
 describe("handleGenerateWallet", () => {
-  it("returns address and privateKey as hex (length 66)", async () => {
+  const envBackup = process.env.KAIA_ALLOW_UNSAFE_WALLET;
+
+  beforeEach(() => {
+    resetConfigCache();
+  });
+
+  afterEach(() => {
+    if (envBackup === undefined) delete process.env.KAIA_ALLOW_UNSAFE_WALLET;
+    else process.env.KAIA_ALLOW_UNSAFE_WALLET = envBackup;
+    resetConfigCache();
+  });
+
+  it("does not generate or return a private key when unsafe flag is off", async () => {
+    delete process.env.KAIA_ALLOW_UNSAFE_WALLET;
+    resetConfigCache();
+    await expect(handleGenerateWallet({})).rejects.toMatchObject({
+      name: "AuthError",
+      code: MCP_ERROR_CODES.ToolDisabled,
+      error: "tool_disabled",
+    });
+    await expect(handleGenerateWallet({})).rejects.toBeInstanceOf(AuthError);
+  });
+
+  it("returns address and privateKey as hex (length 66) only when KAIA_ALLOW_UNSAFE_WALLET=1", async () => {
+    process.env.KAIA_ALLOW_UNSAFE_WALLET = "1";
+    resetConfigCache();
     const result = await handleGenerateWallet({});
     expect(result.content).toHaveLength(1);
     expect(result.content[0].type).toBe("text");
@@ -14,13 +41,17 @@ describe("handleGenerateWallet", () => {
     expect(pkMatch![1].length).toBe(66);
   });
 
-  it("includes display network when provided", async () => {
+  it("includes display network when provided (unsafe mode)", async () => {
+    process.env.KAIA_ALLOW_UNSAFE_WALLET = "1";
+    resetConfigCache();
     const result = await handleGenerateWallet({ network: "kairos" });
     const text = (result.content[0] as { text: string }).text;
     expect(text).toContain("kairos");
   });
 
-  it("does not require any params", async () => {
+  it("does not require any params (unsafe mode)", async () => {
+    process.env.KAIA_ALLOW_UNSAFE_WALLET = "1";
+    resetConfigCache();
     const result = await handleGenerateWallet({});
     expect(result.content[0].type).toBe("text");
   });

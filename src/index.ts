@@ -7,3 +7,11 @@ export {
   runKaiaMcpServer,
   runKaiaMcpServerHttp,
 } from "./server.js";
+export type { CreateKaiaMcpServerOptions, KaiaHttpServerHandle } from "./server.js";
+export {
+  SCOPES,
+  AUTH_ERRORS,
+  createDemoOAuthProvider,
+  generatePkcePair,
+} from "./auth/index.js";
+

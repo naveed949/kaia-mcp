@@ -1,17 +1,23 @@
 /**
  * Wallet-related tools (Phase 7): generate keypair, encode function data.
  * No RPC for generate_wallet; encode_function_data is local only.
+ *
+ * Partner/default mode never returns private keys. `generate_wallet` is omitted from
+ * the default tool list and refuses to run unless KAIA_ALLOW_UNSAFE_WALLET=1.
  */
 
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { encodeFunctionData, type Abi } from "viem";
+import { getConfig } from "../config.js";
+import { AuthError } from "../utils/errors.js";
+import { AUTH_ERRORS } from "../auth/constants.js";
 
 // --- Tool definitions ---
 
 export const GENERATE_WALLET = {
   name: "generate_wallet",
   description:
-    "Generate a new wallet keypair (address and private key in hex). Uses viem generatePrivateKey and privateKeyToAccount. No RPC call. Keep the private key secret.",
+    "UNSAFE local-dev only: generate a wallet keypair including private key hex. Disabled in partner/default mode. Requires KAIA_ALLOW_UNSAFE_WALLET=1 and scope kaia:wallet.",
   inputSchema: {
     type: "object" as const,
     properties: {
@@ -74,9 +80,25 @@ function parseAbiFromInput(abi: unknown): Abi {
 
 // --- Handlers ---
 
+let generateWalletInvocations = 0;
+
+export function getGenerateWalletInvocationCount(): number {
+  return generateWalletInvocations;
+}
+
+export function resetGenerateWalletInvocationCount(): void {
+  generateWalletInvocations = 0;
+}
+
 export async function handleGenerateWallet(args: {
   network?: unknown;
 }): Promise<{ content: Array<{ type: "text"; text: string }> }> {
+  if (!getConfig().allowUnsafeWallet) {
+    throw new AuthError(AUTH_ERRORS.TOOL_DISABLED);
+  }
+
+  generateWalletInvocations += 1;
+
   const network =
     typeof args.network === "string" && args.network.trim().toLowerCase() === "kairos"
       ? "kairos"

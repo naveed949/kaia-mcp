@@ -1,6 +1,8 @@
 # Kaia MCP Server
 
-Production-ready [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for the [Kaia](https://kaia.io) blockchain. Exposes 26 tools, 5 resources, and 6 prompts for balance, transactions, blocks, tokens, NFTs, contracts, network info, and wallet utilities.
+Production-ready [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for the [Kaia](https://kaia.io) blockchain. Exposes 25 partner-safe tools (26 if `KAIA_ALLOW_UNSAFE_WALLET=1`), 5 resources, and 6 prompts for balance, transactions, blocks, tokens, NFTs, contracts, network info, and calldata encoding.
+
+HTTP is a partner-style connector: OAuth 2.1 with PKCE (browser) or device flow (CLI), fail-closed bearer auth, and token scopes mapped to an allowed-tool registry. An in-process demo IdP runs with the HTTP server so tests and CI need no real credentials. See [docs/AUTH.md](docs/AUTH.md).
 
 ## Installation
 
@@ -20,13 +22,15 @@ npx kaia-mcp
 npx kaia-mcp --transport stdio
 ```
 
-**HTTP** — run Streamable HTTP transport on a port:
+**HTTP** — Streamable HTTP on a port. Partner default (`KAIA_AUTH_MODE=required`) requires `Authorization: Bearer` on every MCP request. The same process serves the demo OAuth/OIDC endpoints.
 
 ```bash
 npx kaia-mcp --transport http --port 3100
+# GET http://127.0.0.1:3100/health
+# GET http://127.0.0.1:3100/.well-known/openid-configuration
 ```
 
-## Tools (26)
+## Tools (25 partner-safe)
 
 | Tool | Description |
 |------|-------------|
@@ -54,8 +58,8 @@ npx kaia-mcp --transport http --port 3100
 | `get_gas_price` | Current gas price |
 | `get_kaia_price` | KAIA price (USD, BTC, stats) from KaiaScan |
 | `get_chain_info` | Chain id and name (mainnet/kairos) |
-| `generate_wallet` | Generate a new wallet keypair (address + private key hex) |
-| `encode_function_data` | Encode contract call data from ABI and args |
+| `encode_function_data` | Encode contract call data from ABI and args (`kaia:encode`) |
+| `generate_wallet` | **Not in the default list.** Unsafe local-dev only (`KAIA_ALLOW_UNSAFE_WALLET=1` + `kaia:wallet`). Never returns private keys in partner mode. |
 
 ## Resources (5)
 
@@ -93,6 +97,10 @@ Environment variables (see `.env.example`):
 | `RATE_LIMIT_KAIASCAN` | Max KaiaScan requests per second | 5 |
 | `RPC_TIMEOUT_MS` | RPC request timeout (ms) | 30000 |
 | `KAIASCAN_TIMEOUT_MS` | KaiaScan request timeout (ms) | 15000 |
+| `KAIA_AUTH_MODE` | HTTP auth: `required` or `off` | `required` |
+| `KAIA_OAUTH_CLIENT_ID` | Demo public client id | `kaia-mcp-demo` |
+| `KAIA_ACCESS_TOKEN_TTL_SECONDS` | Demo access-token TTL | 900 |
+| `KAIA_ALLOW_UNSAFE_WALLET` | Enable `generate_wallet` private keys (local only) | off |
 
 ## MCP client setup
 
@@ -179,15 +187,48 @@ If your client expects a path, use `http://localhost:3100/mcp`. Restart Cursor a
 
 **Claude Desktop** — if your Claude Desktop build supports remote MCP URLs, use the same `url` in its MCP config.
 
-**Test from the host** (with the container running):
+**Test from the host** (with the container running). Health is unauthenticated; MCP is not:
 
 ```bash
+curl -s http://localhost:3100/health
+# Obtain a demo token (see docs/AUTH.md), then:
 curl -s -X POST http://localhost:3100 \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | jq
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | jq
 ```
 
-You should see a list of tools. Replace `localhost` with your machine’s IP or hostname when connecting from another device.
+You should see a list of tools filtered by the token’s scopes. Replace `localhost` with your machine’s IP or hostname when connecting from another device.
+
+## Partner integration
+
+This server is an MCP connector, not a hosted product partnership. Integrate over HTTP with OAuth; do not treat stdio as a partner path.
+
+### Integration checklist
+
+1. Discover `/.well-known/oauth-protected-resource` and `/.well-known/openid-configuration` (demo) or your authorization server’s metadata.
+2. Register a **public** client. Require PKCE `S256` for browser agents; use device flow for CLIs that cannot host a redirect.
+3. Allowlist redirect URIs. The demo IdP accepts only `http://127.0.0.1/callback`, `http://localhost/callback`, and `/cb` variants.
+4. Request least privilege: `kaia:read` for chain reads, add `kaia:encode` only if the agent must build calldata. Never request `kaia:wallet` in production.
+5. Send `Authorization: Bearer <access_token>` on **every** MCP HTTP request. Do not treat `Mcp-Session-Id` as authentication.
+6. Handle fail-closed errors literally: `-32040` unauthorized, `-32041` token_expired, `-32042` insufficient_scope, `-32043` invalid_token. Retry only after a new token; do not retry a denied tool.
+7. On disconnect or user logout, `POST /oauth/revoke` with the access or refresh token.
+8. Keep tokens out of logs, crash dumps, eval fixtures, and git. Prefer a token fingerprint if you must correlate requests.
+9. Leave `KAIA_ALLOW_UNSAFE_WALLET` unset. `generate_wallet` must not appear in partner tool lists and must not return private keys.
+10. Point production at your own OIDC issuer; the in-process demo IdP is for tests/CI/local bring-up only. No real user secrets belong in this repo.
+
+### Threat notes
+
+- **Scopes.** A `kaia:read` token must not call `encode_function_data`. Scope checks run before handlers; a deny has no chain or wallet side effect.
+- **Secret handling.** Access tokens are hashed at rest in the demo store. The logger redacts bearer values. Private keys are not emitted unless the explicit unsafe dev flag is on.
+- **Session fixation.** A stolen MCP session id without the bearer token cannot call tools when `KAIA_AUTH_MODE=required`.
+- **PKCE downgrade.** `code_challenge_method=plain` is rejected.
+- **Open redirect.** Unregistered `redirect_uri` values are rejected.
+- **Fallbacks.** `KAIA_AUTH_MODE=off` and stdio skip OAuth. Those paths are local-only. Partners must not ship them as a “fallback” for failed authentication; failed auth is a deny.
+- **Unsafe wallet flag.** If an operator enables `KAIA_ALLOW_UNSAFE_WALLET=1`, private keys can leave the process. Treat that as a break-glass local tool, not a partner feature.
+
+Full protocol detail: [docs/AUTH.md](docs/AUTH.md).
 
 ## License
 

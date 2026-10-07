@@ -3,6 +3,8 @@
  */
 
 import type { ListToolsResult, CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import { authorizeToolCall, authorizeToolList, filterToolsByAuth } from "../auth/scopes.js";
+import type { ToolAuthOptions } from "../auth/scopes.js";
 import {
   ACCOUNT_TOOLS,
   handleGetKaiaBalance,
@@ -107,10 +109,13 @@ const ALL_TOOLS = [
 
 /**
  * Returns the list of registered tools for MCP tools/list.
+ * Partner/default mode omits generate_wallet. Authenticated sessions are filtered by token scopes.
  */
-export function listTools(): ListToolsResult {
+export function listTools(options: ToolAuthOptions = {}): ListToolsResult {
+  authorizeToolList(options);
+  const allowed = filterToolsByAuth(ALL_TOOLS, options);
   return {
-    tools: ALL_TOOLS.map((t) => ({
+    tools: allowed.map((t) => ({
       name: t.name,
       description: t.description,
       inputSchema: t.inputSchema,
@@ -122,11 +127,14 @@ export function listTools(): ListToolsResult {
 
 /**
  * Dispatches tools/call by name to the appropriate handler. Returns MCP CallToolResult.
+ * Auth and unsafe-wallet checks run before any handler (fail-closed, no side effects).
  */
 export async function callTool(
   name: string,
-  args: Record<string, unknown> | undefined
+  args: Record<string, unknown> | undefined,
+  options: ToolAuthOptions = {}
 ): Promise<CallToolResult> {
+  authorizeToolCall(name, options);
   const a = args ?? {};
   switch (name) {
     case "get_kaia_balance":

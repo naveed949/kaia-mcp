@@ -17,6 +17,10 @@ describe("getConfig", () => {
       "RATE_LIMIT_KAIASCAN",
       "RPC_TIMEOUT_MS",
       "KAIASCAN_TIMEOUT_MS",
+      "KAIA_AUTH_MODE",
+      "KAIA_ALLOW_UNSAFE_WALLET",
+      "KAIA_OAUTH_CLIENT_ID",
+      "KAIA_ACCESS_TOKEN_TTL_SECONDS",
     ];
     for (const k of keys) {
       envBackup[k] = process.env[k];
@@ -41,6 +45,10 @@ describe("getConfig", () => {
     delete process.env.RATE_LIMIT_KAIASCAN;
     delete process.env.RPC_TIMEOUT_MS;
     delete process.env.KAIASCAN_TIMEOUT_MS;
+    delete process.env.KAIA_AUTH_MODE;
+    delete process.env.KAIA_ALLOW_UNSAFE_WALLET;
+    delete process.env.KAIA_OAUTH_CLIENT_ID;
+    delete process.env.KAIA_ACCESS_TOKEN_TTL_SECONDS;
 
     const config = getConfig();
     expect(config.kaiaRpcUrl).toBe("https://public-en.node.kaia.io");
@@ -51,6 +59,10 @@ describe("getConfig", () => {
     expect(config.rateLimitKaiascan).toBe(5);
     expect(config.rpcTimeoutMs).toBe(30000);
     expect(config.kaiascanTimeoutMs).toBe(15000);
+    expect(config.authMode).toBe("required");
+    expect(config.allowUnsafeWallet).toBe(false);
+    expect(config.oauthClientId).toBe("kaia-mcp-demo");
+    expect(config.accessTokenTtlSeconds).toBe(900);
   });
 
   it("returns config from provided env", () => {

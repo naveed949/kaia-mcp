@@ -16,14 +16,27 @@ import { logger } from "./utils/logger.js";
 import { listTools, callTool } from "./tools/index.js";
 import { listResources, readResource } from "./resources/index.js";
 import { listPrompts, getPrompt } from "./prompts/index.js";
+import { createDemoOAuthProvider, type DemoOAuthProvider } from "./auth/provider.js";
+import {
+  applyCors,
+  authenticateRequest,
+  tryHandleAuxRequest,
+  writeAuthFailure,
+} from "./auth/http.js";
+import type { AuthContext } from "./auth/types.js";
 
 const SERVER_NAME = "kaia-mcp";
 const SERVER_VERSION = "0.1.0";
 
+export type CreateKaiaMcpServerOptions = {
+  requireAuth?: boolean;
+  getAuthContext?: () => AuthContext | null;
+};
+
 function wrapToolHandler<T, R>(
   handler: (req: T) => R | Promise<R>
 ): (req: T, extra: unknown) => Promise<R> {
-  return async (req: T, extra: unknown) => {
+  return async (req: T, _extra: unknown) => {
     try {
       return await Promise.resolve(handler(req));
     } catch (err) {
@@ -38,7 +51,8 @@ function wrapToolHandler<T, R>(
  * Creates and returns the Kaia MCP server instance.
  * Registers account tools (get_kaia_balance, get_account_info, get_account_tokens, get_account_nfts) and tools/list + tools/call handlers with error mapping.
  */
-export function createKaiaMcpServer(): Server {
+export function createKaiaMcpServer(options: CreateKaiaMcpServerOptions = {}): Server {
+  const requireAuth = Boolean(options.requireAuth);
   const server = new Server(
     {
       name: SERVER_NAME,
@@ -53,13 +67,18 @@ export function createKaiaMcpServer(): Server {
     }
   );
 
-  server.setRequestHandler(ListToolsRequestSchema, wrapToolHandler(() => listTools()));
+  const authOpts = () => ({
+    requireAuth,
+    auth: options.getAuthContext?.() ?? null,
+  });
+
+  server.setRequestHandler(ListToolsRequestSchema, wrapToolHandler(() => listTools(authOpts())));
 
   server.setRequestHandler(
     CallToolRequestSchema,
     wrapToolHandler(async (request) => {
       const { name, arguments: args } = request.params;
-      return callTool(name, (args ?? {}) as Record<string, unknown>);
+      return callTool(name, (args ?? {}) as Record<string, unknown>, authOpts());
     })
   );
 
@@ -90,11 +109,12 @@ export function createKaiaMcpServer(): Server {
 /**
  * Runs the Kaia MCP server over stdio (for CLI use).
  * Validates config at startup (fail-fast on bad env).
+ * Stdio is local-process only: OAuth is not applied. generate_wallet stays disabled unless the unsafe flag is set.
  */
 export async function runKaiaMcpServer(): Promise<void> {
   getConfig();
   logger.info("Starting Kaia MCP server (stdio)");
-  const server = createKaiaMcpServer();
+  const server = createKaiaMcpServer({ requireAuth: false });
   const transport = new StdioServerTransport();
   server.onerror = (err) => logger.error("Server transport error", { error: err });
   await server.connect(transport);
@@ -135,33 +155,54 @@ function normalizeAcceptHeader(req: IncomingMessage): void {
   }
 }
 
+export type KaiaHttpServerHandle = {
+  port: number;
+  issuer: string;
+  mcpUrl: string;
+  close: () => Promise<void>;
+  oauth: DemoOAuthProvider;
+};
+
 /**
  * Runs the Kaia MCP server over Streamable HTTP on the given port.
  * Creates a per-session transport+server pair so multiple clients can
  * connect concurrently. Validates config at startup.
+ *
+ * Partner default (KAIA_AUTH_MODE=required): every MCP request must carry a
+ * Bearer access token. Token scopes are mapped onto the allowed-tool registry
+ * for that session. Missing, expired, or revoked tokens fail closed with no
+ * tool side effects.
  */
-export async function runKaiaMcpServerHttp(port: number): Promise<void> {
+export async function runKaiaMcpServerHttp(port: number): Promise<KaiaHttpServerHandle> {
   const { randomUUID } = await import("node:crypto");
   const { createServer } = await import("node:http");
   const { StreamableHTTPServerTransport } = await import(
     "@modelcontextprotocol/sdk/server/streamableHttp.js"
   );
 
-  getConfig();
-  logger.info("Starting Kaia MCP server (HTTP)", { port });
+  const config = getConfig();
+  const authMode = config.authMode;
+  logger.info("Starting Kaia MCP server (HTTP)", { port, authMode });
 
   type SessionEntry = {
     transport: InstanceType<typeof StreamableHTTPServerTransport>;
     server: Server;
+    setAuth: (ctx: AuthContext | null) => void;
   };
   const sessions = new Map<string, SessionEntry>();
 
-  function createSession(): SessionEntry {
-    const server = createKaiaMcpServer();
+  const runtime: { provider?: DemoOAuthProvider } = {};
+
+  function createSession(initialAuth: AuthContext | null): SessionEntry {
+    let auth = initialAuth;
+    const server = createKaiaMcpServer({
+      requireAuth: authMode === "required",
+      getAuthContext: () => auth,
+    });
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
       onsessioninitialized: (sessionId: string) => {
-        logger.info("Session initialized", { sessionId });
+        logger.info("Session initialized", { sessionId, tokenFingerprint: auth?.tokenFingerprint });
         sessions.set(sessionId, entry);
       },
     });
@@ -173,23 +214,58 @@ export async function runKaiaMcpServerHttp(port: number): Promise<void> {
       }
     };
     server.onerror = (err) => logger.error("Server transport error", { error: err });
-    const entry: SessionEntry = { transport, server };
+    const entry: SessionEntry = {
+      transport,
+      server,
+      setAuth: (ctx) => {
+        auth = ctx;
+      },
+    };
     return entry;
   }
 
   const httpServer = createServer(async (req, res) => {
-    normalizeAcceptHeader(req);
-
-    const sessionId = req.headers["mcp-session-id"] as string | undefined;
+    applyCors(res);
+    if (req.method === "OPTIONS") {
+      res.writeHead(204);
+      res.end();
+      return;
+    }
 
     try {
+      const handled = await tryHandleAuxRequest(req, res, {
+        provider: runtime.provider!,
+        authMode,
+        unsafeWallet: config.allowUnsafeWallet,
+      });
+      if (handled) return;
+
+      normalizeAcceptHeader(req);
+
+      let sessionAuth: AuthContext | null = null;
+      if (authMode === "required") {
+        const result = authenticateRequest(req, runtime.provider!);
+        if (!result.ok) {
+          writeAuthFailure(res, result);
+          return;
+        }
+        sessionAuth = result.context;
+        logger.debug("MCP request authenticated", {
+          tokenFingerprint: result.context.tokenFingerprint,
+          scopes: result.context.scopes.join(" "),
+        });
+      }
+
+      const sessionId = req.headers["mcp-session-id"] as string | undefined;
+
       if (sessionId && sessions.has(sessionId)) {
+        sessions.get(sessionId)!.setAuth(sessionAuth);
         await sessions.get(sessionId)!.transport.handleRequest(req, res);
         return;
       }
 
       if (req.method === "POST" && !sessionId) {
-        const entry = createSession();
+        const entry = createSession(sessionAuth);
         await entry.server.connect(entry.transport);
         await entry.transport.handleRequest(req, res);
         return;
@@ -197,7 +273,9 @@ export async function runKaiaMcpServerHttp(port: number): Promise<void> {
 
       if (req.method === "GET" && sessionId && !sessions.has(sessionId)) {
         res.writeHead(404, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ jsonrpc: "2.0", error: { code: -32000, message: "Session not found" }, id: null }));
+        res.end(
+          JSON.stringify({ jsonrpc: "2.0", error: { code: -32000, message: "Session not found" }, id: null })
+        );
         return;
       }
 
@@ -212,12 +290,44 @@ export async function runKaiaMcpServerHttp(port: number): Promise<void> {
       logger.error("HTTP request error", { error: err });
       if (!res.headersSent) {
         res.writeHead(500, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ jsonrpc: "2.0", error: { code: -32603, message: "Internal server error" }, id: null }));
+        res.end(
+          JSON.stringify({ jsonrpc: "2.0", error: { code: -32603, message: "Internal server error" }, id: null })
+        );
       }
     }
   });
 
-  httpServer.listen(port, () => {
-    logger.info("HTTP server listening", { port });
+  const actualPort = await new Promise<number>((resolve, reject) => {
+    const onError = (err: Error) => reject(err);
+    httpServer.once("error", onError);
+    httpServer.listen(port, () => {
+      httpServer.removeListener("error", onError);
+      const addr = httpServer.address();
+      const bound = typeof addr === "object" && addr ? addr.port : port;
+      resolve(bound);
+    });
   });
+
+  const issuer = `http://127.0.0.1:${actualPort}`;
+  runtime.provider = createDemoOAuthProvider({
+    issuer,
+    clientId: config.oauthClientId,
+    accessTokenTtlSeconds: config.accessTokenTtlSeconds,
+  });
+
+  logger.info("HTTP server listening", { port: actualPort, issuer, authMode });
+
+  return {
+    port: actualPort,
+    issuer,
+    mcpUrl: issuer,
+    oauth: runtime.provider!,
+    close: () =>
+      new Promise<void>((resolve, reject) => {
+        if (typeof httpServer.closeAllConnections === "function") {
+          httpServer.closeAllConnections();
+        }
+        httpServer.close((err) => (err ? reject(err) : resolve()));
+      }),
+  };
 }

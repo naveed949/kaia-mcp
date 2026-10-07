@@ -7,7 +7,6 @@ import {
 } from "./token.js";
 import { createKaiaScanClient } from "../clients/kaiascan.js";
 import { createRpcClient } from "../clients/rpc.js";
-import { readContract } from "viem";
 import { resetConfigCache } from "../config.js";
 
 vi.mock("../clients/kaiascan.js", () => ({
@@ -18,14 +17,9 @@ vi.mock("../clients/rpc.js", () => ({
   createRpcClient: vi.fn(),
 }));
 
-vi.mock("viem", async (importOriginal) => {
-  const v = (await importOriginal()) as typeof import("viem");
-  return { ...v, readContract: vi.fn() };
-});
-
 const mockCreateKaiaScanClient = vi.mocked(createKaiaScanClient);
 const mockCreateRpcClient = vi.mocked(createRpcClient);
-const mockReadContract = vi.mocked(readContract);
+const mockReadContract = vi.fn();
 
 const validContractAddress = "0x1234567890123456789012345678901234567890";
 
@@ -192,8 +186,10 @@ describe("handleGetTokenAllowance", () => {
   beforeEach(() => {
     resetConfigCache();
     vi.clearAllMocks();
-    mockCreateRpcClient.mockReturnValue({} as unknown as ReturnType<typeof createRpcClient>);
     mockReadContract.mockResolvedValue(1000000000000000000n);
+    mockCreateRpcClient.mockReturnValue({
+      readContract: mockReadContract,
+    } as unknown as ReturnType<typeof createRpcClient>);
   });
 
   it("returns allowance raw and human-readable for valid args", async () => {
@@ -214,14 +210,13 @@ describe("handleGetTokenAllowance", () => {
     expect(text).toContain("Allowance (18 decimals): 1");
     expect(mockCreateRpcClient).toHaveBeenCalledWith("mainnet");
     expect(mockReadContract).toHaveBeenCalledWith(
-      {},
       expect.objectContaining({
         address: tokenAddress,
         functionName: "allowance",
       })
     );
     expect(mockReadContract).toHaveBeenCalledTimes(1);
-    const callArgs = mockReadContract.mock.calls[0]?.[1];
+    const callArgs = mockReadContract.mock.calls[0]?.[0];
     expect(callArgs).toBeDefined();
     expect(Array.isArray((callArgs as { args?: unknown[] }).args)).toBe(true);
     expect((callArgs as { args: unknown[] }).args).toHaveLength(2);

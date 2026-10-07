@@ -6,29 +6,30 @@ set -euo pipefail
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
-if [[ ! -f "${INSTANCE_FILE}" ]]; then
-  echo "cleanup: no instance file at ${INSTANCE_FILE} (nothing to stop)"
-  echo "evidence dir (untouched): ${EVIDENCE_DIR}"
-  exit 0
-fi
-
-PID="$(node -e "const i=require('${INSTANCE_FILE}'); process.stdout.write(String(i.pid))")"
-PORT="$(node -e "const i=require('${INSTANCE_FILE}'); process.stdout.write(String(i.port))")"
-
-if kill -0 "${PID}" 2>/dev/null; then
-  kill "${PID}"
-  for _ in $(seq 1 30); do
-    if ! kill -0 "${PID}" 2>/dev/null; then
-      break
-    fi
-    sleep 0.1
-  done
+if [[ -f "${INSTANCE_FILE}" ]]; then
+  PID="$(node -e "const i=require('${INSTANCE_FILE}'); process.stdout.write(String(i.pid))")"
+  PORT="$(node -e "const i=require('${INSTANCE_FILE}'); process.stdout.write(String(i.port))")"
   if kill -0 "${PID}" 2>/dev/null; then
-    kill -9 "${PID}" 2>/dev/null || true
+    kill "${PID}"
+    for _ in $(seq 1 30); do
+      if ! kill -0 "${PID}" 2>/dev/null; then
+        break
+      fi
+      sleep 0.1
+    done
+    if kill -0 "${PID}" 2>/dev/null; then
+      kill -9 "${PID}" 2>/dev/null || true
+    fi
   fi
+  echo "cleanup: stopped pid ${PID} (port ${PORT})"
+else
+  echo "cleanup: no instance file at ${INSTANCE_FILE} (nothing to stop)"
 fi
 
-rm -rf "${INSTANCE_DIR}"
+if [[ -d "${INSTANCE_DIR}" ]]; then
+  rm -rf "${INSTANCE_DIR}"
+  echo "cleanup: removed ${INSTANCE_DIR}"
+fi
 if [[ -f /tmp/kaia-mcp-verify-current ]]; then
   CURRENT="$(cat /tmp/kaia-mcp-verify-current)"
   if [[ "${CURRENT}" == "${RUN_ID}" ]]; then
@@ -36,6 +37,4 @@ if [[ -f /tmp/kaia-mcp-verify-current ]]; then
   fi
 fi
 
-echo "cleanup: stopped pid ${PID} (port ${PORT})"
-echo "cleanup: removed ${INSTANCE_DIR}"
 echo "cleanup: evidence retained at ${EVIDENCE_DIR}"

@@ -4,7 +4,6 @@
  * KaiaScan API: Get Fungible Token, Get Holders Of Fungible Token, Get Transfers Of Fungible Token.
  */
 
-import { readContract } from "viem";
 import { createRpcClient } from "../clients/rpc.js";
 import { createKaiaScanClient } from "../clients/kaiascan.js";
 import { validateAddress, validateNetwork } from "../utils/validation.js";
@@ -307,7 +306,7 @@ export async function handleGetTokenAllowance(args: {
 
   let allowance: bigint;
   try {
-    allowance = await readContract(client, {
+    allowance = await client.readContract({
       address: tokenAddress,
       abi: ALLOWANCE_ABI,
       functionName: "allowance",

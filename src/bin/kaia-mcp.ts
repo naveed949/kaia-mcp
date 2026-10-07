@@ -18,6 +18,12 @@ const HELP = `Usage:
 Options:
   --transport <stdio|http>  Transport: stdio or http (default: stdio)
   --port <number>           HTTP port when --transport http (default: 3100)
+
+HTTP partner mode (default KAIA_AUTH_MODE=required) mounts a demo OIDC/OAuth
+provider on the same port (PKCE + device flow). MCP requests must send
+Authorization: Bearer <access_token>. Set KAIA_AUTH_MODE=off only for local
+unauthenticated HTTP. generate_wallet is disabled unless KAIA_ALLOW_UNSAFE_WALLET=1.
+See docs/AUTH.md.
 `;
 
 function parseArgv(argv: string[]): { transport: "stdio" | "http"; port: number } {

@@ -11,7 +11,24 @@ export const MCP_ERROR_CODES = {
   RpcProviderError: -32001,
   KaiaScanApiError: -32002,
   RateLimit: -32003,
+  Unauthorized: -32040,
+  TokenExpired: -32041,
+  InsufficientScope: -32042,
+  InvalidToken: -32043,
+  ToolDisabled: -32044,
 } as const;
+
+export class AuthError extends Error {
+  readonly code: number;
+  readonly error: string;
+
+  constructor(shape: { code: number; error: string; message: string }) {
+    super(shape.message);
+    this.name = "AuthError";
+    this.code = shape.code;
+    this.error = shape.error;
+  }
+}
 
 const NETWORK_CODES = new Set([
   "ECONNREFUSED",
@@ -63,6 +80,10 @@ export interface McpErrorShape {
 export function toMcpError(err: unknown): McpErrorShape {
   const message = err instanceof Error ? err.message : String(err ?? "Internal error");
   const safeMessage = message || "Internal error";
+
+  if (err instanceof AuthError) {
+    return { code: err.code, message: err.message, data: { error: err.error } };
+  }
 
   if (isRateLimitLike(err))
     return { code: MCP_ERROR_CODES.RateLimit, message: safeMessage, data: err };

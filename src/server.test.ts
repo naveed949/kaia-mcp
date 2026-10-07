@@ -71,6 +71,8 @@ describe("createKaiaMcpServer", () => {
       "LOG_LEVEL",
       "RATE_LIMIT_RPC",
       "RATE_LIMIT_KAIASCAN",
+      "KAIA_ALLOW_UNSAFE_WALLET",
+      "KAIA_AUTH_MODE",
     ];
     for (const k of keys) {
       envBackup[k] = process.env[k];
@@ -130,7 +132,7 @@ describe("createKaiaMcpServer", () => {
     }
   });
 
-  it("lists all account, transaction, block, token, NFT, contract, network, and wallet tools (26 total)", async () => {
+  it("lists partner-safe tools (25) and omits generate_wallet by default", async () => {
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     const server = createKaiaMcpServer();
     await server.connect(serverTransport);
@@ -140,12 +142,11 @@ describe("createKaiaMcpServer", () => {
 
     const result = await client.listTools();
     expect(result.tools).toBeDefined();
-    expect(result.tools.length).toBe(26);
+    expect(result.tools.length).toBe(25);
     const names = result.tools.map((t) => t.name).sort();
     expect(names).toEqual([
       "encode_function_data",
       "estimate_gas",
-      "generate_wallet",
       "get_account_info",
       "get_account_nfts",
       "get_account_tokens",
@@ -382,7 +383,7 @@ describe("createKaiaMcpServer", () => {
     expect(text).toContain("USD price");
   });
 
-  it("calling generate_wallet returns address and privateKey hex", async () => {
+  it("calling generate_wallet in default/partner mode fails closed without a private key", async () => {
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     const server = createKaiaMcpServer();
     await server.connect(serverTransport);
@@ -390,16 +391,12 @@ describe("createKaiaMcpServer", () => {
     const client = new Client({ name: "test", version: "1.0.0" });
     await client.connect(clientTransport);
 
-    const result = await client.callTool({
-      name: "generate_wallet",
-      arguments: {},
-    });
-    expect(result.content).toBeDefined();
-    const textBlock = result.content?.find((c) => c.type === "text");
-    expect(textBlock?.type).toBe("text");
-    const text = (textBlock as { text: string })?.text;
-    expect(text).toMatch(/Address: 0x[a-fA-F0-9]{40}/);
-    expect(text).toMatch(/Private key \(hex\): 0x[a-fA-F0-9]{64}/);
+    await expect(
+      client.callTool({
+        name: "generate_wallet",
+        arguments: {},
+      })
+    ).rejects.toThrow(/tool_disabled: generate_wallet is not available in partner mode/);
   });
 
   it("listResources returns 5 resources with expected URIs (Phase 8)", async () => {

@@ -6,6 +6,7 @@
 
 import { getConfig } from "../config.js";
 import type { LogLevel } from "../config.js";
+import { redactMeta, redactString } from "./redact.js";
 
 const LEVEL_ORDER: LogLevel[] = ["debug", "info", "warn", "error"];
 
@@ -19,14 +20,17 @@ function formatEntry(
   meta?: { error?: unknown; code?: number; [k: string]: unknown }
 ): string {
   const timestamp = new Date().toISOString();
-  const parts = [`timestamp=${timestamp}`, `level=${level}`, `msg=${message}`];
-  if (meta?.code !== undefined) parts.push(`code=${meta.code}`);
-  if (meta?.error !== undefined) {
+  const safeMeta = redactMeta(meta as Record<string, unknown> | undefined) as
+    | { error?: unknown; code?: number; [k: string]: unknown }
+    | undefined;
+  const parts = [`timestamp=${timestamp}`, `level=${level}`, `msg=${redactString(message)}`];
+  if (safeMeta?.code !== undefined) parts.push(`code=${safeMeta.code}`);
+  if (safeMeta?.error !== undefined) {
     const err =
-      meta.error instanceof Error ? meta.error.message : String(meta.error);
-    parts.push(`error=${err}`);
+      safeMeta.error instanceof Error ? safeMeta.error.message : String(safeMeta.error);
+    parts.push(`error=${redactString(err)}`);
   }
-  const rest = { ...meta };
+  const rest = { ...safeMeta };
   delete rest.error;
   delete rest.code;
   for (const [k, v] of Object.entries(rest)) {

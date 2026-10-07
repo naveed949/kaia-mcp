@@ -27,6 +27,10 @@ describe("createKaiaScanClient", () => {
       rateLimitKaiascan: 5,
       rpcTimeoutMs: 30000,
       kaiascanTimeoutMs: 15000,
+      authMode: "required",
+      allowUnsafeWallet: false,
+      oauthClientId: "kaia-mcp-demo",
+      accessTokenTtlSeconds: 900,
     });
     expect(typeof client.get).toBe("function");
   });
@@ -55,6 +59,10 @@ describe("createKaiaScanClient", () => {
       rateLimitKaiascan: 5,
       rpcTimeoutMs: 30000,
       kaiascanTimeoutMs: 15000,
+      authMode: "required",
+      allowUnsafeWallet: false,
+      oauthClientId: "kaia-mcp-demo",
+      accessTokenTtlSeconds: 900,
     });
     await expect(client.get("/api")).rejects.toThrow(KaiaScanRateLimitError);
     const err = new KaiaScanRateLimitError();

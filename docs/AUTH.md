@@ -38,7 +38,12 @@ The matching tool handler is never invoked on these paths.
 
 Access tokens are not stored (they are self-contained JWTs); refresh tokens are stored hashed. Logs emit a 12-character sha256 fingerprint and the `jti`, never the raw token. `Authorization`, `access_token`, `refresh_token`, `client_secret`, `code_verifier`, and `device_code` fields, `Bearer …` values, and bare compact JWTs are redacted if they reach the logger.
 
-Every `tools/call` that reaches kaia-mcp logs one `Tool call` info line, written after the authorization decision: `msg=Tool call tool=<name> outcome=allowed tokenFingerprint=<fp>`, or `msg=Tool call tool=<name> outcome=denied errorCode=<-3204x> reason=<error> [tokenFingerprint=<fp>]`. It never includes arguments or token material. Allowed and denied calls share the `msg=Tool call tool=<name> ` prefix, so a gateway in front of kaia-mcp can count those lines to prove a call it denied never arrived.
+Every `tools/call` that reaches kaia-mcp logs one `Tool call` info line, written after the authorization decision: `msg=Tool call tool=<name> outcome=allowed tokenFingerprint=<fp>`, or `msg=Tool call tool=<name> outcome=denied errorCode=<code> reason=<error> [tokenFingerprint=<fp>]`. It never includes arguments or token material. Allowed and denied calls share the `msg=Tool call tool=<name> ` prefix, so a gateway in front of kaia-mcp can count those lines to prove a call it denied never arrived.
+
+- `reason` is the auth error (`unauthorized`, `token_expired`, `insufficient_scope`, `invalid_token`, `tool_disabled`), `unknown_tool` (`errorCode=-32602`) for a name outside the tool-scope map, or `internal_error` (`errorCode=-32603`) when authorization itself failed unexpectedly. Every one of these fails closed.
+- `<name>` is caller input. Names made only of `[A-Za-z0-9_.-]` (every real tool) are logged unchanged; anything else is percent-encoded (UTF-8 bytes, capped at 128), so a crafted name cannot add fields or lines.
+- The logger escapes CR, LF and every other control character in all messages and values: one entry is always one line.
+- Tool, resource and prompt failures log `msg=Tool error code=<code> category=<auth|rpc_provider|kaiascan_api|rate_limit|invalid_params|internal|...> errorType=<Error name>`, never the error message, which often echoes caller input.
 
 ## Access tokens (JWT) and JWKS
 
@@ -71,17 +76,19 @@ No signing key is committed. Production deployments use their own authorization 
 
 ## Revocation and introspection
 
-`POST /oauth/revoke` (RFC 7009) with `token=<access_or_refresh>` always answers `200 {}`.
+`POST /oauth/revoke` (RFC 7009) with `token=<access_or_refresh>` answers `200 {}` (also for unknown or malformed tokens), or `503` when the revocation could not be persisted (below).
 
 - Access token: its `jti` is added to the revocation denylist until the token's `exp`.
-- Refresh token: the refresh token is revoked and so is the `jti` of the access token it was issued with.
-- Refresh rotation (`grant_type=refresh_token`) revokes the previous access `jti`.
+- Refresh token: the refresh token is revoked and so is the `jti` of the access token it was issued with, until that access token's own `exp`.
+- Refresh rotation (`grant_type=refresh_token`) revokes the previous access `jti` (until its `exp`), then consumes the refresh token.
 
 Revocations and restarts:
 
 - **In-memory signing key (default).** The denylist is in memory too. A restart generates a new key, so every token from the previous process fails signature verification (`invalid_token`), revoked or not.
-- **Persisted signing key (`KAIA_OAUTH_SIGNING_KEY_FILE`).** Tokens outlive the process, so the denylist is persisted as well, to `KAIA_OAUTH_REVOCATION_FILE` (default `revoked-jti.json` next to the key). The format is `{"version":1,"entries":[{"id":"<jti>","expMs":<epoch ms>}]}`. It never contains tokens. Writes go to a temp file that is fsynced and renamed, with mode `0600`. Entries are dropped once the token would have expired. The file is loaded before the port is bound. A missing file means an empty list (first start). An unreadable or corrupt file stops startup with an error; the server never falls back to an empty list.
-- If a revocation cannot be written, `POST /oauth/revoke` answers `503 {"error":"server_error"}`. The token is still rejected by this process, but the client should retry.
+- **Persisted signing key (`KAIA_OAUTH_SIGNING_KEY_FILE`).** Tokens outlive the process, so the denylist is persisted as well, to `KAIA_OAUTH_REVOCATION_FILE` (default `revoked-jti.json` next to the key). The format is `{"version":1,"entries":[{"id":"<jti>","expMs":<epoch ms>}]}`. It never contains tokens. Writes go to a temp file created exclusively (`O_EXCL`, so nothing planted at that path is followed) with mode `0600`, written in full, fsynced, renamed over the file, and then the directory is fsynced. Adding an entry that is already present (or already expired) does not rewrite the file. Entries are dropped once the token would have expired. The file is loaded before the port is bound. A missing file means an empty list (first start). An unreadable, corrupt or insecure file (not a regular file, writable by group or others, or not owned by the server's user) stops startup with an error; the server never falls back to an empty list.
+- **One file, one process.** Each server keeps its own view of the denylist and rewrites the whole file, so two processes pointed at the same file would drop each other's entries. Give every instance its own file; multi-instance deployments that must share revocations need a shared store.
+- If a revocation cannot be written, `POST /oauth/revoke` and a refresh rotation (`POST /oauth/token`, `grant_type=refresh_token`) answer `503 {"error":"server_error","error_description":"revocation could not be persisted"}`. The token is still rejected by this process, and the client should retry: a failed rotation does not consume the refresh token. The server log records the `jti` and the errno.
+- Other unexpected failures on any OAuth endpoint answer `500 {"error":"server_error","error_description":"internal error"}`. Internal details such as file paths are logged, never returned.
 - Refresh tokens are kept only in memory, so a restart invalidates every refresh token (`invalid_grant`) whatever the key setting.
 - The denylist sits behind a `RevocationStore` interface (memory and file adapters today), so a shared store for multi-instance deployments can be added later.
 

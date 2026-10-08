@@ -159,13 +159,80 @@ function consentPage(opts: {
 </body></html>`;
 }
 
-export function applyCors(res: ServerResponse): void {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader(
-    "Access-Control-Allow-Headers",
-    "Authorization, Content-Type, Mcp-Session-Id, Accept"
+/** Paths whose GET answers are public metadata, readable cross-origin without credentials. */
+const PUBLIC_DOC_PATHS = new Set([
+  "/health",
+  "/oauth/jwks",
+  "/.well-known/oauth-protected-resource",
+  "/.well-known/oauth-authorization-server",
+  "/.well-known/openid-configuration",
+  "/.well-known/kaia-mcp/tool-scopes",
+]);
+
+/** Request headers a browser MCP client may send (2026-07-28 request metadata included). */
+const CORS_ALLOW_HEADERS =
+  "Authorization, Content-Type, Accept, MCP-Protocol-Version, Mcp-Method, Mcp-Name";
+
+export function isPublicDocRequest(req: IncomingMessage): boolean {
+  if (req.method !== "GET" && req.method !== "HEAD" && req.method !== "OPTIONS") return false;
+  const path = new URL(req.url ?? "/", "http://localhost").pathname;
+  return PUBLIC_DOC_PATHS.has(path);
+}
+
+/**
+ * Origin gate for everything except public discovery documents (MCP 2026-07-28: an
+ * Origin that is present and invalid MUST get 403; DNS-rebinding protection). A request
+ * without Origin (non-browser client) passes. Returns false after writing the 403.
+ */
+export function checkOrigin(
+  req: IncomingMessage,
+  res: ServerResponse,
+  allowedOrigins: readonly string[]
+): boolean {
+  const origin = req.headers.origin;
+  if (origin === undefined || isPublicDocRequest(req)) return true;
+  // An Origin header is a bare serialized origin; anything else (a path, "null") is invalid.
+  let normalized: string | undefined;
+  try {
+    const u = new URL(origin);
+    if (u.origin.toLowerCase() === origin.toLowerCase()) normalized = u.origin;
+  } catch {
+    normalized = undefined;
+  }
+  if (normalized && normalized !== "null" && allowedOrigins.includes(normalized)) return true;
+  logger.warn("request refused: Origin not allowed", {
+    origin: origin.slice(0, 200).replace(/[^\x21-\x7e]/g, "?"),
+    method: req.method ?? "",
+  });
+  res.writeHead(403, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+  res.end(
+    JSON.stringify({
+      jsonrpc: "2.0",
+      error: { code: -32000, message: "Forbidden: Origin not allowed" },
+    })
   );
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+  return false;
+}
+
+/**
+ * CORS. Public discovery documents answer `*` (no credentials involved). Everything else
+ * echoes an allowed Origin (checkOrigin already refused any other) and never `*`. The
+ * session header is gone (2026-07-28); the request-metadata headers are allowed and
+ * WWW-Authenticate is exposed so browser clients can read Bearer challenges.
+ */
+export function applyCors(req: IncomingMessage, res: ServerResponse): void {
+  if (isPublicDocRequest(req)) {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+    return;
+  }
+  const origin = req.headers.origin;
+  if (origin === undefined) return;
+  res.setHeader("Access-Control-Allow-Origin", new URL(origin).origin);
+  res.setHeader("Vary", "Origin");
+  res.setHeader("Access-Control-Allow-Headers", CORS_ALLOW_HEADERS);
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.setHeader("Access-Control-Expose-Headers", "WWW-Authenticate");
 }
 
 /** Scope named in 401 challenges: the least-privilege scope for basic use (MCP scope selection). */

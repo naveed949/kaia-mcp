@@ -36,6 +36,7 @@ describe("createRpcClient", () => {
       oauthClientId: "kaia-mcp-demo",
       accessTokenTtlSeconds: 900,
       oauthRequireResource: false,
+      allowedOrigins: [],
       introspectionClientId: "kaia-mcp-gateway",
     });
     expect(typeof client.getBlockNumber).toBe("function");

@@ -67,6 +67,44 @@ const publicUrlSchema = z
     return u.origin;
   });
 
+/** KAIA_ALLOWED_ORIGINS: comma-separated browser origins allowed on the MCP/OAuth surface. */
+const allowedOriginsSchema = z
+  .string()
+  .optional()
+  .transform((v, ctx) => {
+    const out: string[] = [];
+    for (const raw of (v ?? "")
+      .split(",")
+      .map((x) => x.trim())
+      .filter(Boolean)) {
+      let u: URL | undefined;
+      try {
+        u = new URL(raw);
+      } catch {
+        u = undefined;
+      }
+      if (
+        !u ||
+        (u.protocol !== "http:" && u.protocol !== "https:") ||
+        u.pathname !== "/" ||
+        u.search ||
+        u.hash ||
+        u.username ||
+        raw.includes("?") ||
+        raw.includes("#") ||
+        /^[a-z]+:\/\/[^/]+\/./i.test(raw)
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `"${raw}" is not an http(s) origin (scheme://host[:port]); "*" is not supported`,
+        });
+        return z.NEVER;
+      }
+      if (!out.includes(u.origin)) out.push(u.origin);
+    }
+    return out;
+  });
+
 const envSchema = z.object({
   KAIA_RPC_URL: urlOrDefault(DEFAULT_KAIA_RPC_URL),
   KAIA_KAIROS_RPC_URL: urlOrDefault(DEFAULT_KAIA_KAIROS_RPC_URL),
@@ -85,6 +123,7 @@ const envSchema = z.object({
   KAIA_OAUTH_LEGACY_AUDIENCE: z.string().min(1).optional(),
   KAIA_OAUTH_AUDIENCE: z.string().min(1).optional(),
   KAIA_OAUTH_REQUIRE_RESOURCE: boolish,
+  KAIA_ALLOWED_ORIGINS: allowedOriginsSchema,
   KAIA_OAUTH_SIGNING_KEY_FILE: z.string().optional(),
   KAIA_OAUTH_REVOCATION_FILE: z.string().optional(),
   KAIA_INTROSPECTION_CLIENT_ID: z.string().min(1).optional().default("kaia-mcp-gateway"),
@@ -124,6 +163,11 @@ export type Config = {
   oauthLegacyAudience?: string;
   /** KAIA_OAUTH_REQUIRE_RESOURCE: reject authorize/device/token requests without `resource`. */
   oauthRequireResource: boolean;
+  /**
+   * Extra browser origins allowed to call the MCP and OAuth endpoints (KAIA_ALLOWED_ORIGINS).
+   * The server's own public origin is always allowed; requests without Origin always pass.
+   */
+  allowedOrigins: string[];
   /** Optional gitignored PEM path for a dev signing key that survives restarts. Unset: in-memory key. */
   oauthSigningKeyFile?: string;
   /**
@@ -156,6 +200,7 @@ function parseEnv(): Config {
     KAIA_OAUTH_LEGACY_AUDIENCE: process.env.KAIA_OAUTH_LEGACY_AUDIENCE || undefined,
     KAIA_OAUTH_AUDIENCE: process.env.KAIA_OAUTH_AUDIENCE || undefined,
     KAIA_OAUTH_REQUIRE_RESOURCE: process.env.KAIA_OAUTH_REQUIRE_RESOURCE,
+    KAIA_ALLOWED_ORIGINS: process.env.KAIA_ALLOWED_ORIGINS,
     KAIA_OAUTH_SIGNING_KEY_FILE: process.env.KAIA_OAUTH_SIGNING_KEY_FILE || undefined,
     KAIA_OAUTH_REVOCATION_FILE: process.env.KAIA_OAUTH_REVOCATION_FILE || undefined,
     KAIA_INTROSPECTION_CLIENT_ID: process.env.KAIA_INTROSPECTION_CLIENT_ID || undefined,
@@ -189,6 +234,7 @@ function parseEnv(): Config {
     publicUrl: d.KAIA_PUBLIC_URL,
     oauthLegacyAudience: d.KAIA_OAUTH_LEGACY_AUDIENCE ?? d.KAIA_OAUTH_AUDIENCE,
     oauthRequireResource: d.KAIA_OAUTH_REQUIRE_RESOURCE,
+    allowedOrigins: d.KAIA_ALLOWED_ORIGINS,
     oauthSigningKeyFile: d.KAIA_OAUTH_SIGNING_KEY_FILE,
     oauthRevocationFile:
       d.KAIA_OAUTH_REVOCATION_FILE ??

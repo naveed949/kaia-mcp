@@ -32,6 +32,7 @@ describe("createKaiaScanClient", () => {
       oauthClientId: "kaia-mcp-demo",
       accessTokenTtlSeconds: 900,
       oauthRequireResource: false,
+      allowedOrigins: [],
       introspectionClientId: "kaia-mcp-gateway",
     });
     expect(typeof client.get).toBe("function");
@@ -66,6 +67,7 @@ describe("createKaiaScanClient", () => {
       oauthClientId: "kaia-mcp-demo",
       accessTokenTtlSeconds: 900,
       oauthRequireResource: false,
+      allowedOrigins: [],
       introspectionClientId: "kaia-mcp-gateway",
     });
     await expect(client.get("/api")).rejects.toThrow(KaiaScanRateLimitError);

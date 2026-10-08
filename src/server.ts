@@ -28,6 +28,7 @@ import {
 import {
   applyCors,
   authenticateRequest,
+  checkOrigin,
   readBody,
   tryHandleAuxRequest,
   writeAuthFailure,
@@ -319,6 +320,8 @@ export async function runKaiaMcpServerHttp(port: number): Promise<KaiaHttpServer
     : new MemoryRevocationStore();
 
   const runtime: { provider?: DemoOAuthProvider } = {};
+  /** The public origin is appended once the port is bound (it may default to it). */
+  const allowedOrigins: string[] = [...config.allowedOrigins];
 
   /** One JSON-RPC POST: a fresh server+transport, torn down when the response ends. */
   async function serveMcpPost(
@@ -385,7 +388,9 @@ export async function runKaiaMcpServerHttp(port: number): Promise<KaiaHttpServer
   }
 
   const httpServer = createServer(async (req, res) => {
-    applyCors(res);
+    // Origin first: a foreign browser origin is refused before auth or any handler runs.
+    if (!checkOrigin(req, res, allowedOrigins)) return;
+    applyCors(req, res);
     if (req.method === "OPTIONS") {
       res.writeHead(204);
       res.end();
@@ -464,6 +469,7 @@ export async function runKaiaMcpServerHttp(port: number): Promise<KaiaHttpServer
 
   const localUrl = `http://127.0.0.1:${actualPort}`;
   const issuer = config.publicUrl ?? localUrl;
+  if (!allowedOrigins.includes(issuer)) allowedOrigins.push(issuer);
   runtime.provider = createDemoOAuthProvider({
     issuer,
     clientId: config.oauthClientId,

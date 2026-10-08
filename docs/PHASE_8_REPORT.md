@@ -10,7 +10,7 @@ Phase 8 adds MCP **resources**: read-only URIs that clients can list and read. T
 | **kaia://kairos/status**          | Kairos testnet status  | Same as mainnet but for Kairos testnet (block height, gas price, KAIA price).                                |
 | **kaia://mainnet/tokens/popular** | Popular mainnet tokens | List of popular token addresses on mainnet with name, symbol, and contract address (e.g. WKAIA, USDT, USDC). |
 | **kaia://mainnet/top-accounts**   | Top KAIA accounts      | Top 100 KAIA holders from KaiaScan (Get Top Accounts).                                                       |
-| **kaia://docs/rpc-methods**       | RPC methods reference  | Static markdown reference of Kaia RPC methods (kaia*\*, klay*_, eth\__).                                     |
+| **kaia://docs/rpc-methods**       | RPC methods reference  | Static markdown reference of Kaia RPC methods (kaia\_\*, klay\_\*, eth\_\*).                                 |
 
 ## What Each Resource Returns
 

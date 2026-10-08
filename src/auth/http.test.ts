@@ -185,4 +185,43 @@ describe("demo OAuth HTTP", () => {
     const after = await introspect(basic("kaia-mcp-gateway", "test-only-introspection-secret"));
     expect(await after.json()).toEqual({ active: false });
   });
+
+  it("introspects a refresh token over HTTP with token_type_hint, inactive after revoke", async () => {
+    process.env.KAIA_INTROSPECTION_CLIENT_SECRET = "test-only-introspection-secret";
+    resetConfigCache();
+    handle = await runKaiaMcpServerHttp(0);
+    const base = handle.issuer;
+    const { refresh_token } = handle.oauth.issueAccessToken({ scopes: [SCOPES.ENCODE] });
+    const authz = `Basic ${Buffer.from("kaia-mcp-gateway:test-only-introspection-secret").toString("base64")}`;
+    const introspect = async () =>
+      (await (
+        await fetch(`${base}/oauth/introspect`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/x-www-form-urlencoded",
+            Authorization: authz,
+          },
+          body: new URLSearchParams({ token: refresh_token, token_type_hint: "refresh_token" }),
+        })
+      ).json()) as Record<string, unknown>;
+
+    const active = await introspect();
+    expect(active).toMatchObject({
+      active: true,
+      token_type: "refresh_token",
+      scope: SCOPES.ENCODE,
+      client_id: DEMO_CLIENT_ID,
+      sub: "demo-user",
+      iss: base,
+    });
+    expect(typeof active.exp).toBe("number");
+    expect(JSON.stringify(active)).not.toContain(refresh_token);
+
+    await fetch(`${base}/oauth/revoke`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ token: refresh_token, token_type_hint: "refresh_token" }),
+    });
+    expect(await introspect()).toEqual({ active: false });
+  });
 });

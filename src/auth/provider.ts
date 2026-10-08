@@ -2,6 +2,7 @@ import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypt
 import { logger } from "../utils/logger.js";
 import { verifyPkce } from "./pkce.js";
 import { checkAccessTokenClaims, SigningKey } from "./jwt.js";
+import { MemoryRevocationStore, type RevocationStore } from "./revocation-store.js";
 import {
   ALL_SCOPES,
   AUTH_CODE_TTL_SECONDS,
@@ -57,6 +58,11 @@ export type DemoOAuthProviderOptions = {
   audience?: string;
   /** RS256 signing key. Default: a fresh in-memory key per process. */
   signingKey?: SigningKey;
+  /**
+   * Denylist of revoked access-token `jti`s. Default: in memory. Use a persistent store
+   * whenever the signing key outlives the process, or revoked tokens revive on restart.
+   */
+  revocationStore?: RevocationStore;
   /** Resource-server credentials for RFC 7662 introspection. Introspection is disabled when unset. */
   introspectionClient?: { clientId: string; clientSecret: string };
 };
@@ -75,10 +81,24 @@ export type IntrospectionResponse =
       iat: number;
       nbf: number;
       jti: string;
+    }
+  | {
+      active: true;
+      token_type: "refresh_token";
+      scope: string;
+      client_id: string;
+      sub: string;
+      iss: string;
+      exp: number;
     };
 
 type RefreshRecord = {
   accessJti: string;
+  /**
+   * `exp` (epoch ms) of the access token minted alongside this refresh token. Rotating or
+   * revoking the refresh token denies `accessJti` until then, not just for the default TTL.
+   */
+  accessExpMs: number;
   clientId: string;
   subject: string;
   scopes: string[];
@@ -121,9 +141,10 @@ type DevicePending = {
  * In-process demo OIDC/OAuth 2.1 provider (PKCE + device flow + revoke + introspection).
  *
  * Access tokens are RS256 JWTs (RFC 9068 shape: iss, aud, sub, client_id, scope,
- * iat, nbf, exp, jti) verifiable offline against `jwks()`. Revocation is by `jti`
- * and is visible to gateways through `introspect()`. Refresh tokens stay opaque
- * and are stored hashed. No token is ever logged; logs carry a sha256 fingerprint.
+ * iat, nbf, exp, jti) verifiable offline against `jwks()`. Revocation is by `jti`, kept
+ * in a `RevocationStore`, and gateways see it through `introspect()`. Refresh tokens
+ * stay opaque and are stored hashed. No token is ever logged; logs carry a sha256
+ * fingerprint.
  */
 export class DemoOAuthProvider {
   readonly issuer: string;
@@ -135,8 +156,8 @@ export class DemoOAuthProvider {
   readonly signingKey: SigningKey;
   private readonly introspectionClient?: { clientId: string; clientSecret: string };
 
-  /** jti -> access token expiry (ms). Entries are pruned once the token would have expired anyway. */
-  private readonly revokedJti = new Map<string, number>();
+  /** Revoked access-token jtis, each kept until the token would have expired anyway. */
+  private readonly revocations: RevocationStore;
   private readonly refresh = new Map<string, RefreshRecord>();
   private readonly authzRequests = new Map<string, AuthzRequest>();
   private readonly authzCodes = new Map<string, AuthzCode>();
@@ -152,6 +173,7 @@ export class DemoOAuthProvider {
       options.refreshTokenTtlSeconds ?? DEFAULT_REFRESH_TOKEN_TTL_SECONDS;
     this.audience = options.audience ?? DEFAULT_AUDIENCE;
     this.signingKey = options.signingKey ?? SigningKey.generate();
+    this.revocations = options.revocationStore ?? new MemoryRevocationStore();
     if (options.introspectionClient?.clientSecret) {
       this.introspectionClient = options.introspectionClient;
     }
@@ -165,6 +187,12 @@ export class DemoOAuthProvider {
     return Boolean(this.introspectionClient);
   }
 
+  /**
+   * RFC 8414 authorization-server metadata, also served at /.well-known/openid-configuration
+   * because gateways (s1-tool-gate) discover through that path. No ID token is ever issued,
+   * so nothing OIDC-specific is advertised: no id_token signing algs, no subject types, and
+   * no response type beyond "code".
+   */
   discovery(): Record<string, unknown> {
     return {
       issuer: this.issuer,
@@ -182,8 +210,6 @@ export class DemoOAuthProvider {
       code_challenge_methods_supported: ["S256"],
       token_endpoint_auth_methods_supported: ["none"],
       scopes_supported: [...ALL_SCOPES],
-      subject_types_supported: ["public"],
-      id_token_signing_alg_values_supported: ["none"],
       access_token_signing_alg_values_supported: ["RS256"],
       ...(this.introspectionEnabled
         ? {
@@ -452,8 +478,11 @@ export class DemoOAuthProvider {
     if (record.clientId !== params.clientId) {
       throw Object.assign(new Error("invalid_grant"), { oauthError: "invalid_grant" });
     }
+    // Persist the old access jti first: if that throws (RevocationStoreError), the refresh
+    // token is not consumed and the client can retry the same rotation. The store still
+    // denies the jti in this process, so the failure never widens access.
+    this.revokeJti(record.accessJti, record.accessExpMs);
     record.revoked = true;
-    this.revokeJti(record.accessJti, Date.now() + this.accessTokenTtlSeconds * 1000);
     return this.mintTokens({
       subject: record.subject,
       clientId: record.clientId,
@@ -462,7 +491,8 @@ export class DemoOAuthProvider {
   }
 
   /**
-   * Issue tokens for tests and the demo IdP. The JWT is returned once and not stored; refresh tokens are kept hashed.
+   * Mint tokens directly (tests and the demo IdP). The JWT is returned once and never
+   * stored; the refresh token is kept only as a hash.
    */
   issueAccessToken(params: IssueAccessTokenParams): IssuedTokens {
     return this.mintTokens({
@@ -488,14 +518,16 @@ export class DemoOAuthProvider {
     }
     const refresh = this.refresh.get(sha256Hex(token));
     if (refresh) {
+      // Revoking only ever narrows access, so the refresh token is dead in-process even if
+      // persisting its access jti throws; a retried revoke re-attempts the write.
       refresh.revoked = true;
-      this.revokeJti(refresh.accessJti, Date.now() + this.accessTokenTtlSeconds * 1000);
+      this.revokeJti(refresh.accessJti, refresh.accessExpMs);
       logger.info("oauth refresh token revoked", { tokenFingerprint: fingerprint(token) });
     }
   }
 
   isRevoked(jti: string): boolean {
-    return this.revokedJti.has(jti);
+    return this.revocations.has(jti);
   }
 
   verifyAccessToken(token: string | undefined): VerifyResult {
@@ -536,12 +568,37 @@ export class DemoOAuthProvider {
   }
 
   /**
-   * RFC 7662 introspection for access tokens. Anything that is not a currently valid,
-   * unrevoked access token for this issuer and audience is `{ active: false }`.
-   * Refresh tokens are not introspectable here and report inactive.
+   * RFC 7662 introspection for access and refresh tokens. `token_type_hint` only picks
+   * which store is searched first; per RFC 7662 §2.1 the other is searched too.
+   * Anything that is not a currently valid, unrevoked token is `{ active: false }`.
+   * Access tokens answer `token_type: "Bearer"`, refresh tokens `"refresh_token"`, so a
+   * resource server can refuse a refresh token presented as a bearer credential.
    */
-  introspect(token: string | undefined): IntrospectionResponse {
+  introspect(token: string | undefined, tokenTypeHint?: string): IntrospectionResponse {
     if (!token) return { active: false };
+    if (tokenTypeHint === "refresh_token") {
+      return this.introspectRefresh(token) ?? this.introspectAccess(token);
+    }
+    const access = this.introspectAccess(token);
+    return access.active ? access : (this.introspectRefresh(token) ?? access);
+  }
+
+  /** Active refresh-token metadata, or undefined when `token` is not a live refresh token. */
+  private introspectRefresh(token: string): IntrospectionResponse | undefined {
+    const record = this.refresh.get(sha256Hex(token));
+    if (!record || record.revoked || record.expiresAtMs <= Date.now()) return undefined;
+    return {
+      active: true,
+      token_type: "refresh_token",
+      scope: record.scopes.join(" "),
+      client_id: record.clientId,
+      sub: record.subject,
+      iss: this.issuer,
+      exp: Math.floor(record.expiresAtMs / 1000),
+    };
+  }
+
+  private introspectAccess(token: string): IntrospectionResponse {
     const payload = this.signingKey.verifySignature(token);
     if (!payload) return { active: false };
     const checked = checkAccessTokenClaims(payload, {
@@ -582,12 +639,9 @@ export class DemoOAuthProvider {
     return id === client.clientId && timingSafeEqual(a, b);
   }
 
+  /** Throws if the store cannot make the entry durable; the jti is denied in-process regardless. */
   private revokeJti(jti: string, expMs: number): void {
-    const now = Date.now();
-    for (const [k, v] of this.revokedJti) {
-      if (v <= now) this.revokedJti.delete(k);
-    }
-    if (expMs > now) this.revokedJti.set(jti, expMs);
+    this.revocations.add(jti, expMs);
   }
 
   private mintTokens(params: {
@@ -600,6 +654,7 @@ export class DemoOAuthProvider {
     const ttl = params.expiresInSeconds ?? this.accessTokenTtlSeconds;
     const nowSeconds = Math.floor(Date.now() / 1000);
     const expiresAtMs = params.expiresAtMs ?? (nowSeconds + ttl) * 1000;
+    const expSeconds = Math.floor(expiresAtMs / 1000);
     const jti = randomUUID();
     const accessToken = this.signingKey.sign({
       iss: this.issuer,
@@ -609,12 +664,13 @@ export class DemoOAuthProvider {
       scope: params.scopes.join(" "),
       iat: nowSeconds,
       nbf: nowSeconds,
-      exp: Math.floor(expiresAtMs / 1000),
+      exp: expSeconds,
       jti,
     });
     const refreshToken = randomToken();
     this.refresh.set(sha256Hex(refreshToken), {
       accessJti: jti,
+      accessExpMs: expSeconds * 1000,
       clientId: params.clientId,
       subject: params.subject,
       scopes: params.scopes,

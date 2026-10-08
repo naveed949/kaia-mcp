@@ -7,17 +7,24 @@ import {
   ReadResourceRequestSchema,
   ListPromptsRequestSchema,
   GetPromptRequestSchema,
+  ErrorCode,
   McpError,
 } from "@modelcontextprotocol/sdk/types.js";
 import type { IncomingMessage } from "node:http";
 import { getConfig } from "./config.js";
-import { toMcpError } from "./utils/errors.js";
+import { AuthError, MCP_ERROR_CODES, toMcpError } from "./utils/errors.js";
 import { logger } from "./utils/logger.js";
 import { listTools, callTool } from "./tools/index.js";
+import { authorizeToolCall, requiredScopeForTool, type ToolAuthOptions } from "./auth/scopes.js";
 import { listResources, readResource } from "./resources/index.js";
 import { listPrompts, getPrompt } from "./prompts/index.js";
 import { createDemoOAuthProvider, type DemoOAuthProvider } from "./auth/provider.js";
 import { SigningKey } from "./auth/jwt.js";
+import {
+  FileRevocationStore,
+  MemoryRevocationStore,
+  type RevocationStore,
+} from "./auth/revocation-store.js";
 import {
   applyCors,
   authenticateRequest,
@@ -34,6 +41,47 @@ export type CreateKaiaMcpServerOptions = {
   getAuthContext?: () => AuthContext | null;
 };
 
+/**
+ * A caller-supplied name, safe for one key=value log field: names made only of
+ * [A-Za-z0-9_.-] (every real tool) pass through unchanged; anything else is
+ * percent-encoded byte by byte (UTF-8), so spaces, '=', CR/LF and control characters
+ * can never appear raw, and it is capped at 128 bytes.
+ */
+export function logSafeName(value: unknown): string {
+  const s = typeof value === "string" ? value : String(value);
+  if (/^[A-Za-z0-9_.-]{1,128}$/.test(s)) return s;
+  const bytes = Buffer.from(s, "utf8");
+  let out = "";
+  for (const b of bytes.subarray(0, 128)) {
+    const c = String.fromCharCode(b);
+    out += /[A-Za-z0-9_.-]/.test(c) ? c : `%${b.toString(16).toUpperCase().padStart(2, "0")}`;
+  }
+  return bytes.length > 128 ? `${out}%E2%80%A6` : out;
+}
+
+/** Coarse class of a JSON-RPC error code, for logs that must not carry the raw message. */
+export function errorCategory(code: number): string {
+  if (code <= MCP_ERROR_CODES.Unauthorized && code >= MCP_ERROR_CODES.ToolDisabled) return "auth";
+  switch (code) {
+    case MCP_ERROR_CODES.RpcProviderError:
+      return "rpc_provider";
+    case MCP_ERROR_CODES.KaiaScanApiError:
+      return "kaiascan_api";
+    case MCP_ERROR_CODES.RateLimit:
+      return "rate_limit";
+    case MCP_ERROR_CODES.InvalidParams:
+      return "invalid_params";
+    case MCP_ERROR_CODES.MethodNotFound:
+      return "method_not_found";
+    case MCP_ERROR_CODES.InvalidRequest:
+      return "invalid_request";
+    case MCP_ERROR_CODES.InternalError:
+      return "internal";
+    default:
+      return "other";
+  }
+}
+
 function wrapToolHandler<T, R>(
   handler: (req: T) => R | Promise<R>
 ): (req: T, extra: unknown) => Promise<R> {
@@ -41,9 +89,17 @@ function wrapToolHandler<T, R>(
     try {
       return await Promise.resolve(handler(req));
     } catch (err) {
-      const mcp = toMcpError(err);
-      logger.error("Tool error", { error: err, code: mcp.code });
-      throw new McpError(mcp.code, mcp.message, mcp.data);
+      const mcp = err instanceof McpError ? { code: err.code, data: err.data } : toMcpError(err);
+      // Code and category only: tool, resource and prompt error messages routinely echo
+      // caller input (e.g. 'Function "X" not found on ABI', an unknown uri or name).
+      logger.error("Tool error", {
+        code: mcp.code,
+        category: errorCategory(mcp.code),
+        errorType: logSafeName(err instanceof Error ? err.name : typeof err),
+      });
+      if (err instanceof McpError) throw err;
+      const shape = toMcpError(err);
+      throw new McpError(shape.code, shape.message, shape.data);
     }
   };
 }
@@ -82,12 +138,45 @@ export function createKaiaMcpServer(options: CreateKaiaMcpServerOptions = {}): S
     CallToolRequestSchema,
     wrapToolHandler(async (request) => {
       const { name, arguments: args } = request.params;
-      // One line per call that reaches kaia-mcp. Never logs arguments or the token itself.
+      // One audit line per call, written after the authorization decision and carrying its
+      // outcome. Never logs arguments or token material (only the sha256 fingerprint). The
+      // tool name is caller input, so it is logged through logSafeName.
+      const tool = logSafeName(name);
+      let opts: ToolAuthOptions | undefined;
+      try {
+        opts = authOpts();
+        authorizeToolCall(name, opts);
+        // Fail closed: a name outside the scope map is never "allowed", with or without auth.
+        if (requiredScopeForTool(name) === undefined) {
+          throw new McpError(ErrorCode.InvalidParams, `Unknown tool: ${name}`);
+        }
+      } catch (err) {
+        const denial =
+          err instanceof AuthError
+            ? { errorCode: err.code, reason: err.error }
+            : err instanceof McpError && err.code === ErrorCode.InvalidParams
+              ? { errorCode: err.code, reason: "unknown_tool" }
+              : { errorCode: MCP_ERROR_CODES.InternalError, reason: "internal_error" };
+        logger.info("Tool call", {
+          tool,
+          outcome: "denied",
+          // Not `code`: the logger hoists `code` ahead of `tool`, and gateways (s1-tool-gate's
+          // live e2e) match the stable prefix "msg=Tool call tool=<name> " for every call.
+          ...denial,
+          tokenFingerprint: opts?.auth?.tokenFingerprint,
+        });
+        if (denial.reason === "internal_error") {
+          // Do not hand internal exception text to the caller.
+          throw new McpError(ErrorCode.InternalError, "Internal error: authorization failed");
+        }
+        throw err;
+      }
       logger.info("Tool call", {
-        tool: name,
-        tokenFingerprint: options.getAuthContext?.()?.tokenFingerprint,
+        tool,
+        outcome: "allowed",
+        tokenFingerprint: opts.auth?.tokenFingerprint,
       });
-      return callTool(name, (args ?? {}) as Record<string, unknown>, authOpts());
+      return callTool(name, (args ?? {}) as Record<string, unknown>, opts);
     })
   );
 
@@ -197,6 +286,15 @@ export async function runKaiaMcpServerHttp(port: number): Promise<KaiaHttpServer
   const config = getConfig();
   const authMode = config.authMode;
   logger.info("Starting Kaia MCP server (HTTP)", { port, authMode });
+
+  // Load key material and the revocation denylist before binding the port, so an
+  // unreadable or corrupt store refuses startup instead of serving with an empty list.
+  const signingKey = config.oauthSigningKeyFile
+    ? SigningKey.fromFileOrCreate(config.oauthSigningKeyFile)
+    : SigningKey.generate();
+  const revocationStore: RevocationStore = config.oauthRevocationFile
+    ? FileRevocationStore.open(config.oauthRevocationFile)
+    : new MemoryRevocationStore();
 
   type SessionEntry = {
     transport: InstanceType<typeof StreamableHTTPServerTransport>;
@@ -342,9 +440,8 @@ export async function runKaiaMcpServerHttp(port: number): Promise<KaiaHttpServer
     clientId: config.oauthClientId,
     accessTokenTtlSeconds: config.accessTokenTtlSeconds,
     audience: config.oauthAudience,
-    signingKey: config.oauthSigningKeyFile
-      ? SigningKey.fromFileOrCreate(config.oauthSigningKeyFile)
-      : SigningKey.generate(),
+    signingKey,
+    revocationStore,
     introspectionClient: config.introspectionClientSecret
       ? { clientId: config.introspectionClientId, clientSecret: config.introspectionClientSecret }
       : undefined,
@@ -357,6 +454,7 @@ export async function runKaiaMcpServerHttp(port: number): Promise<KaiaHttpServer
     audience: runtime.provider.audience,
     kid: runtime.provider.signingKey.kid,
     introspection: runtime.provider.introspectionEnabled,
+    revocationStore: config.oauthRevocationFile ? "file" : "memory",
   });
 
   return {

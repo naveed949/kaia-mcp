@@ -30,34 +30,16 @@ INTROSPECTION_SECRET_FILE="${EVIDENCE_DIR}/introspection.secret.json"
 INTROSPECTION_SECRET="$(node -e 'process.stdout.write(require("crypto").randomBytes(24).toString("base64url"))')"
 ( umask 077; printf '{"client_id":"%s","client_secret":"%s"}\n' "${INTROSPECTION_CLIENT_ID}" "${INTROSPECTION_SECRET}" > "${INTROSPECTION_SECRET_FILE}" )
 
-KAIA_AUTH_MODE=required \
-KAIA_ALLOW_UNSAFE_WALLET= \
-KAIA_ACCESS_TOKEN_TTL_SECONDS="${TOKEN_TTL}" \
-KAIA_OAUTH_SIGNING_KEY_FILE= \
-KAIA_INTROSPECTION_CLIENT_ID="${INTROSPECTION_CLIENT_ID}" \
-KAIA_INTROSPECTION_CLIENT_SECRET="${INTROSPECTION_SECRET}" \
-LOG_LEVEL=debug \
-node dist/bin/kaia-mcp.js --transport http --port "${PORT}" \
-  >"${LOG_FILE}" 2>&1 &
-PID=$!
+# Signing-key mode: memory (default, a fresh key per process) or file (key + revocation
+# denylist under ${INSTANCE_DIR}/state/, so they survive restart.sh). revocation-restart
+# switches modes itself through restart.sh and restores the launch mode afterwards.
+KEY_MODE="${KAIA_VERIFY_KEY_MODE:-memory}"
+write_server_env "${KEY_MODE}" "${TOKEN_TTL}" "${INTROSPECTION_CLIENT_ID}" "${INTROSPECTION_SECRET}"
+: >"${LOG_FILE}"
+PID="$(start_kaia "${PORT}")"
 
-READY=0
-for _ in $(seq 1 50); do
-  if curl -sf "http://127.0.0.1:${PORT}/health" >/dev/null 2>&1; then
-    READY=1
-    break
-  fi
-  if ! kill -0 "${PID}" 2>/dev/null; then
-    echo "Server exited before becoming ready. Log: ${LOG_FILE}" >&2
-    cat "${LOG_FILE}" >&2 || true
-    exit 1
-  fi
-  sleep 0.1
-done
-
-if [[ "${READY}" != "1" ]]; then
-  echo "Timed out waiting for /health on port ${PORT}. Log: ${LOG_FILE}" >&2
-  kill "${PID}" 2>/dev/null || true
+if ! wait_ready "${PORT}" "${PID}"; then
+  stop_pid "${PID}"
   exit 1
 fi
 
@@ -71,7 +53,9 @@ cat > "${INSTANCE_FILE}" <<EOF
   "logFile": "${LOG_FILE}",
   "evidenceDir": "${EVIDENCE_DIR}",
   "tokenTtlSeconds": ${TOKEN_TTL},
-  "introspectionSecretFile": "${INTROSPECTION_SECRET_FILE}"
+  "introspectionSecretFile": "${INTROSPECTION_SECRET_FILE}",
+  "launchKeyMode": "${KEY_MODE}",
+  "keyMode": "${KEY_MODE}"
 }
 EOF
 
@@ -82,4 +66,5 @@ echo "issuer=http://127.0.0.1:${PORT}"
 echo "instance=${INSTANCE_FILE}"
 echo "evidence=${EVIDENCE_DIR}"
 echo "tokenTtlSeconds=${TOKEN_TTL}"
+echo "keyMode=${KEY_MODE}"
 echo "ready: GET http://127.0.0.1:${PORT}/health returned status ok"

@@ -2,7 +2,7 @@ import { generateKeyPairSync, sign as cryptoSign } from "node:crypto";
 import { mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, it, expect } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
 import { SigningKey } from "./jwt.js";
 import { createDemoOAuthProvider } from "./provider.js";
 import { generatePkcePair } from "./pkce.js";
@@ -183,7 +183,6 @@ describe("DemoOAuthProvider", () => {
       iss: issuer,
       jti: decode(live.access_token).jti,
     });
-    expect(provider.introspect(live.refresh_token)).toEqual({ active: false });
     expect(provider.introspect(undefined)).toEqual({ active: false });
     expect(
       provider.introspect(
@@ -208,6 +207,79 @@ describe("DemoOAuthProvider", () => {
     ).toBe(false);
   });
 
+  it("introspects refresh tokens per RFC 7662: active until rotated, revoked or expired", () => {
+    const provider = createDemoOAuthProvider({
+      issuer,
+      refreshTokenTtlSeconds: 3600,
+      introspectionClient: { clientId: "gw", clientSecret: "s3cret" },
+    });
+    const first = provider.issueAccessToken({ subject: "alice", scopes: [SCOPES.READ] });
+    const before = Math.floor(Date.now() / 1000);
+    for (const hint of [undefined, "refresh_token", "access_token", "bogus"]) {
+      const res = provider.introspect(first.refresh_token, hint);
+      expect(res).toEqual({
+        active: true,
+        token_type: "refresh_token",
+        scope: SCOPES.READ,
+        client_id: DEMO_CLIENT_ID,
+        sub: "alice",
+        iss: issuer,
+        exp: expect.any(Number),
+      });
+      if (res.active) {
+        expect(res.exp).toBeGreaterThanOrEqual(before + 3600 - 1);
+        expect(res.exp).toBeLessThanOrEqual(before + 3600 + 1);
+      }
+    }
+    // An access token is still an access token whatever the hint says.
+    expect(provider.introspect(first.access_token, "refresh_token")).toMatchObject({
+      active: true,
+      token_type: "Bearer",
+    });
+    expect(JSON.stringify(provider.introspect(first.refresh_token))).not.toContain(
+      first.refresh_token
+    );
+
+    // Rotation retires the old refresh token; the new one is active.
+    const second = provider.exchangeRefreshToken({
+      clientId: DEMO_CLIENT_ID,
+      refreshToken: first.refresh_token,
+    });
+    expect(provider.introspect(first.refresh_token, "refresh_token")).toEqual({ active: false });
+    expect(provider.introspect(second.refresh_token, "refresh_token")).toMatchObject({
+      active: true,
+      token_type: "refresh_token",
+    });
+
+    // Revocation.
+    provider.revoke(second.refresh_token);
+    expect(provider.introspect(second.refresh_token, "refresh_token")).toEqual({ active: false });
+
+    // Unknown and expired.
+    expect(provider.introspect("f".repeat(64), "refresh_token")).toEqual({ active: false });
+    const shortLived = createDemoOAuthProvider({ issuer, refreshTokenTtlSeconds: 1 });
+    const t = shortLived.issueAccessToken({ scopes: [SCOPES.READ] });
+    const realNow = Date.now;
+    try {
+      Date.now = () => realNow() + 2000;
+      expect(shortLived.introspect(t.refresh_token, "refresh_token")).toEqual({ active: false });
+    } finally {
+      Date.now = realNow;
+    }
+  });
+
+  it("discovery advertises no id_token support because no id tokens are issued", () => {
+    const disc = createDemoOAuthProvider({ issuer }).discovery();
+    expect(disc).not.toHaveProperty("id_token_signing_alg_values_supported");
+    expect(disc.response_types_supported).toEqual(["code"]);
+    expect(disc.scopes_supported).not.toContain("openid");
+    expect(JSON.stringify(disc)).not.toMatch(/id_token/);
+    // OIDC-only metadata is not advertised either (no ID tokens, so no subject types).
+    expect(disc).not.toHaveProperty("subject_types_supported");
+    // Contract consumed by s1-tool-gate's claims-gate proxy.
+    expect(disc).toMatchObject({ issuer, jwks_uri: `${issuer}/oauth/jwks` });
+  });
+
   it("publishes a public-only JWKS whose kid is the RFC 7638 thumbprint, and persists a dev key with 0600", () => {
     const provider = createDemoOAuthProvider({ issuer });
     const [key] = provider.jwks().keys;
@@ -230,5 +302,55 @@ describe("DemoOAuthProvider", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("revocation via a refresh token denies the access token until its real exp", () => {
+  const issuer = "http://127.0.0.1:3999";
+  // Default access TTL is 900 s; this token lives an hour.
+  const LONG = 3600;
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function setup() {
+    vi.useFakeTimers({ now: new Date("2026-10-08T12:00:00Z"), toFake: ["Date"] });
+    const provider = createDemoOAuthProvider({ issuer });
+    const t = provider.issueAccessToken({ scopes: [SCOPES.READ], expiresInSeconds: LONG });
+    return { provider, t };
+  }
+
+  function pastDefaultTtl(provider: ReturnType<typeof createDemoOAuthProvider>): void {
+    vi.setSystemTime(Date.now() + (provider.accessTokenTtlSeconds + 60) * 1000);
+  }
+
+  it("revoke(refresh_token)", () => {
+    const { provider, t } = setup();
+    provider.revoke(t.refresh_token);
+    pastDefaultTtl(provider);
+    expect(provider.verifyAccessToken(t.access_token)).toEqual({
+      ok: false,
+      status: 401,
+      ...AUTH_ERRORS.INVALID_TOKEN,
+    });
+    expect(provider.introspect(t.access_token)).toEqual({ active: false });
+  });
+
+  it("refresh rotation", () => {
+    const { provider, t } = setup();
+    provider.exchangeRefreshToken({ clientId: DEMO_CLIENT_ID, refreshToken: t.refresh_token });
+    pastDefaultTtl(provider);
+    expect(provider.verifyAccessToken(t.access_token)).toEqual({
+      ok: false,
+      status: 401,
+      ...AUTH_ERRORS.INVALID_TOKEN,
+    });
+  });
+
+  it("control: the same token unrevoked is still valid at that time", () => {
+    const { provider, t } = setup();
+    pastDefaultTtl(provider);
+    expect(provider.verifyAccessToken(t.access_token).ok).toBe(true);
   });
 });

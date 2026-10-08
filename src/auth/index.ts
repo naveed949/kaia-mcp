@@ -20,6 +20,12 @@ export {
 } from "./provider.js";
 export { SigningKey } from "./jwt.js";
 export {
+  FileRevocationStore,
+  MemoryRevocationStore,
+  RevocationStoreError,
+  type RevocationStore,
+} from "./revocation-store.js";
+export {
   tryHandleAuxRequest,
   authenticateRequest,
   writeAuthFailure,

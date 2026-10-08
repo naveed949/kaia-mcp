@@ -38,7 +38,12 @@ The matching tool handler is never invoked on these paths.
 
 Access tokens are not stored (they are self-contained JWTs); refresh tokens are stored hashed. Logs emit a 12-character sha256 fingerprint and the `jti`, never the raw token. `Authorization`, `access_token`, `refresh_token`, `client_secret`, `code_verifier`, and `device_code` fields, `Bearer …` values, and bare compact JWTs are redacted if they reach the logger.
 
-Every `tools/call` that reaches kaia-mcp logs one `Tool call` info line with the tool name and token fingerprint (no arguments). A gateway in front of kaia-mcp can use this to prove a denied call never arrived.
+Every `tools/call` that reaches kaia-mcp logs one `Tool call` info line, written after the authorization decision: `msg=Tool call tool=<name> outcome=allowed tokenFingerprint=<fp>`, or `msg=Tool call tool=<name> outcome=denied errorCode=<code> reason=<error> [tokenFingerprint=<fp>]`. It never includes arguments or token material. Allowed and denied calls share the `msg=Tool call tool=<name> ` prefix, so a gateway in front of kaia-mcp can count those lines to prove a call it denied never arrived.
+
+- `reason` is the auth error (`unauthorized`, `token_expired`, `insufficient_scope`, `invalid_token`, `tool_disabled`), `unknown_tool` (`errorCode=-32602`) for a name outside the tool-scope map, or `internal_error` (`errorCode=-32603`) when authorization itself failed unexpectedly. Every one of these fails closed.
+- `<name>` is caller input. Names made only of `[A-Za-z0-9_.-]` (every real tool) are logged unchanged; anything else is percent-encoded (UTF-8 bytes, capped at 128), so a crafted name cannot add fields or lines.
+- The logger escapes CR, LF and every other control character in all messages and values: one entry is always one line.
+- Tool, resource and prompt failures log `msg=Tool error code=<code> category=<auth|rpc_provider|kaiascan_api|rate_limit|invalid_params|internal|...> errorType=<Error name>`, never the error message, which often echoes caller input.
 
 ## Access tokens (JWT) and JWKS
 
@@ -61,20 +66,31 @@ kaia-mcp verifies every request itself: `alg` must be exactly `RS256`, `kid` mus
 
 ### Signing key
 
-| Setting                              | Behavior                                                                                                                                             |
-| ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| default                              | A fresh RSA-2048 key is generated at startup and kept in memory. Restarting the server invalidates every outstanding token.                          |
-| `KAIA_OAUTH_SIGNING_KEY_FILE=<path>` | Dev persistence. The PKCS#8 PEM is loaded from `<path>`, or created there with mode `0600`. Use a gitignored path; `.kaia-dev/` is ignored for this. |
+| Setting                              | Behavior                                                                                                                                                 |
+| ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| default                              | A fresh RSA-2048 key is generated at startup and kept in memory. Restarting the server invalidates every outstanding token.                              |
+| `KAIA_OAUTH_SIGNING_KEY_FILE=<path>` | Dev persistence. The PKCS#8 PEM is loaded from `<path>`, or created there with mode `0600`. Use a gitignored path; `.kaia-dev/` is ignored for this.     |
+| `KAIA_OAUTH_REVOCATION_FILE=<path>`  | Where the revocation denylist is persisted. Defaults to `revoked-jti.json` in the signing key's directory whenever `KAIA_OAUTH_SIGNING_KEY_FILE` is set. |
 
 No signing key is committed. Production deployments use their own authorization server and never this provider.
 
 ## Revocation and introspection
 
-`POST /oauth/revoke` (RFC 7009) with `token=<access_or_refresh>` always answers `200 {}`.
+`POST /oauth/revoke` (RFC 7009) with `token=<access_or_refresh>` answers `200 {}` (also for unknown or malformed tokens), or `503` when the revocation could not be persisted (below).
 
-- Access token: its `jti` is added to an in-memory revocation set until the token's `exp`.
-- Refresh token: the refresh token is revoked and so is the `jti` of the access token it was issued with.
-- Refresh rotation (`grant_type=refresh_token`) revokes the previous access `jti`.
+- Access token: its `jti` is added to the revocation denylist until the token's `exp`.
+- Refresh token: the refresh token is revoked and so is the `jti` of the access token it was issued with, until that access token's own `exp`.
+- Refresh rotation (`grant_type=refresh_token`) revokes the previous access `jti` (until its `exp`), then consumes the refresh token.
+
+Revocations and restarts:
+
+- **In-memory signing key (default).** The denylist is in memory too. A restart generates a new key, so every token from the previous process fails signature verification (`invalid_token`), revoked or not.
+- **Persisted signing key (`KAIA_OAUTH_SIGNING_KEY_FILE`).** Tokens outlive the process, so the denylist is persisted as well, to `KAIA_OAUTH_REVOCATION_FILE` (default `revoked-jti.json` next to the key). The format is `{"version":1,"entries":[{"id":"<jti>","expMs":<epoch ms>}]}`. It never contains tokens. Writes go to a temp file created exclusively (`O_EXCL`, so nothing planted at that path is followed) with mode `0600`, written in full, fsynced, renamed over the file, and then the directory is fsynced. Adding an entry that is already present (or already expired) does not rewrite the file. Entries are dropped once the token would have expired. The file is loaded before the port is bound. A missing file means an empty list (first start). An unreadable, corrupt or insecure file (not a regular file, writable by group or others, or not owned by the server's user) stops startup with an error; the server never falls back to an empty list.
+- **One file, one process.** Each server keeps its own view of the denylist and rewrites the whole file, so two processes pointed at the same file would drop each other's entries. Give every instance its own file; multi-instance deployments that must share revocations need a shared store.
+- If a revocation cannot be written, `POST /oauth/revoke` and a refresh rotation (`POST /oauth/token`, `grant_type=refresh_token`) answer `503 {"error":"server_error","error_description":"revocation could not be persisted"}`. The token is still rejected by this process, and the client should retry: a failed rotation does not consume the refresh token. The server log records the `jti` and the errno.
+- Other unexpected failures on any OAuth endpoint answer `500 {"error":"server_error","error_description":"internal error"}`. Internal details such as file paths are logged, never returned.
+- Refresh tokens are kept only in memory, so a restart invalidates every refresh token (`invalid_grant`) whatever the key setting.
+- The denylist sits behind a `RevocationStore` interface (memory and file adapters today), so a shared store for multi-instance deployments can be added later.
 
 A revoked JWT still has a valid signature until `exp`. Anything that verifies tokens offline from the JWKS cannot see revocation on its own. For that, kaia-mcp offers **RFC 7662 introspection**:
 
@@ -83,13 +99,16 @@ POST /oauth/introspect
 Authorization: Basic base64(<KAIA_INTROSPECTION_CLIENT_ID>:<KAIA_INTROSPECTION_CLIENT_SECRET>)
 Content-Type: application/x-www-form-urlencoded
 
-token=<access_token>
+token=<access_or_refresh_token>&token_type_hint=<access_token|refresh_token>
 ```
 
 - **Client-authenticated** (`client_secret_basic`), not local-only. It is offered only when `KAIA_INTROSPECTION_CLIENT_SECRET` is set; otherwise the route returns `404` and discovery omits `introspection_endpoint`. The client id defaults to `kaia-mcp-gateway`. The secret is compared in constant time.
 - Missing or wrong credentials: `401 {"error":"invalid_client",…}` with `WWW-Authenticate: Basic`.
 - A valid, unexpired, unrevoked access token for this issuer and audience: `{"active":true,"token_type":"Bearer","scope","client_id","sub","aud","iss","exp","iat","nbf","jti"}`.
-- Anything else, including refresh tokens, expired, forged, and revoked tokens: `{"active":false}`.
+- A valid, unexpired, unrevoked (and not yet rotated) refresh token: `{"active":true,"token_type":"refresh_token","scope","client_id","sub","iss","exp"}`.
+- `token_type_hint` is optional and only picks which kind is looked up first; the other is still searched (RFC 7662 §2.1).
+- Anything else, including expired, forged, revoked, rotated, and unknown tokens: `{"active":false}`.
+- A resource server that relies on introspection alone must also require `token_type` to be `Bearer`, so a refresh token is never accepted as an access credential. kaia-mcp itself never accepts a refresh token as a bearer token.
 
 The response never echoes the token.
 
@@ -102,6 +121,9 @@ The response never echoes the token.
 `plain` PKCE is rejected.
 
 1. Discover: `GET /.well-known/openid-configuration` and `GET /.well-known/oauth-protected-resource`.
+
+   The authorization-server metadata is served at both `/.well-known/oauth-authorization-server` (RFC 8414) and `/.well-known/openid-configuration`. This demo IdP issues no ID tokens, so the document has no `id_token_signing_alg_values_supported`, `response_types_supported` is `["code"]`, and `openid` is not a supported scope.
+
 2. Create a PKCE pair (`code_verifier` 43–128 chars; `code_challenge = BASE64URL(SHA256(verifier))`).
 3. Open the browser at:
 

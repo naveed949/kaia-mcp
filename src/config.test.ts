@@ -23,6 +23,7 @@ describe("getConfig", () => {
       "KAIA_ACCESS_TOKEN_TTL_SECONDS",
       "KAIA_OAUTH_AUDIENCE",
       "KAIA_OAUTH_SIGNING_KEY_FILE",
+      "KAIA_OAUTH_REVOCATION_FILE",
       "KAIA_INTROSPECTION_CLIENT_ID",
       "KAIA_INTROSPECTION_CLIENT_SECRET",
     ];
@@ -55,6 +56,7 @@ describe("getConfig", () => {
     delete process.env.KAIA_ACCESS_TOKEN_TTL_SECONDS;
     delete process.env.KAIA_OAUTH_AUDIENCE;
     delete process.env.KAIA_OAUTH_SIGNING_KEY_FILE;
+    delete process.env.KAIA_OAUTH_REVOCATION_FILE;
     delete process.env.KAIA_INTROSPECTION_CLIENT_ID;
     delete process.env.KAIA_INTROSPECTION_CLIENT_SECRET;
 
@@ -73,6 +75,8 @@ describe("getConfig", () => {
     expect(config.accessTokenTtlSeconds).toBe(900);
     expect(config.oauthAudience).toBe("kaia-mcp");
     expect(config.oauthSigningKeyFile).toBeUndefined();
+    // In-memory key: revocations stay in memory too.
+    expect(config.oauthRevocationFile).toBeUndefined();
     expect(config.introspectionClientId).toBe("kaia-mcp-gateway");
     // Introspection is off unless a secret is configured.
     expect(config.introspectionClientSecret).toBeUndefined();
@@ -89,6 +93,15 @@ describe("getConfig", () => {
     expect(config.defaultNetwork).toBe("kairos");
     expect(config.logLevel).toBe("warn");
     expect(config.rateLimitRpc).toBe(20);
+  });
+
+  it("persists revocations next to a persisted signing key unless overridden", () => {
+    delete process.env.KAIA_OAUTH_REVOCATION_FILE;
+    process.env.KAIA_OAUTH_SIGNING_KEY_FILE = "/var/lib/kaia/signing-key.pem";
+    expect(getConfig().oauthRevocationFile).toBe("/var/lib/kaia/revoked-jti.json");
+    resetConfigCache();
+    process.env.KAIA_OAUTH_REVOCATION_FILE = "/srv/state/denylist.json";
+    expect(getConfig().oauthRevocationFile).toBe("/srv/state/denylist.json");
   });
 
   it("throws on invalid KAIA_RPC_URL", () => {

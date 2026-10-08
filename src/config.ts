@@ -4,6 +4,7 @@
  */
 
 import "dotenv/config";
+import { dirname, join } from "node:path";
 import { z } from "zod";
 
 const DEFAULT_KAIA_RPC_URL = "https://public-en.node.kaia.io";
@@ -44,6 +45,7 @@ const envSchema = z.object({
   KAIA_ACCESS_TOKEN_TTL_SECONDS: z.coerce.number().int().positive().optional().default(900),
   KAIA_OAUTH_AUDIENCE: z.string().min(1).optional().default("kaia-mcp"),
   KAIA_OAUTH_SIGNING_KEY_FILE: z.string().optional(),
+  KAIA_OAUTH_REVOCATION_FILE: z.string().optional(),
   KAIA_INTROSPECTION_CLIENT_ID: z.string().min(1).optional().default("kaia-mcp-gateway"),
   KAIA_INTROSPECTION_CLIENT_SECRET: z.string().optional(),
 });
@@ -71,6 +73,12 @@ export type Config = {
   oauthAudience: string;
   /** Optional gitignored PEM path for a dev signing key that survives restarts. Unset: in-memory key. */
   oauthSigningKeyFile?: string;
+  /**
+   * Where revoked access-token jtis are persisted. Default: `revoked-jti.json` next to
+   * `oauthSigningKeyFile` when that is set (a persisted key needs a persisted denylist),
+   * otherwise unset and revocations stay in memory.
+   */
+  oauthRevocationFile?: string;
   introspectionClientId: string;
   /** Unset or empty: /oauth/introspect is not offered. */
   introspectionClientSecret?: string;
@@ -93,6 +101,7 @@ function parseEnv(): Config {
     KAIA_ACCESS_TOKEN_TTL_SECONDS: process.env.KAIA_ACCESS_TOKEN_TTL_SECONDS,
     KAIA_OAUTH_AUDIENCE: process.env.KAIA_OAUTH_AUDIENCE || undefined,
     KAIA_OAUTH_SIGNING_KEY_FILE: process.env.KAIA_OAUTH_SIGNING_KEY_FILE || undefined,
+    KAIA_OAUTH_REVOCATION_FILE: process.env.KAIA_OAUTH_REVOCATION_FILE || undefined,
     KAIA_INTROSPECTION_CLIENT_ID: process.env.KAIA_INTROSPECTION_CLIENT_ID || undefined,
     KAIA_INTROSPECTION_CLIENT_SECRET: process.env.KAIA_INTROSPECTION_CLIENT_SECRET || undefined,
   };
@@ -123,6 +132,11 @@ function parseEnv(): Config {
     accessTokenTtlSeconds: d.KAIA_ACCESS_TOKEN_TTL_SECONDS,
     oauthAudience: d.KAIA_OAUTH_AUDIENCE,
     oauthSigningKeyFile: d.KAIA_OAUTH_SIGNING_KEY_FILE,
+    oauthRevocationFile:
+      d.KAIA_OAUTH_REVOCATION_FILE ??
+      (d.KAIA_OAUTH_SIGNING_KEY_FILE
+        ? join(dirname(d.KAIA_OAUTH_SIGNING_KEY_FILE), "revoked-jti.json")
+        : undefined),
     introspectionClientId: d.KAIA_INTROSPECTION_CLIENT_ID,
     introspectionClientSecret: d.KAIA_INTROSPECTION_CLIENT_SECRET,
   };

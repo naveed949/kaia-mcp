@@ -208,15 +208,22 @@ function wrapToolHandler<T, R>(
     try {
       return await Promise.resolve(handler(req));
     } catch (err) {
-      const mcp = toMcpError(err);
-      logger.error("Tool error", { error: err, code: mcp.code });
-      throw new McpError(mcp.code, mcp.message, mcp.data);
+      const mcp = err instanceof McpError ? { code: err.code, data: err.data } : toMcpError(err);
+      // Code and category only: error messages often echo caller input.
+      logger.error("Tool error", {
+        code: mcp.code,
+        category: errorCategory(mcp.code),
+        errorType: logSafeName(err instanceof Error ? err.name : typeof err),
+      });
+      if (err instanceof McpError) throw err;
+      const shape = toMcpError(err);
+      throw new McpError(shape.code, shape.message, shape.data);
     }
   };
 }
 ```
 
-So: every tools/list, tools/call, resources/list, resources/read, prompts/list, prompts/get handler is wrapped. Any thrown value becomes a structured MCP error and is logged before rethrow. The client always receives a valid JSON-RPC error response.
+So: every tools/list, tools/call, resources/list, resources/read, prompts/list, prompts/get handler is wrapped. Any thrown value becomes a structured MCP error and is logged (code and category, never the raw message) before rethrow. The client always receives a valid JSON-RPC error response. Unknown tool names are rejected in the `tools/call` handler before `callTool` runs (`-32602`, logged `outcome=denied reason=unknown_tool`); the `default` branch below is a second line of defense.
 
 ---
 

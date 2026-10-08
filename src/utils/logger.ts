@@ -14,6 +14,23 @@ function levelAllowed(configured: LogLevel, messageLevel: LogLevel): boolean {
   return LEVEL_ORDER.indexOf(messageLevel) >= LEVEL_ORDER.indexOf(configured);
 }
 
+// eslint-disable-next-line no-control-regex -- matching control characters is the point: they are escaped
+const UNSAFE_CHARS = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g;
+
+/**
+ * One entry is one line: CR, LF and every other control character are escaped wherever
+ * they appear (message, error text, values), so no caller-influenced string can start a
+ * forged line.
+ */
+function oneLine(value: string): string {
+  return value.replace(UNSAFE_CHARS, (c) => {
+    if (c === "\n") return "\\n";
+    if (c === "\r") return "\\r";
+    if (c === "\t") return "\\t";
+    return `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`;
+  });
+}
+
 function formatEntry(
   level: LogLevel,
   message: string,
@@ -23,17 +40,23 @@ function formatEntry(
   const safeMeta = redactMeta(meta as Record<string, unknown> | undefined) as
     | { error?: unknown; code?: number; [k: string]: unknown }
     | undefined;
-  const parts = [`timestamp=${timestamp}`, `level=${level}`, `msg=${redactString(message)}`];
-  if (safeMeta?.code !== undefined) parts.push(`code=${safeMeta.code}`);
+  const parts = [
+    `timestamp=${timestamp}`,
+    `level=${level}`,
+    `msg=${oneLine(redactString(message))}`,
+  ];
+  if (safeMeta?.code !== undefined) parts.push(`code=${oneLine(String(safeMeta.code))}`);
   if (safeMeta?.error !== undefined) {
     const err = safeMeta.error instanceof Error ? safeMeta.error.message : String(safeMeta.error);
-    parts.push(`error=${redactString(err)}`);
+    parts.push(`error=${oneLine(redactString(err))}`);
   }
   const rest = { ...safeMeta };
   delete rest.error;
   delete rest.code;
   for (const [k, v] of Object.entries(rest)) {
-    if (v !== undefined && k !== "error" && k !== "code") parts.push(`${k}=${String(v)}`);
+    if (v !== undefined && k !== "error" && k !== "code") {
+      parts.push(`${oneLine(k)}=${oneLine(String(v))}`);
+    }
   }
   return parts.join(" ");
 }
@@ -46,7 +69,7 @@ function write(level: LogLevel, message: string, meta?: Record<string, unknown>)
     process.stderr.write(line + "\n");
   } catch {
     // Avoid throwing from logger; fallback to minimal stderr write
-    process.stderr.write(`level=${level} msg=${message}\n`);
+    process.stderr.write(`level=${level} msg=${oneLine(redactString(message))}\n`);
   }
 }
 

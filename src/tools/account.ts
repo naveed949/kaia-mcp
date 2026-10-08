@@ -136,7 +136,7 @@ interface NftInventoriesResponse {
 // --- Handlers ---
 
 export async function handleGetKaiaBalance(args: {
-  address: unknown;
+  address?: unknown;
   network?: unknown;
 }): Promise<{ content: Array<{ type: "text"; text: string }> }> {
   const address = validateAddress(args.address) as Address;
@@ -155,7 +155,7 @@ export async function handleGetKaiaBalance(args: {
 }
 
 export async function handleGetAccountInfo(args: {
-  address: unknown;
+  address?: unknown;
   network?: unknown;
 }): Promise<{ content: Array<{ type: "text"; text: string }> }> {
   const address = validateAddress(args.address) as Address;
@@ -191,7 +191,7 @@ export async function handleGetAccountInfo(args: {
 }
 
 export async function handleGetAccountTokens(args: {
-  address: unknown;
+  address?: unknown;
   network?: unknown;
   page?: unknown;
   size?: unknown;
@@ -237,7 +237,7 @@ export async function handleGetAccountTokens(args: {
 }
 
 export async function handleGetAccountNfts(args: {
-  address: unknown;
+  address?: unknown;
   network?: unknown;
   page?: unknown;
   size?: unknown;

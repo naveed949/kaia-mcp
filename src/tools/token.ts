@@ -134,7 +134,7 @@ interface TokenTransfersResponse {
  * Get Fungible Token: GET /api/v1/tokens/:tokenAddress
  */
 export async function handleGetTokenInfo(args: {
-  contractAddress: unknown;
+  contractAddress?: unknown;
   network?: unknown;
 }): Promise<{ content: Array<{ type: "text"; text: string }> }> {
   const contractAddress = validateAddress(args.contractAddress);
@@ -176,7 +176,7 @@ export async function handleGetTokenInfo(args: {
  * Query: page, size (min 1, max 2000).
  */
 export async function handleGetTokenHolders(args: {
-  contractAddress: unknown;
+  contractAddress?: unknown;
   network?: unknown;
   page?: unknown;
   size?: unknown;
@@ -226,7 +226,7 @@ export async function handleGetTokenHolders(args: {
  * Query: page, size.
  */
 export async function handleGetTokenTransfers(args: {
-  contractAddress: unknown;
+  contractAddress?: unknown;
   network?: unknown;
   page?: unknown;
   size?: unknown;
@@ -290,9 +290,9 @@ const ALLOWANCE_ABI = [
  * Get ERC-20/KIP-7 allowance(owner, spender) via RPC. DeFi primitive for approval checks.
  */
 export async function handleGetTokenAllowance(args: {
-  tokenAddress: unknown;
-  owner: unknown;
-  spender: unknown;
+  tokenAddress?: unknown;
+  owner?: unknown;
+  spender?: unknown;
   network?: unknown;
   decimals?: unknown;
 }): Promise<{ content: Array<{ type: "text"; text: string }> }> {

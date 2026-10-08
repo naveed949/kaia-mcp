@@ -127,8 +127,8 @@ export async function handleGenerateWallet(args: {
 }
 
 export async function handleEncodeFunctionData(args: {
-  abi: unknown;
-  functionName: unknown;
+  abi?: unknown;
+  functionName?: unknown;
   args?: unknown;
 }): Promise<{ content: Array<{ type: "text"; text: string }> }> {
   const abi = parseAbiFromInput(args.abi);

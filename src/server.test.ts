@@ -1,10 +1,23 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { CallToolResultSchema, type CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { createKaiaMcpServer } from "./server.js";
 import { resetConfigCache } from "./config.js";
 import { createRpcClient } from "./clients/rpc.js";
 import { createKaiaScanClient } from "./clients/kaiascan.js";
+
+/**
+ * Client.callTool() is typed as a union with the legacy `toolResult` shape, so
+ * `content` is not statically known. Parse with the SDK's own schema to get a
+ * typed CallToolResult (and assert the wire shape at runtime).
+ */
+async function callToolResult(
+  c: Client,
+  params: Parameters<Client["callTool"]>[0]
+): Promise<CallToolResult> {
+  return CallToolResultSchema.parse(await c.callTool(params));
+}
 
 vi.mock("./clients/rpc.js", () => ({
   createRpcClient: vi.fn(() => ({
@@ -185,7 +198,7 @@ describe("createKaiaMcpServer", () => {
     const client = new Client({ name: "test", version: "1.0.0" });
     await client.connect(clientTransport);
 
-    const result = await client.callTool({
+    const result = await callToolResult(client, {
       name: "get_kaia_balance",
       arguments: { address: "0x1234567890123456789012345678901234567890", network: "mainnet" },
     });
@@ -225,7 +238,7 @@ describe("createKaiaMcpServer", () => {
     const client = new Client({ name: "test", version: "1.0.0" });
     await client.connect(clientTransport);
 
-    const result = await client.callTool({
+    const result = await callToolResult(client, {
       name: "get_block_number",
       arguments: { network: "mainnet" },
     });
@@ -246,7 +259,7 @@ describe("createKaiaMcpServer", () => {
     const client = new Client({ name: "test", version: "1.0.0" });
     await client.connect(clientTransport);
 
-    const result = await client.callTool({
+    const result = await callToolResult(client, {
       name: "get_transaction_receipt",
       arguments: { txHash: "0x" + "a".repeat(64), network: "mainnet" },
     });
@@ -277,7 +290,7 @@ describe("createKaiaMcpServer", () => {
     const client = new Client({ name: "test", version: "1.0.0" });
     await client.connect(clientTransport);
 
-    const result = await client.callTool({
+    const result = await callToolResult(client, {
       name: "get_token_info",
       arguments: {
         contractAddress: "0x1234567890123456789012345678901234567890",
@@ -312,7 +325,7 @@ describe("createKaiaMcpServer", () => {
     const client = new Client({ name: "test", version: "1.0.0" });
     await client.connect(clientTransport);
 
-    const result = await client.callTool({
+    const result = await callToolResult(client, {
       name: "get_nft_info",
       arguments: {
         contractAddress: "0x1234567890123456789012345678901234567890",
@@ -337,7 +350,7 @@ describe("createKaiaMcpServer", () => {
     const client = new Client({ name: "test", version: "1.0.0" });
     await client.connect(clientTransport);
 
-    const result = await client.callTool({
+    const result = await callToolResult(client, {
       name: "get_gas_price",
       arguments: { network: "mainnet" },
     });
@@ -371,7 +384,7 @@ describe("createKaiaMcpServer", () => {
     const client = new Client({ name: "test", version: "1.0.0" });
     await client.connect(clientTransport);
 
-    const result = await client.callTool({
+    const result = await callToolResult(client, {
       name: "get_kaia_price",
       arguments: { network: "mainnet" },
     });
@@ -496,7 +509,7 @@ describe("createKaiaMcpServer", () => {
       },
     ]);
 
-    const result = await client.callTool({
+    const result = await callToolResult(client, {
       name: "encode_function_data",
       arguments: {
         abi,

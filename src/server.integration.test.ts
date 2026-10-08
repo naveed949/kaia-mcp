@@ -10,9 +10,22 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { CallToolResultSchema, type CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { createRpcClient } from "./clients/rpc.js";
 import { createKaiaScanClient } from "./clients/kaiascan.js";
 import { resetConfigCache } from "./config.js";
+
+/**
+ * Client.callTool() is typed as a union with the legacy `toolResult` shape, so
+ * `content` is not statically known. Parse with the SDK's own schema to get a
+ * typed CallToolResult (and assert the wire shape at runtime).
+ */
+async function callToolResult(
+  c: Client,
+  params: Parameters<Client["callTool"]>[0]
+): Promise<CallToolResult> {
+  return CallToolResultSchema.parse(await c.callTool(params));
+}
 
 const runIntegration = process.env.RUN_INTEGRATION === "1";
 const runLiveTests = process.env.LIVE_TESTS === "1";
@@ -58,7 +71,7 @@ describeIntegration("MCP lifecycle integration", () => {
   });
 
   it("tools/call get_block_number returns block number shape", async () => {
-    const result = await client!.callTool({
+    const result = await callToolResult(client!, {
       name: "get_block_number",
       arguments: { network: "mainnet" },
     });

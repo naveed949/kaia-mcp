@@ -69,6 +69,8 @@ describe("createKaiaScanClient", () => {
       introspectionClientId: "kaia-mcp-gateway",
     });
     await expect(client.get("/api")).rejects.toThrow(KaiaScanRateLimitError);
+    // One initial request plus exactly one retry before giving up.
+    expect(callCount).toBe(2);
     const err = new KaiaScanRateLimitError();
     expect(toMcpError(err).code).toBe(MCP_ERROR_CODES.RateLimit);
   });

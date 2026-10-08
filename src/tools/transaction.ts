@@ -116,7 +116,11 @@ export async function handleGetTransaction(args: {
 
   const value = tx.value ?? 0n;
   const gasPrice = tx.gasPrice ?? 0n;
-  const input = tx.input ? (tx.input.length > INPUT_TRUNCATE_LEN ? `${tx.input.slice(0, INPUT_TRUNCATE_LEN)}...` : tx.input) : "0x";
+  const input = tx.input
+    ? tx.input.length > INPUT_TRUNCATE_LEN
+      ? `${tx.input.slice(0, INPUT_TRUNCATE_LEN)}...`
+      : tx.input
+    : "0x";
 
   const lines = [
     `Transaction: ${tx.hash}`,
@@ -151,7 +155,12 @@ export async function handleGetTransactionReceipt(args: {
     };
   }
 
-  const status = receipt.status === "success" ? "Success" : receipt.status === "reverted" ? "Reverted" : String(receipt.status);
+  const status =
+    receipt.status === "success"
+      ? "Success"
+      : receipt.status === "reverted"
+        ? "Reverted"
+        : String(receipt.status);
   const logsCount = receipt.logs?.length ?? 0;
 
   const lines = [
@@ -236,7 +245,10 @@ export async function handleEstimateGas(args: {
   network?: unknown;
 }): Promise<{ content: Array<{ type: "text"; text: string }> }> {
   const from = validateAddress(args.from) as Address;
-  const to = args.to != null && String(args.to).trim() !== "" ? (validateAddress(args.to) as Address) : undefined;
+  const to =
+    args.to != null && String(args.to).trim() !== ""
+      ? (validateAddress(args.to) as Address)
+      : undefined;
   const value = parseValue(args.value);
   let data: `0x${string}` | undefined;
   if (args.data != null && String(args.data).trim() !== "") {

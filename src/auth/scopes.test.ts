@@ -40,8 +40,8 @@ describe("authorizeToolCall", () => {
   });
 
   it("fails closed when auth is missing", () => {
-    expect(() => authorizeToolCall("get_chain_info", { requireAuth: true, auth: null })).toThrowError(
-      AUTH_ERRORS.UNAUTHORIZED.message
-    );
+    expect(() =>
+      authorizeToolCall("get_chain_info", { requireAuth: true, auth: null })
+    ).toThrowError(AUTH_ERRORS.UNAUTHORIZED.message);
   });
 });

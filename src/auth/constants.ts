@@ -52,7 +52,10 @@ export const AUTH_ERRORS = {
   },
 } as const;
 
-export function insufficientScopeError(toolName: string, scope: string): {
+export function insufficientScopeError(
+  toolName: string,
+  scope: string
+): {
   code: number;
   error: "insufficient_scope";
   message: string;

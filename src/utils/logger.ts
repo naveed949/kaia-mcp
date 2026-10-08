@@ -26,16 +26,14 @@ function formatEntry(
   const parts = [`timestamp=${timestamp}`, `level=${level}`, `msg=${redactString(message)}`];
   if (safeMeta?.code !== undefined) parts.push(`code=${safeMeta.code}`);
   if (safeMeta?.error !== undefined) {
-    const err =
-      safeMeta.error instanceof Error ? safeMeta.error.message : String(safeMeta.error);
+    const err = safeMeta.error instanceof Error ? safeMeta.error.message : String(safeMeta.error);
     parts.push(`error=${redactString(err)}`);
   }
   const rest = { ...safeMeta };
   delete rest.error;
   delete rest.code;
   for (const [k, v] of Object.entries(rest)) {
-    if (v !== undefined && k !== "error" && k !== "code")
-      parts.push(`${k}=${String(v)}`);
+    if (v !== undefined && k !== "error" && k !== "code") parts.push(`${k}=${String(v)}`);
   }
   return parts.join(" ");
 }

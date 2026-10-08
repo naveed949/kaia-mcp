@@ -35,7 +35,7 @@ describe("listPrompts", () => {
 });
 
 describe("getPrompt", () => {
-  it('analyze-wallet with address and network returns one user message with text containing address and network', async () => {
+  it("analyze-wallet with address and network returns one user message with text containing address and network", async () => {
     const result = await getPrompt("analyze-wallet", {
       address: "0x123...",
       network: "kairos",
@@ -48,7 +48,7 @@ describe("getPrompt", () => {
     expect(text).toContain("kairos");
   });
 
-  it('nft-lookup with contractAddress and tokenId returns text containing both', async () => {
+  it("nft-lookup with contractAddress and tokenId returns text containing both", async () => {
     const result = await getPrompt("nft-lookup", {
       contractAddress: "0xabc",
       tokenId: "1",

@@ -17,11 +17,11 @@ Phase 5 adds seven new MCP tools: four transaction tools (`get_transaction`, `ge
 
 Base URL: `https://api.kaiascan.io` (same client as Phase 4; no network-specific base for Kairos in this phase).
 
-| Tool | KaiaScan path | Notes |
-|------|----------------|--------|
-| **get_account_transactions** | `GET /api/v1/accounts/:accountAddress/transactions` | Query params: `page`, `size` (size = limit, max 2000). Returns list of transactions (hash, from, to, amount, datetime, status). Docs: [Get Account Transactions](https://docs.kaiascan.io/api/Account/Transaction/get-account-transactions). |
-| **get_block_rewards** (rewards) | `GET /api/v1/blocks/:blockNumber/rewards` | Path param: block number (integer). Response: `minted`, `total_fee`, `burnt_fee` (KAIA). Docs: [Get Block Rewards](https://docs.kaiascan.io/api/Block/get-block-rewards). |
-| **get_block_rewards** (burns) | `GET /api/v1/blocks/:blockNumber/burns` | Path param: block number (integer). Response: `nearest_block_number`, `accumulate_burnt_fees`, `accumulate_burnt_kaia`, `kip103_burnt`, `kip160_burnt`, `accumulate_burnt`. Docs: [Get Block Burns](https://docs.kaiascan.io/api/Block/get-block-burns). |
+| Tool                            | KaiaScan path                                       | Notes                                                                                                                                                                                                                                                    |
+| ------------------------------- | --------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **get_account_transactions**    | `GET /api/v1/accounts/:accountAddress/transactions` | Query params: `page`, `size` (size = limit, max 2000). Returns list of transactions (hash, from, to, amount, datetime, status). Docs: [Get Account Transactions](https://docs.kaiascan.io/api/Account/Transaction/get-account-transactions).             |
+| **get_block_rewards** (rewards) | `GET /api/v1/blocks/:blockNumber/rewards`           | Path param: block number (integer). Response: `minted`, `total_fee`, `burnt_fee` (KAIA). Docs: [Get Block Rewards](https://docs.kaiascan.io/api/Block/get-block-rewards).                                                                                |
+| **get_block_rewards** (burns)   | `GET /api/v1/blocks/:blockNumber/burns`             | Path param: block number (integer). Response: `nearest_block_number`, `accumulate_burnt_fees`, `accumulate_burnt_kaia`, `kip103_burnt`, `kip160_burnt`, `accumulate_burnt`. Docs: [Get Block Burns](https://docs.kaiascan.io/api/Block/get-block-burns). |
 
 ## Tool Behavior
 

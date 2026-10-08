@@ -4,13 +4,13 @@ Phase 8 adds MCP **resources**: read-only URIs that clients can list and read. T
 
 ## Resource URIs
 
-| URI | Name | Description |
-|-----|------|-------------|
-| **kaia://mainnet/status** | Mainnet status | Current mainnet block height, gas price (peb/KAIA), and KAIA price (USD). |
-| **kaia://kairos/status** | Kairos testnet status | Same as mainnet but for Kairos testnet (block height, gas price, KAIA price). |
+| URI                               | Name                   | Description                                                                                                  |
+| --------------------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------ |
+| **kaia://mainnet/status**         | Mainnet status         | Current mainnet block height, gas price (peb/KAIA), and KAIA price (USD).                                    |
+| **kaia://kairos/status**          | Kairos testnet status  | Same as mainnet but for Kairos testnet (block height, gas price, KAIA price).                                |
 | **kaia://mainnet/tokens/popular** | Popular mainnet tokens | List of popular token addresses on mainnet with name, symbol, and contract address (e.g. WKAIA, USDT, USDC). |
-| **kaia://mainnet/top-accounts** | Top KAIA accounts | Top 100 KAIA holders from KaiaScan (Get Top Accounts). |
-| **kaia://docs/rpc-methods** | RPC methods reference | Static markdown reference of Kaia RPC methods (kaia_*, klay_*, eth_*). |
+| **kaia://mainnet/top-accounts**   | Top KAIA accounts      | Top 100 KAIA holders from KaiaScan (Get Top Accounts).                                                       |
+| **kaia://docs/rpc-methods**       | RPC methods reference  | Static markdown reference of Kaia RPC methods (kaia\_\*, klay\_\*, eth\_\*).                                 |
 
 ## What Each Resource Returns
 
@@ -32,13 +32,13 @@ Phase 8 adds MCP **resources**: read-only URIs that clients can list and read. T
 
 ## APIs Used
 
-| Resource | RPC | KaiaScan |
-|----------|-----|----------|
-| kaia://mainnet/status | getBlockNumber, getGasPrice | GET /api/v1/kaia |
-| kaia://kairos/status | getBlockNumber, getGasPrice | GET /api/v1/kaia |
-| kaia://mainnet/tokens/popular | — | — |
-| kaia://mainnet/top-accounts | — | GET /api/v1/kaia/top-accounts |
-| kaia://docs/rpc-methods | — | — |
+| Resource                      | RPC                         | KaiaScan                      |
+| ----------------------------- | --------------------------- | ----------------------------- |
+| kaia://mainnet/status         | getBlockNumber, getGasPrice | GET /api/v1/kaia              |
+| kaia://kairos/status          | getBlockNumber, getGasPrice | GET /api/v1/kaia              |
+| kaia://mainnet/tokens/popular | —                           | —                             |
+| kaia://mainnet/top-accounts   | —                           | GET /api/v1/kaia/top-accounts |
+| kaia://docs/rpc-methods       | —                           | —                             |
 
 RPC calls use `createRpcClient(network)` (viem public client). KaiaScan calls use `createKaiaScanClient().get(path)`.
 

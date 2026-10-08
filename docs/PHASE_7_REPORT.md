@@ -4,24 +4,24 @@ Phase 7 adds eight MCP tools for contract reads, ABI/source lookup, network gas/
 
 ## Tools Added
 
-| Tool | Description |
-|------|-------------|
-| **read_contract** | Read a view/pure contract function. Requires contract address, function name, and ABI (JSON string or array). Use **get_contract_abi** first if you do not have the ABI. Returns decoded result as readable text. |
-| **get_contract_abi** | Get the ABI of a verified contract from KaiaScan. Returns ABI JSON as text. |
-| **get_contract_source** | Get verified contract source code from KaiaScan. Returns source if available, otherwise "Unverified" or a message that source is not available via API. |
-| **get_gas_price** | Current gas price from the network in peb, Gpeb, and KAIA per unit. |
-| **get_kaia_price** | KAIA price in USD and stats (24h change, market cap, total supply, volume) from KaiaScan. |
-| **get_chain_info** | Chain ID, chain name, native currency for the network (mainnet/kairos). |
-| **generate_wallet** | Generate a new wallet keypair (address and private key in hex). No RPC call. Keep the private key secret. |
-| **encode_function_data** | Encode function call data from ABI, function name, and optional args. Returns hex calldata for building transactions. |
+| Tool                     | Description                                                                                                                                                                                                       |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **read_contract**        | Read a view/pure contract function. Requires contract address, function name, and ABI (JSON string or array). Use **get_contract_abi** first if you do not have the ABI. Returns decoded result as readable text. |
+| **get_contract_abi**     | Get the ABI of a verified contract from KaiaScan. Returns ABI JSON as text.                                                                                                                                       |
+| **get_contract_source**  | Get verified contract source code from KaiaScan. Returns source if available, otherwise "Unverified" or a message that source is not available via API.                                                           |
+| **get_gas_price**        | Current gas price from the network in peb, Gpeb, and KAIA per unit.                                                                                                                                               |
+| **get_kaia_price**       | KAIA price in USD and stats (24h change, market cap, total supply, volume) from KaiaScan.                                                                                                                         |
+| **get_chain_info**       | Chain ID, chain name, native currency for the network (mainnet/kairos).                                                                                                                                           |
+| **generate_wallet**      | Generate a new wallet keypair (address and private key in hex). No RPC call. Keep the private key secret.                                                                                                         |
+| **encode_function_data** | Encode function call data from ABI, function name, and optional args. Returns hex calldata for building transactions.                                                                                             |
 
 ## KaiaScan API Paths
 
-| Tool | KaiaScan path | Notes |
-|------|----------------|-------|
-| get_contract_abi | `GET /api/v1/contracts/:contractAddress/abi` | [Get Abi Of Contract](https://docs.kaiascan.io/api/Contract/Utils/get-abi-of-contract). Returns ABI JSON. |
+| Tool                | KaiaScan path                                      | Notes                                                                                                                                                                                                                               |
+| ------------------- | -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| get_contract_abi    | `GET /api/v1/contracts/:contractAddress/abi`       | [Get Abi Of Contract](https://docs.kaiascan.io/api/Contract/Utils/get-abi-of-contract). Returns ABI JSON.                                                                                                                           |
 | get_contract_source | `GET /api/v1/contracts?contractAddresses=:address` | [Get Contracts](https://docs.kaiascan.io/api/Contract/get-contracts). Response includes `verified`; if `source_code` (or `sourceCode`) is present it is returned, otherwise "Unverified" or a message that source is not available. |
-| get_kaia_price | `GET /api/v1/kaia` | [Get Kaia Price](https://docs.kaiascan.io/api/Home/get-kaia-price). Response has `klay_price` with `usd_price`, `btc_price`, `usd_price_changes`, `market_cap`, `total_supply`, `volume`. |
+| get_kaia_price      | `GET /api/v1/kaia`                                 | [Get Kaia Price](https://docs.kaiascan.io/api/Home/get-kaia-price). Response has `klay_price` with `usd_price`, `btc_price`, `usd_price_changes`, `market_cap`, `total_supply`, `volume`.                                           |
 
 ## read_contract and ABI
 

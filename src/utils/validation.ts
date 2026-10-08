@@ -57,9 +57,7 @@ export function validateTxHash(txHash: unknown): `0x${string}` {
  * Validates block number (positive integer or hex string) or block hash (0x + 64 hex).
  * Returns bigint for block number or 0x-prefixed hash string for getBlock.
  */
-export function validateBlockNumberOrHash(
-  blockNumberOrHash: unknown
-): bigint | `0x${string}` {
+export function validateBlockNumberOrHash(blockNumberOrHash: unknown): bigint | `0x${string}` {
   if (blockNumberOrHash === undefined || blockNumberOrHash === null) {
     throw new Error("Block number or hash is required.");
   }

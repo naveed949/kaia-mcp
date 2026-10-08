@@ -60,9 +60,9 @@ describe("handleGetTransaction", () => {
       handleGetTransaction({ txHash: "not-a-hash", network: "mainnet" })
     ).rejects.toThrow(/Invalid transaction hash/);
 
-    await expect(
-      handleGetTransaction({ txHash: "0xshort", network: "mainnet" })
-    ).rejects.toThrow(/Invalid transaction hash/);
+    await expect(handleGetTransaction({ txHash: "0xshort", network: "mainnet" })).rejects.toThrow(
+      /Invalid transaction hash/
+    );
   });
 
   it("returns not found when getTransaction returns null", async () => {
@@ -106,9 +106,9 @@ describe("handleGetTransactionReceipt", () => {
   });
 
   it("throws for invalid txHash", async () => {
-    await expect(
-      handleGetTransactionReceipt({ txHash: "0x", network: "mainnet" })
-    ).rejects.toThrow(/Invalid transaction hash/);
+    await expect(handleGetTransactionReceipt({ txHash: "0x", network: "mainnet" })).rejects.toThrow(
+      /Invalid transaction hash/
+    );
   });
 });
 
@@ -150,9 +150,16 @@ describe("handleGetAccountTransactions", () => {
 
   it("calls KaiaScan with path api/v1/accounts/:address/transactions", async () => {
     const mockGet = vi.fn().mockResolvedValue({ results: [], paging: { total_count: 0 } });
-    mockCreateKaiaScanClient.mockReturnValue({ get: mockGet } as unknown as ReturnType<typeof createKaiaScanClient>);
+    mockCreateKaiaScanClient.mockReturnValue({ get: mockGet } as unknown as ReturnType<
+      typeof createKaiaScanClient
+    >);
 
-    await handleGetAccountTransactions({ address: validAddress, network: "mainnet", page: 1, limit: 10 });
+    await handleGetAccountTransactions({
+      address: validAddress,
+      network: "mainnet",
+      page: 1,
+      limit: 10,
+    });
     expect(mockGet).toHaveBeenCalledWith(
       `api/v1/accounts/${validAddress}/transactions`,
       expect.objectContaining({ page: "1", size: "10" })
@@ -160,9 +167,9 @@ describe("handleGetAccountTransactions", () => {
   });
 
   it("throws on invalid address", async () => {
-    await expect(
-      handleGetAccountTransactions({ address: "invalid" })
-    ).rejects.toThrow(/Invalid address/);
+    await expect(handleGetAccountTransactions({ address: "invalid" })).rejects.toThrow(
+      /Invalid address/
+    );
   });
 });
 
@@ -191,8 +198,8 @@ describe("handleEstimateGas", () => {
   });
 
   it("throws for invalid from address", async () => {
-    await expect(
-      handleEstimateGas({ from: "bad", network: "mainnet" })
-    ).rejects.toThrow(/Invalid address/);
+    await expect(handleEstimateGas({ from: "bad", network: "mainnet" })).rejects.toThrow(
+      /Invalid address/
+    );
   });
 });

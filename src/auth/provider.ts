@@ -40,7 +40,9 @@ function parseScopes(scope: string | undefined): string[] {
   if (requested.length === 0) return [ALL_SCOPES[0]];
   const unknown = requested.filter((s) => !ALL_SCOPES.includes(s as (typeof ALL_SCOPES)[number]));
   if (unknown.length > 0) {
-    throw Object.assign(new Error(`invalid_scope: ${unknown.join(" ")}`), { oauthError: "invalid_scope" });
+    throw Object.assign(new Error(`invalid_scope: ${unknown.join(" ")}`), {
+      oauthError: "invalid_scope",
+    });
   }
   return requested;
 }
@@ -146,7 +148,8 @@ export class DemoOAuthProvider {
     this.clientId = options.clientId ?? DEMO_CLIENT_ID;
     this.redirectUris = options.redirectUris ?? DEMO_REDIRECT_URIS;
     this.accessTokenTtlSeconds = options.accessTokenTtlSeconds ?? DEFAULT_ACCESS_TOKEN_TTL_SECONDS;
-    this.refreshTokenTtlSeconds = options.refreshTokenTtlSeconds ?? DEFAULT_REFRESH_TOKEN_TTL_SECONDS;
+    this.refreshTokenTtlSeconds =
+      options.refreshTokenTtlSeconds ?? DEFAULT_REFRESH_TOKEN_TTL_SECONDS;
     this.audience = options.audience ?? DEFAULT_AUDIENCE;
     this.signingKey = options.signingKey ?? SigningKey.generate();
     if (options.introspectionClient?.clientSecret) {
@@ -379,7 +382,9 @@ export class DemoOAuthProvider {
     const user = userCodeRaw.trim().toUpperCase();
     const hash = this.devicesByUserCode.get(user);
     if (!hash) {
-      throw Object.assign(new Error("invalid_request: unknown user_code"), { oauthError: "invalid_request" });
+      throw Object.assign(new Error("invalid_request: unknown user_code"), {
+        oauthError: "invalid_request",
+      });
     }
     const pending = this.devices.get(hash);
     if (!pending || pending.expiresAtMs <= Date.now()) {
@@ -397,7 +402,10 @@ export class DemoOAuthProvider {
       clientId: pending.clientId,
       scopes: pending.scopes,
     });
-    logger.info("oauth device consent approved", { userCode: user, scopes: pending.scopes.join(" ") });
+    logger.info("oauth device consent approved", {
+      userCode: user,
+      scopes: pending.scopes.join(" "),
+    });
   }
 
   exchangeDeviceCode(params: { clientId: string; deviceCode: string }): IssuedTokens {
@@ -415,7 +423,9 @@ export class DemoOAuthProvider {
       throw Object.assign(new Error("expired_token"), { oauthError: "expired_token" });
     }
     if (pending.status === "pending") {
-      throw Object.assign(new Error("authorization_pending"), { oauthError: "authorization_pending" });
+      throw Object.assign(new Error("authorization_pending"), {
+        oauthError: "authorization_pending",
+      });
     }
     if (pending.status === "denied") {
       throw Object.assign(new Error("access_denied"), { oauthError: "access_denied" });
@@ -470,7 +480,10 @@ export class DemoOAuthProvider {
     if (payload && typeof payload.jti === "string") {
       const expMs = typeof payload.exp === "number" ? payload.exp * 1000 : Date.now();
       this.revokeJti(payload.jti, expMs);
-      logger.info("oauth access token revoked", { tokenFingerprint: fingerprint(token), jti: payload.jti });
+      logger.info("oauth access token revoked", {
+        tokenFingerprint: fingerprint(token),
+        jti: payload.jti,
+      });
       return;
     }
     const refresh = this.refresh.get(sha256Hex(token));

@@ -102,9 +102,7 @@ export async function handleGetBlock(args: {
   const client = createRpcClient(network);
 
   const block = await client.getBlock({
-    ...(typeof blockRef === "bigint"
-      ? { blockNumber: blockRef }
-      : { blockHash: blockRef }),
+    ...(typeof blockRef === "bigint" ? { blockNumber: blockRef } : { blockHash: blockRef }),
     includeTransactions,
   });
 
@@ -135,9 +133,10 @@ export async function handleGetBlock(args: {
   if (includeTransactions && Array.isArray(block.transactions) && block.transactions.length > 0) {
     const txList = block.transactions
       .slice(0, 20)
-      .map((t) => (typeof t === "string" ? t : t.hash ?? String(t)))
+      .map((t) => (typeof t === "string" ? t : (t.hash ?? String(t))))
       .join("\n  ");
-    const more = block.transactions.length > 20 ? `\n  ... and ${block.transactions.length - 20} more` : "";
+    const more =
+      block.transactions.length > 20 ? `\n  ... and ${block.transactions.length - 20} more` : "";
     lines.push("Transaction hashes:", `  ${txList}${more}`);
   }
 
@@ -156,12 +155,18 @@ export async function handleGetBlockRewards(args: {
   network?: unknown;
 }): Promise<{ content: Array<{ type: "text"; text: string }> }> {
   let blockNumber: number;
-  if (typeof args.blockNumber === "number" && Number.isInteger(args.blockNumber) && args.blockNumber >= 0) {
+  if (
+    typeof args.blockNumber === "number" &&
+    Number.isInteger(args.blockNumber) &&
+    args.blockNumber >= 0
+  ) {
     blockNumber = args.blockNumber;
   } else if (typeof args.blockNumber === "string") {
     const s = args.blockNumber.trim();
     if (s.startsWith("0x") && s.length === 66) {
-      throw new Error("Invalid block number: block hash not allowed. Use a block number (integer).");
+      throw new Error(
+        "Invalid block number: block hash not allowed. Use a block number (integer)."
+      );
     }
     const n = s.startsWith("0x") ? parseInt(s, 16) : parseInt(s, 10);
     if (!Number.isInteger(n) || n < 0 || isNaN(n)) {
@@ -189,7 +194,7 @@ export async function handleGetBlockRewards(args: {
 
   try {
     burns = await client.get<BlockBurnsResponse>(burnsPath);
-  } catch (err) {
+  } catch {
     // Burns endpoint may not exist for all blocks; continue with rewards only
     burns = {};
   }

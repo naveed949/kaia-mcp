@@ -4,14 +4,14 @@ Phase 9 adds MCP **prompts**: reusable prompt templates that clients can list an
 
 ## Prompts
 
-| Name | Description | Arguments | Template summary |
-|------|-------------|-----------|------------------|
-| **analyze-wallet** | Analyze a Kaia wallet: balance, recent transactions, and token holdings. | `address` (required), `network` (optional, default mainnet) | "Analyze the wallet {address} on Kaia {network}. Show balance, recent transactions, and token holdings." |
-| **investigate-transaction** | Investigate a transaction: status, gas usage, token transfers, and internal transactions. | `txHash` (required) | "Investigate transaction {txHash}. Show status, gas usage, token transfers, and internal transactions." |
-| **token-research** | Research a token: supply, holders, recent activity, and transfers. | `contractAddress` (required), `network` (optional) | "Research the token at {contractAddress}. Show supply, holders, recent activity, and transfers." |
-| **nft-lookup** | Look up an NFT: owner, metadata, and transfer history. | `contractAddress` (required), `tokenId` (required), `network` (optional) | "Look up NFT {tokenId} in collection {contractAddress}. Show owner, metadata, and transfer history." |
-| **gas-report** | Generate a gas report: current price, fee history, and recommendations. | `network` (optional) | "Generate a gas report for Kaia {network}. Show current price, fee history, and recommendations." |
-| **smart-contract-audit** | Review a contract: fetch ABI and source code, identify contract type. | `contractAddress` (required), `network` (optional) | "Review the contract at {contractAddress}. Fetch ABI and source code, identify the contract type." |
+| Name                        | Description                                                                               | Arguments                                                                | Template summary                                                                                         |
+| --------------------------- | ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------- |
+| **analyze-wallet**          | Analyze a Kaia wallet: balance, recent transactions, and token holdings.                  | `address` (required), `network` (optional, default mainnet)              | "Analyze the wallet {address} on Kaia {network}. Show balance, recent transactions, and token holdings." |
+| **investigate-transaction** | Investigate a transaction: status, gas usage, token transfers, and internal transactions. | `txHash` (required)                                                      | "Investigate transaction {txHash}. Show status, gas usage, token transfers, and internal transactions."  |
+| **token-research**          | Research a token: supply, holders, recent activity, and transfers.                        | `contractAddress` (required), `network` (optional)                       | "Research the token at {contractAddress}. Show supply, holders, recent activity, and transfers."         |
+| **nft-lookup**              | Look up an NFT: owner, metadata, and transfer history.                                    | `contractAddress` (required), `tokenId` (required), `network` (optional) | "Look up NFT {tokenId} in collection {contractAddress}. Show owner, metadata, and transfer history."     |
+| **gas-report**              | Generate a gas report: current price, fee history, and recommendations.                   | `network` (optional)                                                     | "Generate a gas report for Kaia {network}. Show current price, fee history, and recommendations."        |
+| **smart-contract-audit**    | Review a contract: fetch ABI and source code, identify contract type.                     | `contractAddress` (required), `network` (optional)                       | "Review the contract at {contractAddress}. Fetch ABI and source code, identify the contract type."       |
 
 ## Arguments
 

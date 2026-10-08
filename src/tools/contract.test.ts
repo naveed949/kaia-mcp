@@ -1,9 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import {
-  handleReadContract,
-  handleGetContractAbi,
-  handleGetContractSource,
-} from "./contract.js";
+import { handleReadContract, handleGetContractAbi, handleGetContractSource } from "./contract.js";
 import { createRpcClient } from "../clients/rpc.js";
 import { createKaiaScanClient } from "../clients/kaiascan.js";
 import { resetConfigCache } from "../config.js";
@@ -54,7 +50,9 @@ describe("handleReadContract", () => {
     expect(text).toContain("Result:");
     expect(text).toContain("1000000");
     expect(mockCreateRpcClient).toHaveBeenCalledWith("mainnet");
-    const client = mockCreateRpcClient.mock.results[0]?.value as { readContract: ReturnType<typeof vi.fn> };
+    const client = mockCreateRpcClient.mock.results[0]?.value as {
+      readContract: ReturnType<typeof vi.fn>;
+    };
     expect(client.readContract).toHaveBeenCalledWith({
       address: validAddress,
       abi: balanceOfAbi,
@@ -70,7 +68,9 @@ describe("handleReadContract", () => {
       abi: balanceOfAbi,
       network: "mainnet",
     });
-    const client = mockCreateRpcClient.mock.results[0]?.value as { readContract: ReturnType<typeof vi.fn> };
+    const client = mockCreateRpcClient.mock.results[0]?.value as {
+      readContract: ReturnType<typeof vi.fn>;
+    };
     expect(client.readContract).toHaveBeenCalledWith(
       expect.objectContaining({
         address: validAddress,
@@ -146,9 +146,9 @@ describe("handleGetContractSource", () => {
     resetConfigCache();
     vi.clearAllMocks();
     mockCreateKaiaScanClient.mockReturnValue({
-      get: vi.fn().mockResolvedValue([
-        { address: validAddress, verified: true, name: "MyContract" },
-      ]),
+      get: vi
+        .fn()
+        .mockResolvedValue([{ address: validAddress, verified: true, name: "MyContract" }]),
     } as unknown as ReturnType<typeof createKaiaScanClient>);
   });
 
@@ -164,7 +164,9 @@ describe("handleGetContractSource", () => {
 
   it("calls KaiaScan with api/v1/contracts and contractAddresses param", async () => {
     const mockGet = vi.fn().mockResolvedValue([]);
-    mockCreateKaiaScanClient.mockReturnValue({ get: mockGet } as unknown as ReturnType<typeof createKaiaScanClient>);
+    mockCreateKaiaScanClient.mockReturnValue({ get: mockGet } as unknown as ReturnType<
+      typeof createKaiaScanClient
+    >);
     await handleGetContractSource({
       contractAddress: validAddress,
       network: "mainnet",

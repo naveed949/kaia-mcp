@@ -7,7 +7,9 @@ describe("redact", () => {
       access_token: "[redacted]",
       scopes: "kaia:read",
     });
-    expect(redactString("Authorization Bearer deadbeefcafebabe")).toBe("Authorization Bearer [redacted]");
+    expect(redactString("Authorization Bearer deadbeefcafebabe")).toBe(
+      "Authorization Bearer [redacted]"
+    );
   });
 
   it("redacts bare compact JWTs anywhere in a string", () => {

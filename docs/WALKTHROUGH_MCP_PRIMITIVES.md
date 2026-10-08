@@ -51,7 +51,7 @@ A **tool** has:
 
 ### 2.2 Where Tools Are Defined
 
-Each domain has its own file under `src/tools/`. For example, account tools live in `**src/tools/account.ts`**:
+Each domain has its own file under `src/tools/`. For example, account tools live in `**src/tools/account.ts`\*\*:
 
 ```typescript
 // src/tools/account.ts (excerpt)
@@ -68,14 +68,19 @@ export const GET_KAIA_BALANCE = {
   },
 };
 
-export const ACCOUNT_TOOLS = [GET_KAIA_BALANCE, GET_ACCOUNT_INFO, GET_ACCOUNT_TOKENS, GET_ACCOUNT_NFTS];
+export const ACCOUNT_TOOLS = [
+  GET_KAIA_BALANCE,
+  GET_ACCOUNT_INFO,
+  GET_ACCOUNT_TOKENS,
+  GET_ACCOUNT_NFTS,
+];
 ```
 
 The same file exports **handler functions** that perform the actual work (e.g. `handleGetKaiaBalance`). The agent never sees the handler; it only sees the tool definition and receives the result of the call.
 
 ### 2.3 How Tools Are Listed and Dispatched
 
-The central registry is `**src/tools/index.ts`**:
+The central registry is `**src/tools/index.ts`\*\*:
 
 - **listTools()** — aggregates every module’s tool array (`ACCOUNT_TOOLS`, `TRANSACTION_TOOLS`, etc.) into `ALL_TOOLS` and returns them for the MCP `tools/list` response.
 - **callTool(name, args)** — switches on `name` and calls the corresponding handler (e.g. for `get_kaia_balance` it calls `handleGetKaiaBalance(a)`).
@@ -98,7 +103,7 @@ A **resource** is a URI that the agent can read. It does not take arbitrary argu
 
 ### 3.2 Where Resources Are Defined
 
-`**src/resources/index.ts`** defines the list and the URI constants:
+`**src/resources/index.ts`\*\* defines the list and the URI constants:
 
 ```typescript
 // src/resources/index.ts (excerpt)
@@ -142,7 +147,7 @@ A **prompt** is a named template that takes arguments and produces a **user mess
 
 ### 4.2 Where Prompts Are Defined
 
-`**src/prompts/index.ts`** defines the `PROMPTS` array:
+`**src/prompts/index.ts`\*\* defines the `PROMPTS` array:
 
 ```typescript
 // src/prompts/index.ts (excerpt)
@@ -183,12 +188,11 @@ So the client gets a ready-to-use user message it can inject into the conversati
 
 1. Agent sends **prompts/list** → server returns six prompts, including `analyze-wallet` with arguments `address` (required) and `network` (optional).
 2. Agent sends **prompts/get** with `name: "analyze-wallet"` and `arguments: { address: "0x..." }` (no network).
-3. Server resolves `network` to `"mainnet"`, runs the template, and returns one user message: *"Analyze the wallet 0x... on Kaia mainnet. Show balance, recent transactions, and token holdings."*
+3. Server resolves `network` to `"mainnet"`, runs the template, and returns one user message: _"Analyze the wallet 0x... on Kaia mainnet. Show balance, recent transactions, and token holdings."_
 
 ---
 
 ## 5. Summary Table
-
 
 | Primitive | List method       | Use method              | Defined in                             | Purpose                          |
 | --------- | ----------------- | ----------------------- | -------------------------------------- | -------------------------------- |
@@ -196,5 +200,4 @@ So the client gets a ready-to-use user message it can inject into the conversati
 | Resources | `listResources()` | `readResource(uri)`     | `src/resources/index.ts`               | Read-only data by URI            |
 | Prompts   | `listPrompts()`   | `getPrompt(name, args)` | `src/prompts/index.ts`                 | Templated user instructions      |
 
-
-All three are registered in `**src/server.ts`** with the same error-handling wrapper, so behavior is consistent across primitives.
+All three are registered in `**src/server.ts`\*\* with the same error-handling wrapper, so behavior is consistent across primitives.

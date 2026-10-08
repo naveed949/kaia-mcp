@@ -27,7 +27,8 @@ const ALL_RESOURCES = [
   {
     uri: RESOURCE_KAIROS_STATUS,
     name: "Kairos testnet status",
-    description: "Current Kairos testnet status: block height, gas price, KAIA price (RPC + KaiaScan).",
+    description:
+      "Current Kairos testnet status: block height, gas price, KAIA price (RPC + KaiaScan).",
   },
   {
     uri: RESOURCE_MAINNET_TOKENS_POPULAR,
@@ -108,7 +109,9 @@ async function fetchNetworkStatus(network: "mainnet" | "kairos"): Promise<string
 async function fetchTopAccounts(): Promise<string> {
   const scan = createKaiaScanClient();
   const data = await scan.get<TopAccountsResponse>("api/v1/kaia/top-accounts");
-  const list = Array.isArray(data) ? data : (data as { holder?: TopAccountHolder[] }).holder ?? [];
+  const list = Array.isArray(data)
+    ? data
+    : ((data as { holder?: TopAccountHolder[] }).holder ?? []);
   const rows = list.slice(0, 100).map((h, i) => {
     const addr = h?.address ?? "—";
     const typ = h?.account_type ?? "—";

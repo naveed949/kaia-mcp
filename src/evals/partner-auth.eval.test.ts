@@ -75,10 +75,14 @@ describe("partner-auth golden evals (in-process)", () => {
   });
 
   it("allow by scope: kaia:read can call get_chain_info", async () => {
-    const result = await callTool("get_chain_info", { network: "mainnet" }, {
-      requireAuth: true,
-      auth: auth([SCOPES.READ]),
-    });
+    const result = await callTool(
+      "get_chain_info",
+      { network: "mainnet" },
+      {
+        requireAuth: true,
+        auth: auth([SCOPES.READ]),
+      }
+    );
     expect(result).toEqual({
       content: [{ type: "text", text: EXPECTED_CHAIN_INFO_TEXT }],
       _meta: {},
@@ -113,10 +117,14 @@ describe("partner-auth golden evals (in-process)", () => {
 
   it("expired token: tool call fails closed with token_expired", async () => {
     await expect(
-      callTool("get_chain_info", { network: "mainnet" }, {
-        requireAuth: true,
-        auth: auth([SCOPES.READ], Date.now() - 1),
-      })
+      callTool(
+        "get_chain_info",
+        { network: "mainnet" },
+        {
+          requireAuth: true,
+          auth: auth([SCOPES.READ], Date.now() - 1),
+        }
+      )
     ).rejects.toMatchObject({
       name: "AuthError",
       ...AUTH_ERRORS.TOKEN_EXPIRED,
@@ -162,7 +170,9 @@ describe("partner-auth golden evals (in-process)", () => {
       expect(err).toBeInstanceOf(McpError);
       const mcp = err as McpError;
       expect(mcp.code).toBe(MCP_ERROR_CODES.InsufficientScope);
-      expect(mcp.message).toContain("insufficient_scope: encode_function_data requires kaia:encode");
+      expect(mcp.message).toContain(
+        "insufficient_scope: encode_function_data requires kaia:encode"
+      );
     }
   });
 });
@@ -299,7 +309,9 @@ describe("partner-auth golden evals (HTTP + demo OIDC)", () => {
       expect(err).toBeInstanceOf(McpError);
       const mcp = err as McpError;
       expect(mcp.code).toBe(-32042);
-      expect(mcp.message).toContain("insufficient_scope: encode_function_data requires kaia:encode");
+      expect(mcp.message).toContain(
+        "insufficient_scope: encode_function_data requires kaia:encode"
+      );
     } finally {
       await client.close();
       await transport.close();
@@ -318,7 +330,11 @@ describe("partner-auth golden evals (HTTP + demo OIDC)", () => {
         jsonrpc: "2.0",
         id: 1,
         method: "initialize",
-        params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "eval", version: "0" } },
+        params: {
+          protocolVersion: "2024-11-05",
+          capabilities: {},
+          clientInfo: { name: "eval", version: "0" },
+        },
       }),
     });
   }
@@ -337,7 +353,10 @@ describe("partner-auth golden evals (HTTP + demo OIDC)", () => {
 
   it("access token is an RS256 JWT with iss, aud, sub, scope, exp, nbf, iat, jti", async () => {
     const http = await start();
-    const { access_token } = http.oauth.issueAccessToken({ subject: "eval-user", scopes: [SCOPES.READ] });
+    const { access_token } = http.oauth.issueAccessToken({
+      subject: "eval-user",
+      scopes: [SCOPES.READ],
+    });
     const [h, p] = access_token.split(".");
     expect(JSON.parse(Buffer.from(h, "base64url").toString())).toEqual({
       alg: "RS256",
@@ -345,15 +364,32 @@ describe("partner-auth golden evals (HTTP + demo OIDC)", () => {
       kid: http.oauth.signingKey.kid,
     });
     const claims = JSON.parse(Buffer.from(p, "base64url").toString()) as Record<string, unknown>;
-    expect(Object.keys(claims).sort()).toEqual(["aud", "client_id", "exp", "iat", "iss", "jti", "nbf", "scope", "sub"]);
-    expect(claims).toMatchObject({ iss: http.issuer, aud: "kaia-mcp", sub: "eval-user", scope: "kaia:read" });
+    expect(Object.keys(claims).sort()).toEqual([
+      "aud",
+      "client_id",
+      "exp",
+      "iat",
+      "iss",
+      "jti",
+      "nbf",
+      "scope",
+      "sub",
+    ]);
+    expect(claims).toMatchObject({
+      iss: http.issuer,
+      aud: "kaia-mcp",
+      sub: "eval-user",
+      scope: "kaia:read",
+    });
     expect((claims.exp as number) - (claims.iat as number)).toBe(900);
   });
 
   it("forged token (foreign key, real kid) returns the literal invalid_token body", async () => {
     const http = await start();
     const { access_token } = http.oauth.issueAccessToken({ scopes: [SCOPES.ENCODE] });
-    const claims = JSON.parse(Buffer.from(access_token.split(".")[1], "base64url").toString()) as object;
+    const claims = JSON.parse(
+      Buffer.from(access_token.split(".")[1], "base64url").toString()
+    ) as object;
     const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
     const input = `${b64({ alg: "RS256", typ: "at+jwt", kid: http.oauth.signingKey.kid })}.${b64(claims)}`;
     const forged = `${input}.${cryptoSign("sha256", Buffer.from(input), privateKey).toString("base64url")}`;
@@ -364,8 +400,15 @@ describe("partner-auth golden evals (HTTP + demo OIDC)", () => {
 
   it("wrong-audience token signed by the real key returns the literal invalid_token body", async () => {
     const http = await start();
-    const other = createDemoOAuthProvider({ issuer: http.issuer, audience: "other-api", signingKey: http.oauth.signingKey });
-    const res = await initializeWith(http, other.issueAccessToken({ scopes: [SCOPES.READ] }).access_token);
+    const other = createDemoOAuthProvider({
+      issuer: http.issuer,
+      audience: "other-api",
+      signingKey: http.oauth.signingKey,
+    });
+    const res = await initializeWith(
+      http,
+      other.issueAccessToken({ scopes: [SCOPES.READ] }).access_token
+    );
     expect(res.status).toBe(401);
     expect(await res.json()).toEqual(INVALID_TOKEN_BODY);
   });
@@ -389,8 +432,13 @@ describe("partner-auth golden evals (HTTP + demo OIDC)", () => {
     process.env.KAIA_INTROSPECTION_CLIENT_SECRET = "eval-only-secret";
     resetConfigCache();
     const http = await start();
-    const { access_token } = http.oauth.issueAccessToken({ subject: "eval-user", scopes: [SCOPES.READ] });
-    const claims = JSON.parse(Buffer.from(access_token.split(".")[1], "base64url").toString()) as Record<string, unknown>;
+    const { access_token } = http.oauth.issueAccessToken({
+      subject: "eval-user",
+      scopes: [SCOPES.READ],
+    });
+    const claims = JSON.parse(
+      Buffer.from(access_token.split(".")[1], "base64url").toString()
+    ) as Record<string, unknown>;
     const introspect = (authorization?: string) =>
       fetch(`${http.issuer}/oauth/introspect`, {
         method: "POST",

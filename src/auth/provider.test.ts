@@ -127,22 +127,38 @@ describe("DemoOAuthProvider", () => {
     expect(provider.verifyAccessToken(forge({ alg: "RS256", kid }, claims))).toEqual(invalid);
     const [, p] = good.split(".");
     expect(provider.verifyAccessToken(`${b64({ alg: "none", kid })}.${p}.`)).toEqual(invalid);
-    expect(provider.verifyAccessToken(`${b64({ alg: "HS256", kid })}.${p}.${good.split(".")[2]}`)).toEqual(invalid);
+    expect(
+      provider.verifyAccessToken(`${b64({ alg: "HS256", kid })}.${p}.${good.split(".")[2]}`)
+    ).toEqual(invalid);
     // Tampered payload under the real signature.
     const tampered = `${good.split(".")[0]}.${b64({ ...claims, scope: "kaia:wallet" })}.${good.split(".")[2]}`;
     expect(provider.verifyAccessToken(tampered)).toEqual(invalid);
     expect(provider.verifyAccessToken("not-a-jwt")).toEqual(invalid);
 
-    const otherAud = createDemoOAuthProvider({ issuer, audience: "other-api", signingKey: provider.signingKey });
-    expect(provider.verifyAccessToken(otherAud.issueAccessToken({ scopes: [SCOPES.READ] }).access_token)).toEqual(invalid);
-    const otherIss = createDemoOAuthProvider({ issuer: "http://127.0.0.1:1", signingKey: provider.signingKey });
-    expect(provider.verifyAccessToken(otherIss.issueAccessToken({ scopes: [SCOPES.READ] }).access_token)).toEqual(invalid);
+    const otherAud = createDemoOAuthProvider({
+      issuer,
+      audience: "other-api",
+      signingKey: provider.signingKey,
+    });
+    expect(
+      provider.verifyAccessToken(otherAud.issueAccessToken({ scopes: [SCOPES.READ] }).access_token)
+    ).toEqual(invalid);
+    const otherIss = createDemoOAuthProvider({
+      issuer: "http://127.0.0.1:1",
+      signingKey: provider.signingKey,
+    });
+    expect(
+      provider.verifyAccessToken(otherIss.issueAccessToken({ scopes: [SCOPES.READ] }).access_token)
+    ).toEqual(invalid);
   });
 
   it("refresh rotation and refresh-token revocation revoke the linked access jti", () => {
     const provider = createDemoOAuthProvider({ issuer });
     const first = provider.issueAccessToken({ scopes: [SCOPES.READ] });
-    const second = provider.exchangeRefreshToken({ clientId: DEMO_CLIENT_ID, refreshToken: first.refresh_token });
+    const second = provider.exchangeRefreshToken({
+      clientId: DEMO_CLIENT_ID,
+      refreshToken: first.refresh_token,
+    });
     expect(provider.verifyAccessToken(first.access_token)).toEqual(invalid);
     expect(provider.verifyAccessToken(second.access_token).ok).toBe(true);
     provider.revoke(second.refresh_token);
@@ -151,8 +167,14 @@ describe("DemoOAuthProvider", () => {
   });
 
   it("introspects active tokens and reports revoked, expired and foreign tokens inactive", () => {
-    const provider = createDemoOAuthProvider({ issuer, introspectionClient: { clientId: "gw", clientSecret: "s3cret" } });
-    const live = provider.issueAccessToken({ subject: "alice", scopes: [SCOPES.READ, SCOPES.ENCODE] });
+    const provider = createDemoOAuthProvider({
+      issuer,
+      introspectionClient: { clientId: "gw", clientSecret: "s3cret" },
+    });
+    const live = provider.issueAccessToken({
+      subject: "alice",
+      scopes: [SCOPES.READ, SCOPES.ENCODE],
+    });
     expect(provider.introspect(live.access_token)).toMatchObject({
       active: true,
       sub: "alice",
@@ -163,8 +185,15 @@ describe("DemoOAuthProvider", () => {
     });
     expect(provider.introspect(live.refresh_token)).toEqual({ active: false });
     expect(provider.introspect(undefined)).toEqual({ active: false });
-    expect(provider.introspect(forge({ alg: "RS256", kid: provider.signingKey.kid }, decode(live.access_token)))).toEqual({ active: false });
-    const expired = provider.issueAccessToken({ scopes: [SCOPES.READ], expiresAtMs: Date.now() - 1000 });
+    expect(
+      provider.introspect(
+        forge({ alg: "RS256", kid: provider.signingKey.kid }, decode(live.access_token))
+      )
+    ).toEqual({ active: false });
+    const expired = provider.issueAccessToken({
+      scopes: [SCOPES.READ],
+      expiresAtMs: Date.now() - 1000,
+    });
     expect(provider.introspect(expired.access_token)).toEqual({ active: false });
     provider.revoke(live.access_token);
     expect(provider.introspect(live.access_token)).toEqual({ active: false });
@@ -174,13 +203,20 @@ describe("DemoOAuthProvider", () => {
     expect(provider.authenticateIntrospectionClient(basic("gw:wrong"))).toBe(false);
     expect(provider.authenticateIntrospectionClient(basic("other:s3cret"))).toBe(false);
     expect(provider.authenticateIntrospectionClient(undefined)).toBe(false);
-    expect(createDemoOAuthProvider({ issuer }).authenticateIntrospectionClient(basic("gw:s3cret"))).toBe(false);
+    expect(
+      createDemoOAuthProvider({ issuer }).authenticateIntrospectionClient(basic("gw:s3cret"))
+    ).toBe(false);
   });
 
   it("publishes a public-only JWKS whose kid is the RFC 7638 thumbprint, and persists a dev key with 0600", () => {
     const provider = createDemoOAuthProvider({ issuer });
     const [key] = provider.jwks().keys;
-    expect(key).toMatchObject({ kty: "RSA", alg: "RS256", use: "sig", kid: provider.signingKey.kid });
+    expect(key).toMatchObject({
+      kty: "RSA",
+      alg: "RS256",
+      use: "sig",
+      kid: provider.signingKey.kid,
+    });
     expect(key).not.toHaveProperty("d");
     expect(provider.signingKey.kid).toMatch(/^[A-Za-z0-9_-]{43}$/);
 

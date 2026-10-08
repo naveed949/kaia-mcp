@@ -6,33 +6,33 @@ Stdio remains a local-process transport. It does not speak OAuth. `generate_wall
 
 ## Modes
 
-| `KAIA_AUTH_MODE` | Transport | Effect |
-|---|---|---|
-| `required` (default) | HTTP | Every MCP request must send `Authorization: Bearer <access_token>`. Missing, expired, revoked, or insufficient-scope tokens fail closed. |
-| `off` | HTTP | Local debug only. MCP tools run without a bearer token. Do not use for partners. |
-| n/a | stdio | Local desktop. No bearer check. |
+| `KAIA_AUTH_MODE`     | Transport | Effect                                                                                                                                   |
+| -------------------- | --------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `required` (default) | HTTP      | Every MCP request must send `Authorization: Bearer <access_token>`. Missing, expired, revoked, or insufficient-scope tokens fail closed. |
+| `off`                | HTTP      | Local debug only. MCP tools run without a bearer token. Do not use for partners.                                                         |
+| n/a                  | stdio     | Local desktop. No bearer check.                                                                                                          |
 
 ## Scopes and tools
 
 The session stores the access token’s scopes and maps them onto the allowed-tool registry.
 
-| Scope | Tools |
-|---|---|
-| `kaia:read` | All chain/account/token/NFT/contract/network read tools, including `estimate_gas` |
-| `kaia:encode` | `encode_function_data` |
-| `kaia:wallet` | `generate_wallet` (also requires `KAIA_ALLOW_UNSAFE_WALLET=1`) |
+| Scope         | Tools                                                                             |
+| ------------- | --------------------------------------------------------------------------------- |
+| `kaia:read`   | All chain/account/token/NFT/contract/network read tools, including `estimate_gas` |
+| `kaia:encode` | `encode_function_data`                                                            |
+| `kaia:wallet` | `generate_wallet` (also requires `KAIA_ALLOW_UNSAFE_WALLET=1`)                    |
 
 Default partner tool list **omits** `generate_wallet`. A call still fails with `tool_disabled` (`-32044`) and does not generate a key.
 
 ## Error codes (fail closed, no side effect)
 
-| Situation | HTTP | JSON-RPC `code` | `data.error` | Message |
-|---|---|---|---|---|
-| Missing `Authorization` | 401 | `-32040` | `unauthorized` | `unauthorized: missing access token` |
-| Expired access token | 401 | `-32041` | `token_expired` | `token_expired: access token has expired` |
-| Token lacks the tool’s scope | 200 (MCP error) | `-32042` | `insufficient_scope` | `insufficient_scope: <tool> requires <scope>` |
-| Unknown, malformed, forged, wrong `iss`/`aud`, not-yet-valid (`nbf`), or revoked (`jti`) token | 401 | `-32043` | `invalid_token` | `invalid_token: access token is invalid or revoked` |
-| `generate_wallet` in partner mode | MCP error | `-32044` | `tool_disabled` | `tool_disabled: generate_wallet is not available in partner mode; set KAIA_ALLOW_UNSAFE_WALLET=1 for local development only` |
+| Situation                                                                                      | HTTP            | JSON-RPC `code` | `data.error`         | Message                                                                                                                      |
+| ---------------------------------------------------------------------------------------------- | --------------- | --------------- | -------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| Missing `Authorization`                                                                        | 401             | `-32040`        | `unauthorized`       | `unauthorized: missing access token`                                                                                         |
+| Expired access token                                                                           | 401             | `-32041`        | `token_expired`      | `token_expired: access token has expired`                                                                                    |
+| Token lacks the tool’s scope                                                                   | 200 (MCP error) | `-32042`        | `insufficient_scope` | `insufficient_scope: <tool> requires <scope>`                                                                                |
+| Unknown, malformed, forged, wrong `iss`/`aud`, not-yet-valid (`nbf`), or revoked (`jti`) token | 401             | `-32043`        | `invalid_token`      | `invalid_token: access token is invalid or revoked`                                                                          |
+| `generate_wallet` in partner mode                                                              | MCP error       | `-32044`        | `tool_disabled`      | `tool_disabled: generate_wallet is not available in partner mode; set KAIA_ALLOW_UNSAFE_WALLET=1 for local development only` |
 
 The matching tool handler is never invoked on these paths.
 
@@ -44,16 +44,16 @@ Every `tools/call` that reaches kaia-mcp logs one `Tool call` info line with the
 
 Access tokens are RS256-signed JWTs in the RFC 9068 shape. Header: `{"alg":"RS256","typ":"at+jwt","kid":"<RFC 7638 thumbprint>"}`. Claims:
 
-| Claim | Value |
-|---|---|
-| `iss` | The server's issuer, e.g. `http://127.0.0.1:3100` |
-| `aud` | `KAIA_OAUTH_AUDIENCE` (default `kaia-mcp`) |
-| `sub` | Subject (`demo-user` in the demo IdP) |
-| `client_id` | OAuth client that obtained the token |
-| `scope` | Space-separated scopes |
-| `iat`, `nbf` | Issue time (seconds) |
-| `exp` | `iat + KAIA_ACCESS_TOKEN_TTL_SECONDS` |
-| `jti` | Random UUID, the revocation handle |
+| Claim        | Value                                             |
+| ------------ | ------------------------------------------------- |
+| `iss`        | The server's issuer, e.g. `http://127.0.0.1:3100` |
+| `aud`        | `KAIA_OAUTH_AUDIENCE` (default `kaia-mcp`)        |
+| `sub`        | Subject (`demo-user` in the demo IdP)             |
+| `client_id`  | OAuth client that obtained the token              |
+| `scope`      | Space-separated scopes                            |
+| `iat`, `nbf` | Issue time (seconds)                              |
+| `exp`        | `iat + KAIA_ACCESS_TOKEN_TTL_SECONDS`             |
+| `jti`        | Random UUID, the revocation handle                |
 
 Public keys: `GET /oauth/jwks` (also `jwks_uri` in discovery). Only the public JWK (`kty`, `n`, `e`, `kid`, `use`, `alg`) is published.
 
@@ -61,9 +61,9 @@ kaia-mcp verifies every request itself: `alg` must be exactly `RS256`, `kid` mus
 
 ### Signing key
 
-| Setting | Behavior |
-|---|---|
-| default | A fresh RSA-2048 key is generated at startup and kept in memory. Restarting the server invalidates every outstanding token. |
+| Setting                              | Behavior                                                                                                                                             |
+| ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| default                              | A fresh RSA-2048 key is generated at startup and kept in memory. Restarting the server invalidates every outstanding token.                          |
 | `KAIA_OAUTH_SIGNING_KEY_FILE=<path>` | Dev persistence. The PKCS#8 PEM is loaded from `<path>`, or created there with mode `0600`. Use a gitignored path; `.kaia-dev/` is ignored for this. |
 
 No signing key is committed. Production deployments use their own authorization server and never this provider.
@@ -149,12 +149,12 @@ Registered demo redirect URIs: `http://127.0.0.1/callback`, `http://localhost/ca
 
 ## Demo client
 
-| Field | Value |
-|---|---|
-| `client_id` | `kaia-mcp-demo` (override with `KAIA_OAUTH_CLIENT_ID`) |
-| Client type | Public (PKCE required, no client secret) |
-| Demo subject | `demo-user` |
-| Access token TTL | 900s (`KAIA_ACCESS_TOKEN_TTL_SECONDS`) |
+| Field               | Value                                                         |
+| ------------------- | ------------------------------------------------------------- |
+| `client_id`         | `kaia-mcp-demo` (override with `KAIA_OAUTH_CLIENT_ID`)        |
+| Client type         | Public (PKCE required, no client secret)                      |
+| Demo subject        | `demo-user`                                                   |
+| Access token TTL    | 900s (`KAIA_ACCESS_TOKEN_TTL_SECONDS`)                        |
 | Access token format | RS256 JWT, `aud` = `KAIA_OAUTH_AUDIENCE` (default `kaia-mcp`) |
 
 This IdP is for tests, CI, and local partner bring-up. It is not a production identity provider.

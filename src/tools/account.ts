@@ -6,7 +6,7 @@ import type { Address } from "viem";
 import { createRpcClient } from "../clients/rpc.js";
 import { createKaiaScanClient } from "../clients/kaiascan.js";
 import { formatKaia, formatPeb } from "../utils/format.js";
-import { validateAddress, validateNetwork, type KaiaNetwork } from "../utils/validation.js";
+import { validateAddress, validateNetwork } from "../utils/validation.js";
 
 // --- Tool definitions (name, description, inputSchema) ---
 
@@ -67,7 +67,12 @@ export const GET_ACCOUNT_NFTS = {
   },
 };
 
-export const ACCOUNT_TOOLS = [GET_KAIA_BALANCE, GET_ACCOUNT_INFO, GET_ACCOUNT_TOKENS, GET_ACCOUNT_NFTS];
+export const ACCOUNT_TOOLS = [
+  GET_KAIA_BALANCE,
+  GET_ACCOUNT_INFO,
+  GET_ACCOUNT_TOKENS,
+  GET_ACCOUNT_NFTS,
+];
 
 // --- Kaia RPC account response (kaia_getAccount) ---
 
@@ -169,12 +174,13 @@ export async function handleGetAccountInfo(args: {
   const account = raw as KaiaGetAccountResult;
 
   const accType = account?.accType;
-  const typeName = typeof accType === "number" ? ACCOUNT_TYPE_NAMES[accType] ?? "unknown" : "unknown";
+  const typeName =
+    typeof accType === "number" ? (ACCOUNT_TYPE_NAMES[accType] ?? "unknown") : "unknown";
   const balance = account?.balance != null ? BigInt(account.balance) : 0n;
   const nonce = account?.nonce ?? "0";
   const keyType = account?.keyType;
   const keyTypeName =
-    typeof keyType === "number" ? KEY_TYPE_NAMES[keyType] ?? `KeyType(${keyType})` : "—";
+    typeof keyType === "number" ? (KEY_TYPE_NAMES[keyType] ?? `KeyType(${keyType})`) : "—";
 
   const lines = [
     `Account: ${address}`,

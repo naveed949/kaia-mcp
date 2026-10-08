@@ -103,7 +103,8 @@ describeLive("Live RPC / KaiaScan (optional)", () => {
   beforeAll(() => {
     resetConfigCache();
     process.env.KAIA_RPC_URL = process.env.KAIA_RPC_URL || "https://public-en.node.kaia.io";
-    process.env.KAIA_KAIROS_RPC_URL = process.env.KAIA_KAIROS_RPC_URL || "https://public-en-kairos.node.kaia.io";
+    process.env.KAIA_KAIROS_RPC_URL =
+      process.env.KAIA_KAIROS_RPC_URL || "https://public-en-kairos.node.kaia.io";
   });
 
   it("get_block_number returns a positive number", async () => {

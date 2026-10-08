@@ -61,9 +61,13 @@ describe("FileRevocationStore", () => {
         { id: "jti-2", expMs: exp },
       ],
     });
-    // No temp files left behind.
-    expect(readdirSync(join(dir, "nested"))).toEqual(["revoked-jti.json"]);
+    // No temp files left behind; the lock file is held until close().
+    expect(readdirSync(join(dir, "nested")).sort()).toEqual([
+      "revoked-jti.json",
+      "revoked-jti.json.lock",
+    ]);
 
+    a.close();
     const b = FileRevocationStore.open(path);
     expect(b.has("jti-1")).toBe(true);
     expect(b.has("jti-2")).toBe(true);
@@ -128,6 +132,7 @@ describe("FileRevocationStore", () => {
       revocationStore: store,
     });
     const t = provider.issueAccessToken({ scopes: [SCOPES.READ] });
+    rmSync(join(dir, "nested"), { recursive: true, force: true });
     writeFileSync(join(dir, "nested"), "not a directory");
     expect(() => provider.revoke(t.access_token)).toThrow(RevocationStoreError);
     expect(provider.verifyAccessToken(t.access_token)).toEqual({

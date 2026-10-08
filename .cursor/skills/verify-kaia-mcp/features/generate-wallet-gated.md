@@ -22,7 +22,7 @@ Preconditions:
 - `doctor.sh` reports `unsafeWallet=false`.
 - `KAIA_ALLOW_UNSAFE_WALLET` is unset on the launched process.
 
-- **List tools.** Run `.cursor/skills/verify-kaia-mcp/helpers/drive.sh generate-wallet-gated`. It opens an MCP session (`initialize`, `notifications/initialized`) with the bearer first. `tools/list` body lists the read tools (24 for `kaia:read kaia:wallet`) and does not contain the string `generate_wallet`.
+- **List tools.** Run `.cursor/skills/verify-kaia-mcp/helpers/drive.sh generate-wallet-gated`. It sends one stateless POST with the bearer (no `initialize`). `tools/list` body lists the read tools (24 for `kaia:read kaia:wallet`) and does not contain the string `generate_wallet`.
 - **Call generate_wallet.** POST `tools/call` name `generate_wallet` arguments `{}`. Body includes `tool_disabled` or `-32044`.
 - **Confirm no key.** The same body does not match `Private key (hex): 0x` followed by 64 hex characters.
 - **Proof.** Evidence files `tools-list.json` and `generate-wallet.json` exist under `.cursor/skills/verify-kaia-mcp/evidence/<run-id>/generate-wallet-gated/`.

@@ -9,6 +9,7 @@
  */
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -271,6 +272,7 @@ describe("revocation across restart", () => {
     process.env.KAIA_OAUTH_REVOCATION_FILE = join(sub, "denylist.json");
     const a = await restart();
     const token = a.oauth.issueAccessToken({ scopes: [SCOPES.READ] }).access_token;
+    rmSync(sub, { recursive: true, force: true });
     writeFileSync(sub, "not a directory");
     const res = await send(`${a.issuer}/oauth/revoke`, {
       method: "POST",
@@ -283,6 +285,24 @@ describe("revocation across restart", () => {
       error_description: "revocation could not be persisted",
     });
     expect((await mcpInitialize(a.issuer, token)).body).toEqual(INVALID);
+  });
+
+  it("a start that fails to bind releases the denylist lock, so the next start succeeds", async () => {
+    process.env.KAIA_OAUTH_SIGNING_KEY_FILE = join(dir, "signing-key.pem");
+    const held = await occupyPort();
+    try {
+      resetConfigCache();
+      const err = await runKaiaMcpServerHttp(held.port).then(
+        () => new Error("server started"),
+        (e: unknown) => e
+      );
+      expect((err as NodeJS.ErrnoException).code).toBe("EADDRINUSE");
+    } finally {
+      await held.release();
+    }
+    expect(existsSync(join(dir, "revoked-jti.json.lock"))).toBe(false);
+    handle = await start(0);
+    expect(existsSync(join(dir, "revoked-jti.json.lock"))).toBe(true);
   });
 
   it.each([

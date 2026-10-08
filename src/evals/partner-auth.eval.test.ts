@@ -6,7 +6,10 @@ import { generateKeyPairSync, sign as cryptoSign } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import {
+  StreamableHTTPClientTransport,
+  StreamableHTTPError,
+} from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { McpError } from "@modelcontextprotocol/sdk/types.js";
 import { createKaiaMcpServer, runKaiaMcpServerHttp, type KaiaHttpServerHandle } from "../server.js";
 import { callTool, listTools } from "../tools/index.js";
@@ -306,12 +309,13 @@ describe("partner-auth golden evals (HTTP + demo OIDC)", () => {
       await client.callTool({ name: "encode_function_data", arguments: ENCODE_ARGS });
       throw new Error("expected callTool to throw");
     } catch (err) {
-      expect(err).toBeInstanceOf(McpError);
-      const mcp = err as McpError;
-      expect(mcp.code).toBe(-32042);
-      expect(mcp.message).toContain(
-        "insufficient_scope: encode_function_data requires kaia:encode"
-      );
+      // MCP 2026-07-28: insufficient scope is an HTTP 403 Bearer challenge. The v1 SDK
+      // client surfaces it as a transport error carrying the status and the JSON-RPC body.
+      expect(err).toBeInstanceOf(StreamableHTTPError);
+      const e = err as StreamableHTTPError;
+      expect(e.code).toBe(403);
+      expect(e.message).toContain('"code":-32042');
+      expect(e.message).toContain("insufficient_scope: encode_function_data requires kaia:encode");
     } finally {
       await client.close();
       await transport.close();
@@ -377,7 +381,7 @@ describe("partner-auth golden evals (HTTP + demo OIDC)", () => {
     ]);
     expect(claims).toMatchObject({
       iss: http.issuer,
-      aud: "kaia-mcp",
+      aud: http.issuer,
       sub: "eval-user",
       scope: "kaia:read",
     });
@@ -402,7 +406,7 @@ describe("partner-auth golden evals (HTTP + demo OIDC)", () => {
     const http = await start();
     const other = createDemoOAuthProvider({
       issuer: http.issuer,
-      audience: "other-api",
+      resource: "other-api",
       signingKey: http.oauth.signingKey,
     });
     const res = await initializeWith(
@@ -463,7 +467,7 @@ describe("partner-auth golden evals (HTTP + demo OIDC)", () => {
       scope: "kaia:read",
       client_id: DEMO_CLIENT_ID,
       sub: "eval-user",
-      aud: "kaia-mcp",
+      aud: http.issuer,
       iss: http.issuer,
       exp: claims.exp,
       iat: claims.iat,

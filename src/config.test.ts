@@ -22,6 +22,9 @@ describe("getConfig", () => {
       "KAIA_OAUTH_CLIENT_ID",
       "KAIA_ACCESS_TOKEN_TTL_SECONDS",
       "KAIA_OAUTH_AUDIENCE",
+      "KAIA_OAUTH_LEGACY_AUDIENCE",
+      "KAIA_OAUTH_REQUIRE_RESOURCE",
+      "KAIA_PUBLIC_URL",
       "KAIA_OAUTH_SIGNING_KEY_FILE",
       "KAIA_OAUTH_REVOCATION_FILE",
       "KAIA_INTROSPECTION_CLIENT_ID",
@@ -55,6 +58,9 @@ describe("getConfig", () => {
     delete process.env.KAIA_OAUTH_CLIENT_ID;
     delete process.env.KAIA_ACCESS_TOKEN_TTL_SECONDS;
     delete process.env.KAIA_OAUTH_AUDIENCE;
+    delete process.env.KAIA_OAUTH_LEGACY_AUDIENCE;
+    delete process.env.KAIA_OAUTH_REQUIRE_RESOURCE;
+    delete process.env.KAIA_PUBLIC_URL;
     delete process.env.KAIA_OAUTH_SIGNING_KEY_FILE;
     delete process.env.KAIA_OAUTH_REVOCATION_FILE;
     delete process.env.KAIA_INTROSPECTION_CLIENT_ID;
@@ -73,7 +79,9 @@ describe("getConfig", () => {
     expect(config.allowUnsafeWallet).toBe(false);
     expect(config.oauthClientId).toBe("kaia-mcp-demo");
     expect(config.accessTokenTtlSeconds).toBe(900);
-    expect(config.oauthAudience).toBe("kaia-mcp");
+    expect(config.publicUrl).toBeUndefined();
+    expect(config.oauthLegacyAudience).toBeUndefined();
+    expect(config.oauthRequireResource).toBe(false);
     expect(config.oauthSigningKeyFile).toBeUndefined();
     // In-memory key: revocations stay in memory too.
     expect(config.oauthRevocationFile).toBeUndefined();

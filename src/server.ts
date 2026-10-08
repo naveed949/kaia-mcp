@@ -10,7 +10,7 @@ import {
   ErrorCode,
   McpError,
 } from "@modelcontextprotocol/sdk/types.js";
-import type { IncomingMessage } from "node:http";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import { getConfig } from "./config.js";
 import { AuthError, MCP_ERROR_CODES, toMcpError } from "./utils/errors.js";
 import { logger } from "./utils/logger.js";
@@ -28,8 +28,13 @@ import {
 import {
   applyCors,
   authenticateRequest,
+  checkOrigin,
+  readBody,
+  BodyReadError,
+  closeConnection,
   tryHandleAuxRequest,
   writeAuthFailure,
+  writeInsufficientScope,
 } from "./auth/http.js";
 import type { AuthContext } from "./auth/types.js";
 
@@ -261,24 +266,44 @@ function normalizeAcceptHeader(req: IncomingMessage): void {
 
 export type KaiaHttpServerHandle = {
   port: number;
+  /** OAuth issuer and canonical resource URI: KAIA_PUBLIC_URL, or http://127.0.0.1:<port>. */
   issuer: string;
+  /** Public MCP endpoint URL (same as `issuer`; the MCP endpoint is served at /). */
   mcpUrl: string;
+  /** Where this process actually listens: http://127.0.0.1:<port>. */
+  localUrl: string;
   close: () => Promise<void>;
   oauth: DemoOAuthProvider;
 };
 
+/** Largest MCP POST body accepted (the SDK's own default limit). */
+const MAX_MCP_BODY_BYTES = 4 * 1024 * 1024;
+
+function jsonRpcError(
+  res: ServerResponse,
+  status: number,
+  code: number,
+  message: string,
+  extraHeaders: Record<string, string> = {}
+): void {
+  res.writeHead(status, { "Content-Type": "application/json", ...extraHeaders });
+  res.end(JSON.stringify({ jsonrpc: "2.0", error: { code, message }, id: null }));
+}
+
 /**
- * Runs the Kaia MCP server over Streamable HTTP on the given port.
- * Creates a per-session transport+server pair so multiple clients can
- * connect concurrently. Validates config at startup.
+ * Runs the Kaia MCP server over Streamable HTTP on the given port, stateless per MCP
+ * 2026-07-28: there are no protocol-level sessions. Every POST gets a fresh server and
+ * transport (`sessionIdGenerator: undefined`), so `Mcp-Session-Id` is never minted or
+ * echoed (a legacy client's header is ignored) and any instance behind a load balancer
+ * can answer any request. GET and DELETE on the MCP endpoint are 405. Validates config
+ * at startup.
  *
- * Partner default (KAIA_AUTH_MODE=required): every MCP request must carry a
- * Bearer access token. Token scopes are mapped onto the allowed-tool registry
- * for that session. Missing, expired, or revoked tokens fail closed with no
- * tool side effects.
+ * Partner default (KAIA_AUTH_MODE=required): every MCP request must carry a Bearer
+ * access token, and that request's token is the only authority for it. Token scopes are
+ * mapped onto the allowed-tool registry. Missing, expired, or revoked tokens fail closed
+ * with no tool side effects.
  */
 export async function runKaiaMcpServerHttp(port: number): Promise<KaiaHttpServerHandle> {
-  const { randomUUID } = await import("node:crypto");
   const { createServer } = await import("node:http");
   const { StreamableHTTPServerTransport } =
     await import("@modelcontextprotocol/sdk/server/streamableHttp.js");
@@ -292,52 +317,91 @@ export async function runKaiaMcpServerHttp(port: number): Promise<KaiaHttpServer
   const signingKey = config.oauthSigningKeyFile
     ? SigningKey.fromFileOrCreate(config.oauthSigningKeyFile)
     : SigningKey.generate();
+  const previousSigningKeys = config.oauthPreviousSigningKeyFiles.map((file) => {
+    try {
+      return SigningKey.fromFile(file);
+    } catch (err) {
+      throw new Error(`previous signing key ${file} is unreadable`, { cause: err });
+    }
+  });
+  // A file store holds a lock on its file until close(): every exit path below that does
+  // not hand the store to a running server must release it.
   const revocationStore: RevocationStore = config.oauthRevocationFile
     ? FileRevocationStore.open(config.oauthRevocationFile)
     : new MemoryRevocationStore();
 
-  type SessionEntry = {
-    transport: InstanceType<typeof StreamableHTTPServerTransport>;
-    server: Server;
-    setAuth: (ctx: AuthContext | null) => void;
-  };
-  const sessions = new Map<string, SessionEntry>();
-
   const runtime: { provider?: DemoOAuthProvider } = {};
+  /** The public origin is appended once the port is bound (it may default to it). */
+  const allowedOrigins: string[] = [...config.allowedOrigins];
 
-  function createSession(initialAuth: AuthContext | null): SessionEntry {
-    let auth = initialAuth;
+  /** One JSON-RPC POST: a fresh server+transport, torn down when the response ends. */
+  async function serveMcpPost(
+    req: IncomingMessage,
+    res: ServerResponse,
+    auth: AuthContext | null,
+    parsedBody: unknown
+  ): Promise<void> {
     const server = createKaiaMcpServer({
       requireAuth: authMode === "required",
       getAuthContext: () => auth,
     });
-    const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: () => randomUUID(),
-      onsessioninitialized: (sessionId: string) => {
-        logger.info("Session initialized", { sessionId, tokenFingerprint: auth?.tokenFingerprint });
-        sessions.set(sessionId, entry);
-      },
-    });
-    transport.onclose = () => {
-      const sid = transport.sessionId;
-      if (sid) {
-        logger.info("Session closed", { sessionId: sid });
-        sessions.delete(sid);
-      }
-    };
+    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     server.onerror = (err) => logger.error("Server transport error", { error: err });
-    const entry: SessionEntry = {
-      transport,
-      server,
-      setAuth: (ctx) => {
-        auth = ctx;
-      },
-    };
-    return entry;
+    res.on("close", () => {
+      void transport.close();
+      void server.close();
+    });
+    await server.connect(transport);
+    await transport.handleRequest(req, res, parsedBody);
+  }
+
+  /**
+   * HTTP-level scope check for tools/call (MCP 2026-07-28 runtime insufficient scope):
+   * a valid token lacking the tool's scope gets 403 + Bearer error="insufficient_scope"
+   * before any server is built. Only the insufficient-scope outcome of the same
+   * authorizeToolCall gate is handled here; tool_disabled, unknown tools and the rest
+   * stay in-band JSON-RPC errors from the handler (which re-checks everything anyway).
+   * A batch is refused whole on its first under-scoped call.
+   */
+  function rejectInsufficientScope(
+    res: ServerResponse,
+    parsedBody: unknown,
+    auth: AuthContext | null
+  ): boolean {
+    const messages = Array.isArray(parsedBody) ? parsedBody : [parsedBody];
+    for (const msg of messages) {
+      if (!msg || typeof msg !== "object") continue;
+      const { method, params, id } = msg as { method?: unknown; params?: unknown; id?: unknown };
+      if (method !== "tools/call" || !params || typeof params !== "object") continue;
+      const name = (params as { name?: unknown }).name;
+      if (typeof name !== "string") continue;
+      try {
+        authorizeToolCall(name, { requireAuth: true, auth });
+      } catch (err) {
+        if (!(err instanceof AuthError) || err.code !== MCP_ERROR_CODES.InsufficientScope) continue;
+        logger.info("Tool call", {
+          tool: logSafeName(name),
+          outcome: "denied",
+          errorCode: err.code,
+          reason: err.error,
+          tokenFingerprint: auth?.tokenFingerprint,
+        });
+        writeInsufficientScope(res, {
+          id: typeof id === "string" || typeof id === "number" ? id : null,
+          scope: requiredScopeForTool(name) ?? "",
+          message: err.message,
+          resourceMetadataUrl: runtime.provider!.resourceMetadataUrl,
+        });
+        return true;
+      }
+    }
+    return false;
   }
 
   const httpServer = createServer(async (req, res) => {
-    applyCors(res);
+    // Origin first: a foreign browser origin is refused before auth or any handler runs.
+    if (!checkOrigin(req, res, allowedOrigins)) return;
+    applyCors(req, res);
     if (req.method === "OPTIONS") {
       res.writeHead(204);
       res.end();
@@ -352,73 +416,59 @@ export async function runKaiaMcpServerHttp(port: number): Promise<KaiaHttpServer
       });
       if (handled) return;
 
+      // MCP 2026-07-28 Streamable HTTP is POST only: no standalone GET stream and no
+      // session to DELETE.
+      if (req.method !== "POST") {
+        jsonRpcError(res, 405, -32000, "Method not allowed: the MCP endpoint accepts POST only", {
+          Allow: "POST",
+        });
+        return;
+      }
+
       normalizeAcceptHeader(req);
 
-      let sessionAuth: AuthContext | null = null;
+      let auth: AuthContext | null = null;
       if (authMode === "required") {
         const result = authenticateRequest(req, runtime.provider!);
         if (!result.ok) {
-          writeAuthFailure(res, result);
+          writeAuthFailure(res, result, runtime.provider!.resourceMetadataUrl);
           return;
         }
-        sessionAuth = result.context;
+        auth = result.context;
         logger.debug("MCP request authenticated", {
           tokenFingerprint: result.context.tokenFingerprint,
           scopes: result.context.scopes.join(" "),
         });
       }
 
-      const sessionId = req.headers["mcp-session-id"] as string | undefined;
-
-      if (sessionId && sessions.has(sessionId)) {
-        sessions.get(sessionId)!.setAuth(sessionAuth);
-        await sessions.get(sessionId)!.transport.handleRequest(req, res);
+      let raw: string;
+      try {
+        raw = await readBody(req, MAX_MCP_BODY_BYTES);
+      } catch (err) {
+        if (!(err instanceof BodyReadError)) throw err;
+        closeConnection(res);
+        if (err.status === 413) {
+          jsonRpcError(res, 413, -32600, "Invalid Request: body is too large");
+        } else {
+          jsonRpcError(res, 400, -32600, "Invalid Request: body could not be read");
+        }
+        return;
+      }
+      let parsedBody: unknown;
+      try {
+        parsedBody = JSON.parse(raw);
+      } catch {
+        jsonRpcError(res, 400, -32700, "Parse error: body is not valid JSON");
         return;
       }
 
-      if (req.method === "POST" && !sessionId) {
-        const entry = createSession(sessionAuth);
-        await entry.server.connect(entry.transport);
-        await entry.transport.handleRequest(req, res);
-        return;
-      }
+      if (authMode === "required" && rejectInsufficientScope(res, parsedBody, auth)) return;
 
-      if (req.method === "GET" && sessionId && !sessions.has(sessionId)) {
-        res.writeHead(404, { "Content-Type": "application/json" });
-        res.end(
-          JSON.stringify({
-            jsonrpc: "2.0",
-            error: { code: -32000, message: "Session not found" },
-            id: null,
-          })
-        );
-        return;
-      }
-
-      if (req.method === "DELETE" && sessionId && sessions.has(sessionId)) {
-        await sessions.get(sessionId)!.transport.handleRequest(req, res);
-        return;
-      }
-
-      res.writeHead(400, { "Content-Type": "application/json" });
-      res.end(
-        JSON.stringify({
-          jsonrpc: "2.0",
-          error: { code: -32000, message: "Bad Request" },
-          id: null,
-        })
-      );
+      await serveMcpPost(req, res, auth, parsedBody);
     } catch (err) {
       logger.error("HTTP request error", { error: err });
       if (!res.headersSent) {
-        res.writeHead(500, { "Content-Type": "application/json" });
-        res.end(
-          JSON.stringify({
-            jsonrpc: "2.0",
-            error: { code: -32603, message: "Internal server error" },
-            id: null,
-          })
-        );
+        jsonRpcError(res, 500, -32603, "Internal server error");
       }
     }
   });
@@ -432,27 +482,44 @@ export async function runKaiaMcpServerHttp(port: number): Promise<KaiaHttpServer
       const bound = typeof addr === "object" && addr ? addr.port : port;
       resolve(bound);
     });
+  }).catch((err: unknown) => {
+    revocationStore.close?.();
+    throw err;
   });
 
-  const issuer = `http://127.0.0.1:${actualPort}`;
-  runtime.provider = createDemoOAuthProvider({
-    issuer,
-    clientId: config.oauthClientId,
-    accessTokenTtlSeconds: config.accessTokenTtlSeconds,
-    audience: config.oauthAudience,
-    signingKey,
-    revocationStore,
-    introspectionClient: config.introspectionClientSecret
-      ? { clientId: config.introspectionClientId, clientSecret: config.introspectionClientSecret }
-      : undefined,
-  });
+  const localUrl = `http://127.0.0.1:${actualPort}`;
+  const issuer = config.publicUrl ?? localUrl;
+  if (!allowedOrigins.includes(issuer)) allowedOrigins.push(issuer);
+  try {
+    runtime.provider = createDemoOAuthProvider({
+      issuer,
+      clientId: config.oauthClientId,
+      accessTokenTtlSeconds: config.accessTokenTtlSeconds,
+      resource: issuer,
+      legacyAudience: config.oauthLegacyAudience,
+      requireResource: config.oauthRequireResource,
+      signingKey,
+      previousSigningKeys,
+      revocationStore,
+      introspectionClient: config.introspectionClientSecret
+        ? { clientId: config.introspectionClientId, clientSecret: config.introspectionClientSecret }
+        : undefined,
+    });
+  } catch (err) {
+    httpServer.close();
+    revocationStore.close?.();
+    throw err;
+  }
 
   logger.info("HTTP server listening", {
     port: actualPort,
     issuer,
     authMode,
-    audience: runtime.provider.audience,
+    resource: runtime.provider.resource,
+    legacyAudience: runtime.provider.legacyAudience ?? "none",
+    requireResource: runtime.provider.requireResource,
     kid: runtime.provider.signingKey.kid,
+    previousKids: runtime.provider.previousSigningKeys.map((k) => k.kid).join(",") || "none",
     introspection: runtime.provider.introspectionEnabled,
     revocationStore: config.oauthRevocationFile ? "file" : "memory",
   });
@@ -461,13 +528,18 @@ export async function runKaiaMcpServerHttp(port: number): Promise<KaiaHttpServer
     port: actualPort,
     issuer,
     mcpUrl: issuer,
+    localUrl,
     oauth: runtime.provider!,
     close: () =>
       new Promise<void>((resolve, reject) => {
         if (typeof httpServer.closeAllConnections === "function") {
           httpServer.closeAllConnections();
         }
-        httpServer.close((err) => (err ? reject(err) : resolve()));
+        httpServer.close((err) => {
+          revocationStore.close?.();
+          if (err) reject(err);
+          else resolve();
+        });
       }),
   };
 }

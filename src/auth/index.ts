@@ -26,6 +26,12 @@ export {
   type RevocationStore,
 } from "./revocation-store.js";
 export {
+  MemoryExpiringStore,
+  createMemoryStateStores,
+  type ExpiringStore,
+  type OAuthStateStores,
+} from "./state-store.js";
+export {
   tryHandleAuxRequest,
   authenticateRequest,
   writeAuthFailure,

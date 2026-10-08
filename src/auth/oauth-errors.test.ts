@@ -2,7 +2,7 @@
  * OAuth error responses never leak internals (file paths, raw exception text), and a
  * revocation that cannot be persisted is a retryable 503 on every route that revokes.
  */
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -134,7 +134,11 @@ describe("OAuth error hygiene", () => {
     expect(retry.status).toBe(200);
     // The retry made it durable: a fresh store loaded from the file denies the access jti.
     const jti = JSON.parse(Buffer.from(t.access_token.split(".")[1], "base64url").toString()).jti;
-    expect(FileRevocationStore.open(join(sub, "denylist.json")).has(jti)).toBe(true);
+    // (Read the file directly: the running server holds the store's lock.)
+    const onDisk = JSON.parse(readFileSync(join(sub, "denylist.json"), "utf8")) as {
+      entries: { id: string }[];
+    };
+    expect(onDisk.entries.map((e) => e.id)).toContain(jti);
   });
 
   it.each([

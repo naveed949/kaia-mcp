@@ -72,6 +72,11 @@ export class SigningKey {
     return key;
   }
 
+  /** Load an existing PKCS#8/PKCS#1 PEM (verify-only rotation keys). Throws if unreadable. */
+  static fromFile(path: string): SigningKey {
+    return new SigningKey(createPrivateKey(readFileSync(path)));
+  }
+
   publicJwk(): Record<string, unknown> {
     return {
       kty: "RSA",
@@ -130,7 +135,8 @@ export class SigningKey {
 
 export type AccessTokenClaims = {
   iss: string;
-  aud: string;
+  /** As minted: the canonical resource URI, or [canonical, legacy audience]. */
+  aud: string | string[];
   sub: string;
   client_id: string;
   scope: string;
@@ -153,7 +159,9 @@ export function checkAccessTokenClaims(
   const isNum = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
   const isStr = (v: unknown): v is string => typeof v === "string" && v.length > 0;
   if (!isStr(iss) || iss !== expected.issuer) return { ok: false, reason: "invalid" };
-  const audList = Array.isArray(aud) ? aud : [aud];
+  const audList: unknown[] = Array.isArray(aud) ? aud : [aud];
+  if (audList.length === 0 || !audList.every(isStr)) return { ok: false, reason: "invalid" };
+  // RFC 8707 / MCP: the token must have been issued for this resource server.
   if (!audList.includes(expected.audience)) return { ok: false, reason: "invalid" };
   if (!isStr(sub) || !isStr(jti) || typeof scope !== "string" || !isStr(client_id)) {
     return { ok: false, reason: "invalid" };
@@ -163,6 +171,16 @@ export function checkAccessTokenClaims(
   if (expected.nowSeconds < nbf) return { ok: false, reason: "invalid" };
   return {
     ok: true,
-    claims: { iss, aud: expected.audience, sub, client_id, scope, iat, nbf, exp, jti },
+    claims: {
+      iss,
+      aud: Array.isArray(aud) ? (aud as string[]) : (aud as string),
+      sub,
+      client_id,
+      scope,
+      iat,
+      nbf,
+      exp,
+      jti,
+    },
   };
 }

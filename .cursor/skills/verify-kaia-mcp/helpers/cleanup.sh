@@ -15,6 +15,13 @@ else
   echo "cleanup: no instance file at ${INSTANCE_FILE} (nothing to stop)"
 fi
 
+if [[ -f "${INSTANCE_DIR}/extra-pids" ]]; then
+  while read -r XPID; do
+    [[ -n "${XPID}" ]] && stop_pid "${XPID}"
+  done <"${INSTANCE_DIR}/extra-pids"
+  echo "cleanup: stopped extra pids from multi-instance drives (if still running)"
+fi
+
 if [[ -d "${INSTANCE_DIR}" ]]; then
   # Keep the server log as evidence (used by token-leak-check.sh) before removing scratch state.
   if [[ -f "${INSTANCE_DIR}/server.log" ]]; then

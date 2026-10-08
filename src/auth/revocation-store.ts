@@ -10,13 +10,18 @@
  *   or insecure file refuses to load rather than silently starting with an empty list.
  *   One file belongs to exactly one process: the store keeps its own in-memory view and
  *   rewrites the whole file, so two processes sharing a file would drop each other's
- *   entries. Multi-instance deployments need a shared store instead.
+ *   entries and a revoked token would work again after a restart. `open()` therefore
+ *   takes a lock on the file (`<file>.lock`, see file-lock.ts) for the life of the store
+ *   and refuses to open a file another live process holds. Multi-instance deployments
+ *   give each instance its own file, or need a shared store.
  *
  * A shared store (Redis/KV) for multi-instance deployments can implement the same interface.
  */
 import {
   closeSync,
+  constants as fsConstants,
   fstatSync,
+  lstatSync,
   fsyncSync,
   mkdirSync,
   openSync,
@@ -26,7 +31,13 @@ import {
   writeFileSync,
 } from "node:fs";
 import { randomBytes } from "node:crypto";
+import { hostname } from "node:os";
 import { dirname } from "node:path";
+import { logger } from "../utils/logger.js";
+import { FileLock, FileLockError, LOCK_LEASE_MS } from "./file-lock.js";
+
+/** How long an unverifiable holder's lock survives without a heartbeat (cross-host). */
+export const REVOCATION_LOCK_LEASE_MS = LOCK_LEASE_MS;
 
 export interface RevocationStore {
   /**
@@ -38,6 +49,8 @@ export interface RevocationStore {
   has(id: string): boolean;
   /** Drop entries whose expiry has passed. */
   prune(nowMs?: number): void;
+  /** Release anything held for the store (a file lock). Idempotent. */
+  close?(): void;
 }
 
 /** On-disk shape of `FileRevocationStore`. */
@@ -113,23 +126,106 @@ function parseRevocationFile(raw: string): RevocationFile["entries"] {
   });
 }
 
+/** The operator-facing refusal when the denylist's lock cannot be taken. */
+function lockRefusal(path: string, err: FileLockError): RevocationStoreError {
+  const fix =
+    "Two processes sharing one denylist overwrite each other's revocations, so a revoked " +
+    "token could work again after a restart; this process refuses to start. Set a distinct " +
+    "KAIA_OAUTH_REVOCATION_FILE for each instance (revocations are per instance until a " +
+    "shared store lands).";
+  const holder = err.holder;
+  if (!holder) {
+    return new RevocationStoreError(
+      `revocation store ${path} could not be locked: ${err.message}. ${fix} If no other ` +
+        `kaia-mcp process uses this file, delete ${err.lockPath}.`,
+      { cause: err }
+    );
+  }
+  let expiry = "";
+  if (holder.host !== hostname()) {
+    const ageS = Math.round((err.heartbeatAgeMs ?? 0) / 1000);
+    expiry =
+      ` If that process is gone, the lock expires ${REVOCATION_LOCK_LEASE_MS / 1000}s after ` +
+      `its last heartbeat (${ageS}s ago), or delete ${err.lockPath}.`;
+  }
+  return new RevocationStoreError(
+    `revocation store ${path} is in use by another kaia-mcp process (pid ${holder.pid} on ` +
+      `${holder.host}, lock file ${err.lockPath}). ${fix}${expiry}`,
+    { cause: err }
+  );
+}
+
 export class FileRevocationStore extends MemoryRevocationStore {
+  private lock: FileLock | undefined;
+
   private constructor(readonly path: string) {
     super();
   }
 
   /**
-   * Load `path`. A missing file is an empty denylist (first start). Anything else that
-   * cannot be read and validated throws `RevocationStoreError`.
+   * Lock and load `path`. The lock (`<path>.lock`) is held until `close()` or process
+   * exit; a file another live process holds throws `RevocationStoreError`. A missing file
+   * is an empty denylist (first start). Anything else that cannot be read and validated
+   * throws `RevocationStoreError` too.
    */
   static open(path: string): FileRevocationStore {
+    let lock: FileLock;
+    try {
+      lock = FileLock.acquire(`${path}.lock`);
+    } catch (err) {
+      if (err instanceof FileLockError) throw lockRefusal(path, err);
+      throw new RevocationStoreError(`revocation store ${path} could not be locked`, {
+        cause: err,
+      });
+    }
+    try {
+      const store = FileRevocationStore.load(path);
+      store.lock = lock;
+      return store;
+    } catch (err) {
+      lock.release();
+      throw err;
+    }
+  }
+
+  /** Release the file lock. The in-memory view stays usable but is no longer persisted. */
+  close(): void {
+    this.lock?.release();
+  }
+
+  private static load(path: string): FileRevocationStore {
     const store = new FileRevocationStore(path);
     let raw: string;
     let fd: number;
+    // Never follow a link at the denylist path: a planted or dangling symlink must not
+    // redirect (or empty) the denylist. lstat gives the clear error; O_NOFOLLOW closes the
+    // race where it exists. O_NONBLOCK keeps a FIFO from blocking startup forever; fstat
+    // below then refuses it as not a regular file.
     try {
-      fd = openSync(path, "r");
+      if (lstatSync(path).isSymbolicLink()) {
+        throw new RevocationStoreError(
+          `revocation store ${path} is unreadable: refusing to follow a symlink`
+        );
+      }
     } catch (err) {
+      if (err instanceof RevocationStoreError) throw err;
       if ((err as NodeJS.ErrnoException).code === "ENOENT") return store;
+      throw new RevocationStoreError(`revocation store ${path} is unreadable`, { cause: err });
+    }
+    try {
+      fd = openSync(
+        path,
+        fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0) | (fsConstants.O_NONBLOCK ?? 0)
+      );
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") return store;
+      if (code === "ELOOP") {
+        throw new RevocationStoreError(
+          `revocation store ${path} is unreadable: refusing to follow a symlink`,
+          { cause: err }
+        );
+      }
       throw new RevocationStoreError(`revocation store ${path} is unreadable`, { cause: err });
     }
     try {
@@ -190,16 +286,51 @@ export class FileRevocationStore extends MemoryRevocationStore {
   }
 
   /**
+   * Fail the write unless this process still holds the lock. If the lock file had vanished
+   * and was re-created, another process may have written the file in the gap: merge its
+   * entries first so this write cannot drop them.
+   */
+  private ensureLockedAndMerged(entryId: string): void {
+    let recreated: boolean;
+    try {
+      if (!this.lock) throw new Error("store is not locked");
+      recreated = this.lock.ensureHeld();
+    } catch (err) {
+      const why =
+        err instanceof FileLockError
+          ? `: this process no longer holds its lock (${this.path}.lock)`
+          : "";
+      throw new RevocationStoreError(`revocation store ${this.path} could not be written${why}`, {
+        cause: err,
+        entryId,
+      });
+    }
+    if (!recreated) return;
+    let onDisk: RevocationFile["entries"];
+    try {
+      onDisk = FileRevocationStore.load(this.path).snapshot();
+    } catch (err) {
+      throw new RevocationStoreError(`revocation store ${this.path} could not be written`, {
+        cause: err,
+        entryId,
+      });
+    }
+    for (const { id, expMs } of onDisk) this.upsert(id, expMs);
+  }
+
+  private snapshot(): RevocationFile["entries"] {
+    return [...this.entries].map(([id, expMs]) => ({ id, expMs }));
+  }
+
+  /**
    * Write-to-temp, fsync, rename, fsync the directory: readers see the old file or the
    * new one, never half, and the rename itself survives a crash. The temp file is created
    * exclusively (O_CREAT|O_EXCL), so a file or symlink already at that path is never
    * opened or followed.
    */
   private persist(entryId: string): void {
-    const doc: RevocationFile = {
-      version: 1,
-      entries: [...this.entries].map(([id, expMs]) => ({ id, expMs })),
-    };
+    this.ensureLockedAndMerged(entryId);
+    const doc: RevocationFile = { version: 1, entries: this.snapshot() };
     const dir = dirname(this.path);
     const tmp = `${this.path}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
     let created = false;
@@ -243,19 +374,39 @@ const DIR_FSYNC_UNSUPPORTED = new Set([
   "EACCES",
 ]);
 
+/** Of those, the ones that mean "not allowed here" (a sandbox or ACL), worth telling the operator. */
+const DIR_FSYNC_DENIED = new Set(["EPERM", "EACCES"]);
+
+let warnedDirFsyncDenied = false;
+
+/** Skipped directory fsync: silent where unsupported, one warning per process when denied. */
+function dirFsyncSkipped(dir: string, err: unknown): void {
+  const code = (err as NodeJS.ErrnoException).code ?? "";
+  if (!DIR_FSYNC_DENIED.has(code) || warnedDirFsyncDenied) return;
+  warnedDirFsyncDenied = true;
+  logger.warn(
+    "revocation store directory fsync not permitted; a crash right after a revoke may lose it",
+    { dir, errno: code }
+  );
+}
+
 /** Persist the directory entry created by a rename. Best effort where unsupported (Windows). */
 function fsyncDirectory(dir: string): void {
   let fd: number;
   try {
     fd = openSync(dir, "r");
   } catch (err) {
-    if (DIR_FSYNC_UNSUPPORTED.has((err as NodeJS.ErrnoException).code ?? "")) return;
+    if (DIR_FSYNC_UNSUPPORTED.has((err as NodeJS.ErrnoException).code ?? "")) {
+      dirFsyncSkipped(dir, err);
+      return;
+    }
     throw err;
   }
   try {
     fsyncSync(fd);
   } catch (err) {
     if (!DIR_FSYNC_UNSUPPORTED.has((err as NodeJS.ErrnoException).code ?? "")) throw err;
+    dirFsyncSkipped(dir, err);
   } finally {
     closeSync(fd);
   }

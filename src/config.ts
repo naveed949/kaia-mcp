@@ -29,6 +29,82 @@ const boolish = z
     return n === "1" || n === "true" || n === "yes";
   });
 
+/**
+ * KAIA_PUBLIC_URL: the externally reachable origin of this server. It is the OAuth issuer
+ * and the canonical resource URI (RFC 8707 / RFC 9728), so it must be an absolute http(s)
+ * origin with no path, query, fragment or userinfo. Normalized to lowercase
+ * scheme://host[:port] with no trailing slash (default ports elided).
+ */
+const publicUrlSchema = z
+  .string()
+  .optional()
+  .transform((v, ctx) => {
+    const raw = (v ?? "").trim();
+    if (!raw) return undefined;
+    let u: URL;
+    try {
+      u = new URL(raw);
+    } catch {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "must be an absolute http(s) URL" });
+      return z.NEVER;
+    }
+    const problem =
+      u.protocol !== "http:" && u.protocol !== "https:"
+        ? "scheme must be http or https"
+        : u.username || u.password
+          ? "must not contain userinfo"
+          : u.pathname !== "/"
+            ? "must be an origin with no path (the MCP endpoint is served at /)"
+            : u.search || raw.includes("?")
+              ? "must not contain a query"
+              : u.hash || raw.includes("#")
+                ? "must not contain a fragment"
+                : undefined;
+    if (problem) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: problem });
+      return z.NEVER;
+    }
+    return u.origin;
+  });
+
+/** KAIA_ALLOWED_ORIGINS: comma-separated browser origins allowed on the MCP/OAuth surface. */
+const allowedOriginsSchema = z
+  .string()
+  .optional()
+  .transform((v, ctx) => {
+    const out: string[] = [];
+    for (const raw of (v ?? "")
+      .split(",")
+      .map((x) => x.trim())
+      .filter(Boolean)) {
+      let u: URL | undefined;
+      try {
+        u = new URL(raw);
+      } catch {
+        u = undefined;
+      }
+      if (
+        !u ||
+        (u.protocol !== "http:" && u.protocol !== "https:") ||
+        u.pathname !== "/" ||
+        u.search ||
+        u.hash ||
+        u.username ||
+        raw.includes("?") ||
+        raw.includes("#") ||
+        /^[a-z]+:\/\/[^/]+\/./i.test(raw)
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `"${raw}" is not an http(s) origin (scheme://host[:port]); "*" is not supported`,
+        });
+        return z.NEVER;
+      }
+      if (!out.includes(u.origin)) out.push(u.origin);
+    }
+    return out;
+  });
+
 const envSchema = z.object({
   KAIA_RPC_URL: urlOrDefault(DEFAULT_KAIA_RPC_URL),
   KAIA_KAIROS_RPC_URL: urlOrDefault(DEFAULT_KAIA_KAIROS_RPC_URL),
@@ -43,9 +119,22 @@ const envSchema = z.object({
   KAIA_ALLOW_UNSAFE_WALLET: boolish,
   KAIA_OAUTH_CLIENT_ID: z.string().optional().default("kaia-mcp-demo"),
   KAIA_ACCESS_TOKEN_TTL_SECONDS: z.coerce.number().int().positive().optional().default(900),
-  KAIA_OAUTH_AUDIENCE: z.string().min(1).optional().default("kaia-mcp"),
+  KAIA_PUBLIC_URL: publicUrlSchema,
+  KAIA_OAUTH_LEGACY_AUDIENCE: z.string().min(1).optional(),
+  KAIA_OAUTH_AUDIENCE: z.string().min(1).optional(),
+  KAIA_OAUTH_REQUIRE_RESOURCE: boolish,
+  KAIA_ALLOWED_ORIGINS: allowedOriginsSchema,
   KAIA_OAUTH_SIGNING_KEY_FILE: z.string().optional(),
   KAIA_OAUTH_REVOCATION_FILE: z.string().optional(),
+  KAIA_OAUTH_PREVIOUS_SIGNING_KEY_FILES: z
+    .string()
+    .optional()
+    .transform((v) =>
+      (v ?? "")
+        .split(",")
+        .map((x) => x.trim())
+        .filter(Boolean)
+    ),
   KAIA_INTROSPECTION_CLIENT_ID: z.string().min(1).optional().default("kaia-mcp-gateway"),
   KAIA_INTROSPECTION_CLIENT_SECRET: z.string().optional(),
 });
@@ -69,10 +158,33 @@ export type Config = {
   allowUnsafeWallet: boolean;
   oauthClientId: string;
   accessTokenTtlSeconds: number;
-  /** `aud` of issued access tokens; kaia-mcp only accepts tokens with this audience. */
-  oauthAudience: string;
+  /**
+   * KAIA_PUBLIC_URL, normalized: issuer and canonical resource URI. Unset: the HTTP server
+   * uses http://127.0.0.1:<bound port> (local dev).
+   */
+  publicUrl?: string;
+  /**
+   * Optional extra `aud` value minted alongside the canonical resource URI, for gateways
+   * that still pin a non-URI audience (e.g. "kaia-mcp"). Never accepted on its own: the
+   * resource server always requires the canonical URI in `aud`. KAIA_OAUTH_LEGACY_AUDIENCE,
+   * or the deprecated alias KAIA_OAUTH_AUDIENCE.
+   */
+  oauthLegacyAudience?: string;
+  /** KAIA_OAUTH_REQUIRE_RESOURCE: reject authorize/device/token requests without `resource`. */
+  oauthRequireResource: boolean;
+  /**
+   * Extra browser origins allowed to call the MCP and OAuth endpoints (KAIA_ALLOWED_ORIGINS).
+   * The server's own public origin is always allowed; requests without Origin always pass.
+   */
+  allowedOrigins: string[];
   /** Optional gitignored PEM path for a dev signing key that survives restarts. Unset: in-memory key. */
   oauthSigningKeyFile?: string;
+  /**
+   * KAIA_OAUTH_PREVIOUS_SIGNING_KEY_FILES: comma-separated PEMs of retired keys. They are
+   * published in the JWKS and accepted for verification, never used to sign. Each must
+   * exist; an unreadable one refuses startup.
+   */
+  oauthPreviousSigningKeyFiles: string[];
   /**
    * Where revoked access-token jtis are persisted. Default: `revoked-jti.json` next to
    * `oauthSigningKeyFile` when that is set (a persisted key needs a persisted denylist),
@@ -99,9 +211,14 @@ function parseEnv(): Config {
     KAIA_ALLOW_UNSAFE_WALLET: process.env.KAIA_ALLOW_UNSAFE_WALLET,
     KAIA_OAUTH_CLIENT_ID: process.env.KAIA_OAUTH_CLIENT_ID,
     KAIA_ACCESS_TOKEN_TTL_SECONDS: process.env.KAIA_ACCESS_TOKEN_TTL_SECONDS,
+    KAIA_PUBLIC_URL: process.env.KAIA_PUBLIC_URL || undefined,
+    KAIA_OAUTH_LEGACY_AUDIENCE: process.env.KAIA_OAUTH_LEGACY_AUDIENCE || undefined,
     KAIA_OAUTH_AUDIENCE: process.env.KAIA_OAUTH_AUDIENCE || undefined,
+    KAIA_OAUTH_REQUIRE_RESOURCE: process.env.KAIA_OAUTH_REQUIRE_RESOURCE,
+    KAIA_ALLOWED_ORIGINS: process.env.KAIA_ALLOWED_ORIGINS,
     KAIA_OAUTH_SIGNING_KEY_FILE: process.env.KAIA_OAUTH_SIGNING_KEY_FILE || undefined,
     KAIA_OAUTH_REVOCATION_FILE: process.env.KAIA_OAUTH_REVOCATION_FILE || undefined,
+    KAIA_OAUTH_PREVIOUS_SIGNING_KEY_FILES: process.env.KAIA_OAUTH_PREVIOUS_SIGNING_KEY_FILES,
     KAIA_INTROSPECTION_CLIENT_ID: process.env.KAIA_INTROSPECTION_CLIENT_ID || undefined,
     KAIA_INTROSPECTION_CLIENT_SECRET: process.env.KAIA_INTROSPECTION_CLIENT_SECRET || undefined,
   };
@@ -130,8 +247,12 @@ function parseEnv(): Config {
     allowUnsafeWallet: d.KAIA_ALLOW_UNSAFE_WALLET,
     oauthClientId: d.KAIA_OAUTH_CLIENT_ID,
     accessTokenTtlSeconds: d.KAIA_ACCESS_TOKEN_TTL_SECONDS,
-    oauthAudience: d.KAIA_OAUTH_AUDIENCE,
+    publicUrl: d.KAIA_PUBLIC_URL,
+    oauthLegacyAudience: d.KAIA_OAUTH_LEGACY_AUDIENCE ?? d.KAIA_OAUTH_AUDIENCE,
+    oauthRequireResource: d.KAIA_OAUTH_REQUIRE_RESOURCE,
+    allowedOrigins: d.KAIA_ALLOWED_ORIGINS,
     oauthSigningKeyFile: d.KAIA_OAUTH_SIGNING_KEY_FILE,
+    oauthPreviousSigningKeyFiles: d.KAIA_OAUTH_PREVIOUS_SIGNING_KEY_FILES,
     oauthRevocationFile:
       d.KAIA_OAUTH_REVOCATION_FILE ??
       (d.KAIA_OAUTH_SIGNING_KEY_FILE

@@ -25,7 +25,7 @@ Preconditions:
 
 - **Run.** `.cursor/skills/verify-kaia-mcp/helpers/drive.sh token-introspection`.
 - **Client auth.** `anon.headers` and `wrong-secret.headers` are `HTTP/1.1 401`, and their bodies have `"error":"invalid_client"`. `anon.headers` carries `WWW-Authenticate: Basic`.
-- **Active.** `active.json` has `"active":true`, `"scope":"kaia:read"`, `"aud":"kaia-mcp"`, and a `jti` equal to the token's `jti`. It does not contain the token.
+- **Active.** `active.json` has `"active":true`, `"scope":"kaia:read"`, `"aud":"<instance issuer>"`, and a `jti` equal to the token's `jti`. It does not contain the token.
 - **Revoke.** `revoked.json` is exactly `{"active":false}`. `revoked-mcp.json` has `error.code=-32043`.
 - **Rotation.** `rotated-old.json` has `"active":false` and `rotated-new.json` has `"active":true`.
 - **Refresh tokens.** `refresh-active.json` (sent with `token_type_hint=refresh_token`) and `refresh-active-nohint.json` (no hint) have `"active":true`, `"token_type":"refresh_token"`, `"scope":"kaia:read"`, `"client_id":"kaia-mcp-demo"`, `"sub":"demo-user"`, the instance `iss`, and a numeric `exp`. Neither echoes the token. `refresh-old.json` (the refresh token retired by rotation) and `refresh-revoked.json` (after `POST /oauth/revoke`) are exactly `{"active":false}`.

@@ -684,9 +684,15 @@ case "${FEATURE}" in
       -H "Authorization: Bearer ${ACCESS}" -H "Content-Type: application/json" \
       -H "Accept: application/json, text/event-stream" -d '{"jsonrpc":' || true
     head -c $((4 * 1024 * 1024 + 16)) /dev/zero | tr '\0' ' ' >"${OUT}/.big-body.tmp"
-    curl -sS -D "${OUT}/too-large.headers" -o "${OUT}/too-large.json" -X POST "${BASE}/" \
+    # --next sends a second request that reuses the connection when the server allows it:
+    # after a 413 the server must close it (Connection: close), never leave it unread.
+    curl -sS --max-time 10 -D "${OUT}/too-large.headers" -o "${OUT}/too-large.json" -X POST "${BASE}/" \
       -H "Authorization: Bearer ${ACCESS}" -H "Content-Type: application/json" \
-      -H "Accept: application/json, text/event-stream" -H "Expect:" --data-binary "@${OUT}/.big-body.tmp" || true
+      -H "Accept: application/json, text/event-stream" -H "Expect:" --data-binary "@${OUT}/.big-body.tmp" \
+      --next -sS --max-time 5 -D "${OUT}/after-too-large.headers" -o "${OUT}/after-too-large.json" -X POST "${BASE}/" \
+      -H "Authorization: Bearer ${ACCESS}" -H "Content-Type: application/json" \
+      -H "Accept: application/json, text/event-stream" -d '{"jsonrpc":"2.0","id":11,"method":"tools/list","params":{}}' || true
+    touch "${OUT}/after-too-large.headers"
     rm -f "${OUT}/.big-body.tmp"
     echo "{\"before\":${CALLS_BEFORE},\"after\":$(tool_call_count get_block_number)}" | save tool-call-count.json
     OUT="${OUT}" BASE="${BASE}" node - <<'JS'
@@ -715,7 +721,9 @@ if (header("preflight.headers", "access-control-allow-origin") === "*") fail("MC
 if (status("jwks-evil-origin.headers") !== 200 || header("jwks-evil-origin.headers", "access-control-allow-origin") !== "*") fail("public JWKS not readable cross-origin");
 if (status("bad-json.headers") !== 400 || JSON.parse(r("bad-json.json")).error.code !== -32700) fail("non-JSON body not 400 -32700: " + r("bad-json.json"));
 if (status("too-large.headers") !== 413 || JSON.parse(r("too-large.json")).error.code !== -32600) fail("oversized body not 413 -32600: " + r("too-large.json").slice(0, 200));
-console.log("drive stateless-transport: non-JSON -> 400 -32700; >4 MB -> 413 -32600; GET/DELETE -> 405 Allow: POST; tools/list without initialize ok (scope-filtered); no Mcp-Session-Id minted, stale one ignored; foreign Origin -> 403 (MCP + OAuth, tool never ran); own Origin echoed + Vary; preflight allows MCP-Protocol-Version/Mcp-Method/Mcp-Name; public JWKS ACAO *");
+if (header("too-large.headers", "connection").toLowerCase() !== "close") fail("413 must close the connection (Connection: close), got " + header("too-large.headers", "connection"));
+if (status("after-too-large.headers") !== 200) fail("the request after a 413 on the same curl handle did not answer 200 within 5s (connection left unread?)");
+console.log("drive stateless-transport: non-JSON -> 400 -32700; >4 MB -> 413 -32600 + Connection: close, next request on the same handle 200; GET/DELETE -> 405 Allow: POST; tools/list without initialize ok (scope-filtered); no Mcp-Session-Id minted, stale one ignored; foreign Origin -> 403 (MCP + OAuth, tool never ran); own Origin echoed + Vary; preflight allows MCP-Protocol-Version/Mcp-Method/Mcp-Name; public JWKS ACAO *");
 JS
     ;;
 

@@ -10,7 +10,7 @@ The MCP endpoint follows the MCP 2026-07-28 Streamable HTTP transport with no pr
 - `origin-403` refuses a foreign `Origin` (`https://evil.example`) on `POST /` and on `POST /oauth/token` with `403` and exactly `{"jsonrpc":"2.0","error":{"code":-32000,"message":"Forbidden: Origin not allowed"}}`, with no CORS header, and the tool never runs.
 - `origin-allowed` accepts the server's own origin, echoing it in `Access-Control-Allow-Origin` with `Vary: Origin`; requests with no `Origin` (curl, SDKs, gateways) pass.
 - `cors-headers` answers a preflight with `Access-Control-Allow-Headers` naming `Authorization`, `Content-Type`, `MCP-Protocol-Version`, `Mcp-Method` and `Mcp-Name`, never `Mcp-Session-Id`, and never `*` as the origin.
-- `body-limits` answers a body that is not JSON with `400` and `-32700`, and a body over 4 MB with `413` and `-32600`, before any MCP handling.
+- `body-limits` answers a body that is not JSON with `400` and `-32700`, and a body over 4 MB with `413`, `-32600` and `Connection: close`, before any MCP handling. A keep-alive client's next request goes out on a fresh connection and is answered (it used to hang on the unread socket).
 - `public-docs-cors` serves `GET /oauth/jwks` to any origin with `Access-Control-Allow-Origin: *`.
 
 ## How to get to it (user POV)
@@ -35,7 +35,7 @@ Preconditions:
 - **Foreign Origin.** `origin-evil.headers` and `origin-evil-token.headers` are `HTTP/1.1 403` with no `access-control-allow-origin`; `origin-evil.json` is exactly the body above. `tool-call-count.json` shows `after = before` for `get_block_number`.
 - **Own Origin and preflight.** `origin-self.headers` is `HTTP/1.1 200` with `access-control-allow-origin: http://127.0.0.1:<port>` and `vary: Origin`. `preflight.headers` lists the five headers above and has no `Mcp-Session-Id`.
 - **Public docs.** `jwks-evil-origin.headers` is `HTTP/1.1 200` with `access-control-allow-origin: *`.
-- **Body limits.** `bad-json.headers` is `HTTP/1.1 400` with `bad-json.json` `error.code=-32700`; `too-large.headers` is `HTTP/1.1 413` with `too-large.json` `error.code=-32600`.
+- **Body limits.** `bad-json.headers` is `HTTP/1.1 400` with `bad-json.json` `error.code=-32700`; `too-large.headers` is `HTTP/1.1 413` with `connection: close` and `too-large.json` `error.code=-32600`; `after-too-large.headers` (a second request on the same curl handle, `--max-time 5`) is `HTTP/1.1 200`.
 - **Proof.** All of the files above are under `.cursor/skills/verify-kaia-mcp/evidence/<run-id>/stateless-transport/`.
 
 ## Gotchas

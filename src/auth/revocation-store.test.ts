@@ -4,12 +4,13 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  chmodSync,
   statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   FileRevocationStore,
   MemoryRevocationStore,
@@ -135,4 +136,31 @@ describe("FileRevocationStore", () => {
       ...AUTH_ERRORS.INVALID_TOKEN,
     });
   });
+
+  it.each([
+    ["group-writable", 0o620],
+    ["world-writable", 0o602],
+  ])("refuses to load a %s denylist", (_name, mode) => {
+    const flat = join(dir, "revoked-jti.json");
+    writeFileSync(flat, JSON.stringify({ version: 1, entries: [] }), { mode: 0o600 });
+    chmodSync(flat, mode);
+    expect(() => FileRevocationStore.open(flat)).toThrow(RevocationStoreError);
+    expect(() => FileRevocationStore.open(flat)).toThrow(/writable by group or others/);
+  });
+
+  it.runIf(typeof process.getuid === "function")(
+    "refuses to load a denylist owned by another user",
+    () => {
+      const flat = join(dir, "revoked-jti.json");
+      writeFileSync(flat, JSON.stringify({ version: 1, entries: [] }), { mode: 0o600 });
+      const uid = process.getuid!();
+      const spy = vi.spyOn(process, "getuid").mockReturnValue(uid + 1);
+      try {
+        expect(() => FileRevocationStore.open(flat)).toThrow(/not owned by the current user/);
+      } finally {
+        spy.mockRestore();
+      }
+      expect(FileRevocationStore.open(flat).has("x")).toBe(false);
+    }
+  );
 });

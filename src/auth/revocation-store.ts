@@ -6,20 +6,24 @@
  * - `MemoryRevocationStore`: per process. Correct when the signing key is in memory too,
  *   because a restart then invalidates every token anyway.
  * - `FileRevocationStore`: used when the signing key is persisted, so a revoked token
- *   cannot come back after a restart. Writes are atomic; a corrupt or unreadable file
- *   refuses to load rather than silently starting with an empty list.
+ *   cannot come back after a restart. Writes are atomic and durable; a corrupt, unreadable
+ *   or insecure file refuses to load rather than silently starting with an empty list.
+ *   One file belongs to exactly one process: the store keeps its own in-memory view and
+ *   rewrites the whole file, so two processes sharing a file would drop each other's
+ *   entries. Multi-instance deployments need a shared store instead.
  *
  * A shared store (Redis/KV) for multi-instance deployments can implement the same interface.
  */
 import {
   closeSync,
+  fstatSync,
   fsyncSync,
   mkdirSync,
   openSync,
   readFileSync,
   renameSync,
   rmSync,
-  writeSync,
+  writeFileSync,
 } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { dirname } from "node:path";
@@ -42,10 +46,21 @@ export type RevocationFile = {
   entries: { id: string; expMs: number }[];
 };
 
+/**
+ * The store could not be loaded or an entry could not be made durable. The message names
+ * the file for operators; never send it to clients. `entryId` is the id being added (a
+ * jti, not a secret) and `errno` the underlying system error code, when there is one.
+ */
 export class RevocationStoreError extends Error {
-  constructor(message: string, options?: { cause?: unknown }) {
+  readonly entryId?: string;
+  readonly errno?: string;
+
+  constructor(message: string, options?: { cause?: unknown; entryId?: string }) {
     super(message, options);
     this.name = "RevocationStoreError";
+    this.entryId = options?.entryId;
+    const code = (options?.cause as NodeJS.ErrnoException | undefined)?.code;
+    if (typeof code === "string") this.errno = code;
   }
 }
 
@@ -53,8 +68,17 @@ export class MemoryRevocationStore implements RevocationStore {
   protected readonly entries = new Map<string, number>();
 
   add(id: string, expMs: number): void {
+    this.upsert(id, expMs);
+  }
+
+  /** Record `id` until `expMs`, never shortening an existing entry. True if anything changed. */
+  protected upsert(id: string, expMs: number): boolean {
     this.prune();
-    if (expMs > Date.now()) this.entries.set(id, expMs);
+    if (expMs <= Date.now()) return false;
+    const current = this.entries.get(id);
+    if (current !== undefined && current >= expMs) return false;
+    this.entries.set(id, expMs);
+    return true;
   }
 
   has(id: string): boolean {
@@ -101,11 +125,41 @@ export class FileRevocationStore extends MemoryRevocationStore {
   static open(path: string): FileRevocationStore {
     const store = new FileRevocationStore(path);
     let raw: string;
+    let fd: number;
     try {
-      raw = readFileSync(path, "utf8");
+      fd = openSync(path, "r");
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === "ENOENT") return store;
       throw new RevocationStoreError(`revocation store ${path} is unreadable`, { cause: err });
+    }
+    try {
+      const st = fstatSync(fd);
+      if (!st.isFile()) {
+        throw new RevocationStoreError(
+          `revocation store ${path} is unreadable: not a regular file`
+        );
+      }
+      // Anyone else who can write the denylist can un-revoke tokens. POSIX only: Windows
+      // reports neither a uid nor meaningful group/other bits.
+      if (process.platform !== "win32") {
+        if (st.mode & 0o022) {
+          throw new RevocationStoreError(
+            `revocation store ${path} is insecure: writable by group or others (chmod 600 it)`
+          );
+        }
+        const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
+        if (uid !== undefined && st.uid !== uid) {
+          throw new RevocationStoreError(
+            `revocation store ${path} is insecure: not owned by the current user (uid ${uid})`
+          );
+        }
+      }
+      raw = readFileSync(fd, "utf8");
+    } catch (err) {
+      if (err instanceof RevocationStoreError) throw err;
+      throw new RevocationStoreError(`revocation store ${path} is unreadable`, { cause: err });
+    } finally {
+      closeSync(fd);
     }
     let entries: RevocationFile["entries"];
     try {
@@ -120,37 +174,89 @@ export class FileRevocationStore extends MemoryRevocationStore {
     return store;
   }
 
+  /** True while the in-memory view holds entries the file does not (a write failed). */
+  private dirty = false;
+
+  /**
+   * Deny `id` until `expMs` and make it durable. A no-op entry (already expired, or already
+   * denied at least that long) does not rewrite the file, unless an earlier write failed.
+   */
   override add(id: string, expMs: number): void {
-    super.add(id, expMs);
-    this.persist();
+    const changed = this.upsert(id, expMs);
+    if (!changed && !this.dirty) return;
+    this.dirty = true;
+    this.persist(id);
+    this.dirty = false;
   }
 
-  /** Write-to-temp, fsync, rename: readers see the old file or the new one, never half. */
-  private persist(): void {
+  /**
+   * Write-to-temp, fsync, rename, fsync the directory: readers see the old file or the
+   * new one, never half, and the rename itself survives a crash. The temp file is created
+   * exclusively (O_CREAT|O_EXCL), so a file or symlink already at that path is never
+   * opened or followed.
+   */
+  private persist(entryId: string): void {
     const doc: RevocationFile = {
       version: 1,
       entries: [...this.entries].map(([id, expMs]) => ({ id, expMs })),
     };
+    const dir = dirname(this.path);
     const tmp = `${this.path}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
+    let created = false;
     try {
-      mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
-      const fd = openSync(tmp, "w", 0o600);
+      mkdirSync(dir, { recursive: true, mode: 0o700 });
+      const fd = openSync(tmp, "wx", 0o600);
+      created = true;
       try {
-        writeSync(fd, JSON.stringify(doc));
+        // writeFileSync loops until every byte is written; a bare writeSync may not.
+        writeFileSync(fd, JSON.stringify(doc));
         fsyncSync(fd);
       } finally {
         closeSync(fd);
       }
       renameSync(tmp, this.path);
+      created = false;
+      fsyncDirectory(dir);
     } catch (err) {
-      try {
-        rmSync(tmp, { force: true });
-      } catch {
-        // the temp file was never created
+      if (created) {
+        try {
+          rmSync(tmp, { force: true });
+        } catch {
+          // best effort; the temp name is unique and never read back
+        }
       }
       throw new RevocationStoreError(`revocation store ${this.path} could not be written`, {
         cause: err,
+        entryId,
       });
     }
+  }
+}
+
+/** Errors meaning "this platform or filesystem cannot fsync a directory", not data loss. */
+const DIR_FSYNC_UNSUPPORTED = new Set([
+  "EINVAL",
+  "ENOTSUP",
+  "EOPNOTSUPP",
+  "EISDIR",
+  "EPERM",
+  "EACCES",
+]);
+
+/** Persist the directory entry created by a rename. Best effort where unsupported (Windows). */
+function fsyncDirectory(dir: string): void {
+  let fd: number;
+  try {
+    fd = openSync(dir, "r");
+  } catch (err) {
+    if (DIR_FSYNC_UNSUPPORTED.has((err as NodeJS.ErrnoException).code ?? "")) return;
+    throw err;
+  }
+  try {
+    fsyncSync(fd);
+  } catch (err) {
+    if (!DIR_FSYNC_UNSUPPORTED.has((err as NodeJS.ErrnoException).code ?? "")) throw err;
+  } finally {
+    closeSync(fd);
   }
 }

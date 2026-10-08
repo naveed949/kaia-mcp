@@ -83,13 +83,16 @@ POST /oauth/introspect
 Authorization: Basic base64(<KAIA_INTROSPECTION_CLIENT_ID>:<KAIA_INTROSPECTION_CLIENT_SECRET>)
 Content-Type: application/x-www-form-urlencoded
 
-token=<access_token>
+token=<access_or_refresh_token>&token_type_hint=<access_token|refresh_token>
 ```
 
 - **Client-authenticated** (`client_secret_basic`), not local-only. It is offered only when `KAIA_INTROSPECTION_CLIENT_SECRET` is set; otherwise the route returns `404` and discovery omits `introspection_endpoint`. The client id defaults to `kaia-mcp-gateway`. The secret is compared in constant time.
 - Missing or wrong credentials: `401 {"error":"invalid_client",…}` with `WWW-Authenticate: Basic`.
 - A valid, unexpired, unrevoked access token for this issuer and audience: `{"active":true,"token_type":"Bearer","scope","client_id","sub","aud","iss","exp","iat","nbf","jti"}`.
-- Anything else, including refresh tokens, expired, forged, and revoked tokens: `{"active":false}`.
+- A valid, unexpired, unrevoked (and not yet rotated) refresh token: `{"active":true,"token_type":"refresh_token","scope","client_id","sub","iss","exp"}`.
+- `token_type_hint` is optional and only picks which kind is looked up first; the other is still searched (RFC 7662 §2.1).
+- Anything else, including expired, forged, revoked, rotated, and unknown tokens: `{"active":false}`.
+- A resource server that relies on introspection alone must also require `token_type` to be `Bearer`, so a refresh token is never accepted as an access credential. kaia-mcp itself never accepts a refresh token as a bearer token.
 
 The response never echoes the token.
 

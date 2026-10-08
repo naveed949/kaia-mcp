@@ -249,7 +249,9 @@ export async function tryHandleAuxRequest(
     }
     try {
       const fields = parseForm(await readBody(req), req.headers["content-type"]);
-      json(res, 200, ctx.provider.introspect(fields.token), { "Cache-Control": "no-store" });
+      json(res, 200, ctx.provider.introspect(fields.token, fields.token_type_hint), {
+        "Cache-Control": "no-store",
+      });
     } catch (err) {
       sendOAuthError(res, err);
     }

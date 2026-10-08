@@ -183,7 +183,6 @@ describe("DemoOAuthProvider", () => {
       iss: issuer,
       jti: decode(live.access_token).jti,
     });
-    expect(provider.introspect(live.refresh_token)).toEqual({ active: false });
     expect(provider.introspect(undefined)).toEqual({ active: false });
     expect(
       provider.introspect(
@@ -206,6 +205,67 @@ describe("DemoOAuthProvider", () => {
     expect(
       createDemoOAuthProvider({ issuer }).authenticateIntrospectionClient(basic("gw:s3cret"))
     ).toBe(false);
+  });
+
+  it("introspects refresh tokens per RFC 7662: active until rotated, revoked or expired", () => {
+    const provider = createDemoOAuthProvider({
+      issuer,
+      refreshTokenTtlSeconds: 3600,
+      introspectionClient: { clientId: "gw", clientSecret: "s3cret" },
+    });
+    const first = provider.issueAccessToken({ subject: "alice", scopes: [SCOPES.READ] });
+    const before = Math.floor(Date.now() / 1000);
+    for (const hint of [undefined, "refresh_token", "access_token", "bogus"]) {
+      const res = provider.introspect(first.refresh_token, hint);
+      expect(res).toEqual({
+        active: true,
+        token_type: "refresh_token",
+        scope: SCOPES.READ,
+        client_id: DEMO_CLIENT_ID,
+        sub: "alice",
+        iss: issuer,
+        exp: expect.any(Number),
+      });
+      if (res.active) {
+        expect(res.exp).toBeGreaterThanOrEqual(before + 3600 - 1);
+        expect(res.exp).toBeLessThanOrEqual(before + 3600 + 1);
+      }
+    }
+    // An access token is still an access token whatever the hint says.
+    expect(provider.introspect(first.access_token, "refresh_token")).toMatchObject({
+      active: true,
+      token_type: "Bearer",
+    });
+    expect(JSON.stringify(provider.introspect(first.refresh_token))).not.toContain(
+      first.refresh_token
+    );
+
+    // Rotation retires the old refresh token; the new one is active.
+    const second = provider.exchangeRefreshToken({
+      clientId: DEMO_CLIENT_ID,
+      refreshToken: first.refresh_token,
+    });
+    expect(provider.introspect(first.refresh_token, "refresh_token")).toEqual({ active: false });
+    expect(provider.introspect(second.refresh_token, "refresh_token")).toMatchObject({
+      active: true,
+      token_type: "refresh_token",
+    });
+
+    // Revocation.
+    provider.revoke(second.refresh_token);
+    expect(provider.introspect(second.refresh_token, "refresh_token")).toEqual({ active: false });
+
+    // Unknown and expired.
+    expect(provider.introspect("f".repeat(64), "refresh_token")).toEqual({ active: false });
+    const shortLived = createDemoOAuthProvider({ issuer, refreshTokenTtlSeconds: 1 });
+    const t = shortLived.issueAccessToken({ scopes: [SCOPES.READ] });
+    const realNow = Date.now;
+    try {
+      Date.now = () => realNow() + 2000;
+      expect(shortLived.introspect(t.refresh_token, "refresh_token")).toEqual({ active: false });
+    } finally {
+      Date.now = realNow;
+    }
   });
 
   it("discovery advertises no id_token support because no id tokens are issued", () => {

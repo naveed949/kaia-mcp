@@ -75,6 +75,15 @@ export type IntrospectionResponse =
       iat: number;
       nbf: number;
       jti: string;
+    }
+  | {
+      active: true;
+      token_type: "refresh_token";
+      scope: string;
+      client_id: string;
+      sub: string;
+      iss: string;
+      exp: number;
     };
 
 type RefreshRecord = {
@@ -538,12 +547,37 @@ export class DemoOAuthProvider {
   }
 
   /**
-   * RFC 7662 introspection for access tokens. Anything that is not a currently valid,
-   * unrevoked access token for this issuer and audience is `{ active: false }`.
-   * Refresh tokens are not introspectable here and report inactive.
+   * RFC 7662 introspection for access and refresh tokens. `token_type_hint` only picks
+   * which store is searched first; per RFC 7662 §2.1 the other is searched too.
+   * Anything that is not a currently valid, unrevoked token is `{ active: false }`.
+   * Access tokens answer `token_type: "Bearer"`, refresh tokens `"refresh_token"`, so a
+   * resource server can refuse a refresh token presented as a bearer credential.
    */
-  introspect(token: string | undefined): IntrospectionResponse {
+  introspect(token: string | undefined, tokenTypeHint?: string): IntrospectionResponse {
     if (!token) return { active: false };
+    if (tokenTypeHint === "refresh_token") {
+      return this.introspectRefresh(token) ?? this.introspectAccess(token);
+    }
+    const access = this.introspectAccess(token);
+    return access.active ? access : (this.introspectRefresh(token) ?? access);
+  }
+
+  /** Active refresh-token metadata, or undefined when `token` is not a live refresh token. */
+  private introspectRefresh(token: string): IntrospectionResponse | undefined {
+    const record = this.refresh.get(sha256Hex(token));
+    if (!record || record.revoked || record.expiresAtMs <= Date.now()) return undefined;
+    return {
+      active: true,
+      token_type: "refresh_token",
+      scope: record.scopes.join(" "),
+      client_id: record.clientId,
+      sub: record.subject,
+      iss: this.issuer,
+      exp: Math.floor(record.expiresAtMs / 1000),
+    };
+  }
+
+  private introspectAccess(token: string): IntrospectionResponse {
     const payload = this.signingKey.verifySignature(token);
     if (!payload) return { active: false };
     const checked = checkAccessTokenClaims(payload, {

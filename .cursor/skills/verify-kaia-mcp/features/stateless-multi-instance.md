@@ -8,13 +8,15 @@ Because the HTTP transport keeps no sessions, any kaia-mcp process that shares t
 - `key-rotation-previous` makes instance C (new signing key, previous = the shared key) publish both keys in its JWKS, current first, and accept A's token. B does not accept a token signed by C's new key.
 - `public-url-isolation` makes instance D (same key, another `KAIA_PUBLIC_URL`) refuse A's token with `401 invalid_token`.
 - `audience-rejection` refuses tokens signed with the real key and the right `iss` whose `aud` is `"kaia-mcp"` (legacy only), `"https://other.example"`, or the public URL with another port, each with `401`, `-32043` and an `error="invalid_token"` challenge. An `aud` array that also contains the canonical URI is accepted (control).
+- `legacy-audience` makes instance E (same key and public URL, `KAIA_OAUTH_LEGACY_AUDIENCE=kaia-mcp`) mint `aud = ["http://kaia-lb.test","kaia-mcp"]`, which B accepts. The legacy value is only ever added; alone it is refused (see `audience-rejection`).
+- `allowed-origins` makes B, started with `KAIA_ALLOWED_ORIGINS=http://localhost:6274`, accept and echo that browser origin while `http://localhost:9999` still gets `403`.
 - `per-process-state` (documented limitation) answers `invalid_grant` on B for a refresh token issued by A, and a token revoked on A still works on B because each process has its own denylist.
 
 ## How to get to it (user POV)
 
-- Start A and B with `KAIA_PUBLIC_URL=http://kaia-lb.test`, the same `KAIA_OAUTH_SIGNING_KEY_FILE`, and their own `KAIA_OAUTH_REVOCATION_FILE`; C with the same public URL, a new key file and `KAIA_OAUTH_PREVIOUS_SIGNING_KEY_FILES=<shared key>`; D with the shared key and `KAIA_PUBLIC_URL=http://kaia-other.test`.
+- Start A and B with `KAIA_PUBLIC_URL=http://kaia-lb.test`, the same `KAIA_OAUTH_SIGNING_KEY_FILE`, and their own `KAIA_OAUTH_REVOCATION_FILE` (B also with `KAIA_ALLOWED_ORIGINS=http://localhost:6274`); C with the same public URL, a new key file and `KAIA_OAUTH_PREVIOUS_SIGNING_KEY_FILES=<shared key>`; D with the shared key and `KAIA_PUBLIC_URL=http://kaia-other.test`; E like A plus `KAIA_OAUTH_LEGACY_AUDIENCE=kaia-mcp`.
 - Device flow on A; MCP `POST /` with that bearer on B, C and D.
-- Device flow on C; MCP on B.
+- Device flow on C; MCP on B. Device flow on E; MCP on B, with `Origin: http://localhost:6274` and `Origin: http://localhost:9999`.
 - Sign tokens with the shared key and altered `aud`; MCP on B.
 - `POST /oauth/token` (refresh) on B with A's refresh token; `POST /oauth/revoke` on A, then MCP on A and B.
 
@@ -23,13 +25,14 @@ Because the HTTP transport keeps no sessions, any kaia-mcp process that shares t
 Preconditions:
 
 - `launch.sh` has run (the drive needs `server.env` and the built `dist/`). The launched instance is not used or changed.
-- The drive starts its own four processes on free ports, logs them into this run's `server.log`, and stops them at the end. Their pids are recorded in `extra-pids` so `cleanup.sh` stops them if the drive dies.
+- The drive starts its own five processes on free ports, logs them into this run's `server.log`, and stops them at the end. Their pids are recorded in `extra-pids` so `cleanup.sh` stops them if the drive dies.
 
 - **Run.** `.cursor/skills/verify-kaia-mcp/helpers/drive.sh stateless-multi-instance`.
 - **Shared key.** `jwks-a.json` and `jwks-b.json` publish the same single `kid`. `health-b.json` has `issuer` `http://kaia-lb.test`. `on-a.token.json` holds a token whose `iss` and `aud` are `http://kaia-lb.test`.
 - **Cross-instance.** `b-encode.headers` is `HTTP/1.1 200` and `b-encode.json` contains `0x70a082310000000000000000000000001234567890123456789012345678901234567890`; `b-list.json` lists `encode_function_data`. No `*.headers` file has `mcp-session-id`.
 - **Rotation.** `jwks-c.json` has two keys: a new `kid`, then A's `kid`. `c-encode.json` contains the calldata. `tool-call-log-count.json` shows `allowedAfter = allowedBefore + 2`. `b-token-from-c.headers` is `HTTP/1.1 401`.
 - **Isolation and audience.** `d-encode.headers`, `aud-legacy-only.headers`, `aud-other-uri.headers` and `aud-other-port.headers` are `HTTP/1.1 401` with `error="invalid_token"` and body `-32043`. `aud-array-with-canonical.headers` is `HTTP/1.1 200`.
+- **Legacy audience and allowed origins.** `on-e.token.json` holds a token with `aud` `["http://kaia-lb.test","kaia-mcp"]`; `b-token-from-e.headers` is `HTTP/1.1 200`. `b-origin-allowed.headers` is `HTTP/1.1 200` with `access-control-allow-origin: http://localhost:6274`; `b-origin-other.headers` is `HTTP/1.1 403`.
 - **Per-process state.** `b-refresh-from-a.json` has `"error":"invalid_grant"`. `a-after-revoke.json` has `-32043`. `per-process-observation.json` records `revokedOnA_statusOnB: 200`.
 - **Proof.** All of the files above are under `.cursor/skills/verify-kaia-mcp/evidence/<run-id>/stateless-multi-instance/`.
 

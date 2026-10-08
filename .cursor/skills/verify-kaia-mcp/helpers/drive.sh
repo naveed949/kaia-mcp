@@ -679,6 +679,15 @@ case "${FEATURE}" in
       -H "Origin: ${BASE}" -H "Access-Control-Request-Method: POST" \
       -H "Access-Control-Request-Headers: authorization, content-type, mcp-protocol-version, mcp-method, mcp-name" || true
     curl -sS -D "${OUT}/jwks-evil-origin.headers" -o "${OUT}/jwks-evil-origin.json" -H "Origin: https://evil.example" "${BASE}/oauth/jwks"
+    # Body handling before the MCP server runs: not JSON -> 400 -32700; over 4 MB -> 413 -32600.
+    curl -sS -D "${OUT}/bad-json.headers" -o "${OUT}/bad-json.json" -X POST "${BASE}/" \
+      -H "Authorization: Bearer ${ACCESS}" -H "Content-Type: application/json" \
+      -H "Accept: application/json, text/event-stream" -d '{"jsonrpc":' || true
+    head -c $((4 * 1024 * 1024 + 16)) /dev/zero | tr '\0' ' ' >"${OUT}/.big-body.tmp"
+    curl -sS -D "${OUT}/too-large.headers" -o "${OUT}/too-large.json" -X POST "${BASE}/" \
+      -H "Authorization: Bearer ${ACCESS}" -H "Content-Type: application/json" \
+      -H "Accept: application/json, text/event-stream" -H "Expect:" --data-binary "@${OUT}/.big-body.tmp" || true
+    rm -f "${OUT}/.big-body.tmp"
     echo "{\"before\":${CALLS_BEFORE},\"after\":$(tool_call_count get_block_number)}" | save tool-call-count.json
     OUT="${OUT}" BASE="${BASE}" node - <<'JS'
 const fs = require("fs"); const r = (f) => fs.readFileSync(process.env.OUT + "/" + f, "utf8");
@@ -704,7 +713,9 @@ for (const h of ["Authorization", "Content-Type", "MCP-Protocol-Version", "Mcp-M
 if (/mcp-session-id/i.test(r("preflight.headers"))) fail("preflight still mentions Mcp-Session-Id");
 if (header("preflight.headers", "access-control-allow-origin") === "*") fail("MCP endpoint CORS is *");
 if (status("jwks-evil-origin.headers") !== 200 || header("jwks-evil-origin.headers", "access-control-allow-origin") !== "*") fail("public JWKS not readable cross-origin");
-console.log("drive stateless-transport: GET/DELETE -> 405 Allow: POST; tools/list without initialize ok (scope-filtered); no Mcp-Session-Id minted, stale one ignored; foreign Origin -> 403 (MCP + OAuth, tool never ran); own Origin echoed + Vary; preflight allows MCP-Protocol-Version/Mcp-Method/Mcp-Name; public JWKS ACAO *");
+if (status("bad-json.headers") !== 400 || JSON.parse(r("bad-json.json")).error.code !== -32700) fail("non-JSON body not 400 -32700: " + r("bad-json.json"));
+if (status("too-large.headers") !== 413 || JSON.parse(r("too-large.json")).error.code !== -32600) fail("oversized body not 413 -32600: " + r("too-large.json").slice(0, 200));
+console.log("drive stateless-transport: non-JSON -> 400 -32700; >4 MB -> 413 -32600; GET/DELETE -> 405 Allow: POST; tools/list without initialize ok (scope-filtered); no Mcp-Session-Id minted, stale one ignored; foreign Origin -> 403 (MCP + OAuth, tool never ran); own Origin echoed + Vary; preflight allows MCP-Protocol-Version/Mcp-Method/Mcp-Name; public JWKS ACAO *");
 JS
     ;;
 
@@ -831,7 +842,7 @@ JS
     APID="$(start_extra_kaia "${PA}" "KAIA_PUBLIC_URL=${PUB}" "KAIA_OAUTH_SIGNING_KEY_FILE=${MDIR}/shared.pem" "KAIA_OAUTH_REVOCATION_FILE=${MDIR}/revoked-a.json")"
     wait_ready "${PA}" "${APID}"
     PB="$(free_port)"
-    BPID="$(start_extra_kaia "${PB}" "KAIA_PUBLIC_URL=${PUB}" "KAIA_OAUTH_SIGNING_KEY_FILE=${MDIR}/shared.pem" "KAIA_OAUTH_REVOCATION_FILE=${MDIR}/revoked-b.json")"
+    BPID="$(start_extra_kaia "${PB}" "KAIA_PUBLIC_URL=${PUB}" "KAIA_OAUTH_SIGNING_KEY_FILE=${MDIR}/shared.pem" "KAIA_OAUTH_REVOCATION_FILE=${MDIR}/revoked-b.json" "KAIA_ALLOWED_ORIGINS=http://localhost:6274")"
     wait_ready "${PB}" "${BPID}"
     PC="$(free_port)"
     CPID="$(start_extra_kaia "${PC}" "KAIA_PUBLIC_URL=${PUB}" "KAIA_OAUTH_SIGNING_KEY_FILE=${MDIR}/rotated.pem" "KAIA_OAUTH_PREVIOUS_SIGNING_KEY_FILES=${MDIR}/shared.pem" "KAIA_OAUTH_REVOCATION_FILE=${MDIR}/revoked-c.json")"
@@ -839,8 +850,11 @@ JS
     PD="$(free_port)"
     DPID="$(start_extra_kaia "${PD}" "KAIA_PUBLIC_URL=http://kaia-other.test" "KAIA_OAUTH_SIGNING_KEY_FILE=${MDIR}/shared.pem" "KAIA_OAUTH_REVOCATION_FILE=${MDIR}/revoked-d.json")"
     wait_ready "${PD}" "${DPID}"
-    echo "{\"a\":${PA},\"b\":${PB},\"c\":${PC},\"d\":${PD},\"publicUrl\":\"${PUB}\"}" | save ports.json
-    A="http://127.0.0.1:${PA}" B="http://127.0.0.1:${PB}" C="http://127.0.0.1:${PC}" D="http://127.0.0.1:${PD}"
+    PE="$(free_port)"
+    EPID="$(start_extra_kaia "${PE}" "KAIA_PUBLIC_URL=${PUB}" "KAIA_OAUTH_SIGNING_KEY_FILE=${MDIR}/shared.pem" "KAIA_OAUTH_REVOCATION_FILE=${MDIR}/revoked-e.json" "KAIA_OAUTH_LEGACY_AUDIENCE=kaia-mcp")"
+    wait_ready "${PE}" "${EPID}"
+    echo "{\"a\":${PA},\"b\":${PB},\"c\":${PC},\"d\":${PD},\"e\":${PE},\"publicUrl\":\"${PUB}\"}" | save ports.json
+    A="http://127.0.0.1:${PA}" B="http://127.0.0.1:${PB}" C="http://127.0.0.1:${PC}" D="http://127.0.0.1:${PD}" E="http://127.0.0.1:${PE}"
     curl -sS "${A}/oauth/jwks" | save jwks-a.json
     curl -sS "${B}/oauth/jwks" | save jwks-b.json
     curl -sS "${C}/oauth/jwks" | save jwks-c.json
@@ -854,6 +868,15 @@ JS
     AFTER="$(tool_call_outcome_count encode_function_data allowed)"
     echo "{\"allowedBefore\":${BEFORE},\"allowedAfter\":${AFTER}}" | save tool-call-log-count.json
     TOKEN_C="$(device_token on-c kaia:read "${C}")"
+    # Legacy audience (gateways pinning a non-URI aud): E mints [canonical, "kaia-mcp"]; B accepts it.
+    TOKEN_E="$(device_token on-e kaia:read "${E}")"
+    mcp_call b-token-from-e "${TOKEN_E}" '{"jsonrpc":"2.0","id":6,"method":"tools/list","params":{}}' "${B}"
+    # KAIA_ALLOWED_ORIGINS on B: the listed browser origin passes (echoed), others still 403.
+    for o in allowed:http://localhost:6274 other:http://localhost:9999; do
+      curl -sS -D "${OUT}/b-origin-${o%%:*}.headers" -o "${OUT}/b-origin-${o%%:*}.json" -X POST "${B}/" \
+        -H "Origin: ${o#*:}" -H "Authorization: Bearer ${TOKEN_E}" -H "Content-Type: application/json" \
+        -H "Accept: application/json, text/event-stream" -d '{"jsonrpc":"2.0","id":9,"method":"tools/list","params":{}}' || true
+    done
     mcp_call b-token-from-c "${TOKEN_C}" '{"jsonrpc":"2.0","id":3,"method":"tools/list","params":{}}' "${B}"
     # Audience rejection: tokens signed with the real shared key and the right iss, but an
     # aud other than the canonical URI. The array that also holds the canonical URI is the
@@ -883,7 +906,7 @@ JS
     curl -sS -o "${OUT}/a-revoke.json" -X POST "${A}/oauth/revoke" -H "Content-Type: application/x-www-form-urlencoded" --data-urlencode "token=${TOKEN_A}"
     mcp_call a-after-revoke "${TOKEN_A}" '{"jsonrpc":"2.0","id":5,"method":"tools/list","params":{}}' "${A}"
     mcp_call b-after-revoke-on-a "${TOKEN_A}" '{"jsonrpc":"2.0","id":5,"method":"tools/list","params":{}}' "${B}"
-    for p in "${APID}" "${BPID}" "${CPID}" "${DPID}"; do stop_pid "${p}"; done
+    for p in "${APID}" "${BPID}" "${CPID}" "${DPID}" "${EPID}"; do stop_pid "${p}"; done
     OUT="${OUT}" PUB="${PUB}" EXPECTED_CALLDATA="${EXPECTED_CALLDATA}" node - <<'JS'
 const fs = require("fs"); const r = (f) => fs.readFileSync(process.env.OUT + "/" + f, "utf8");
 const fail = (m) => { console.error("drive: " + m); process.exit(1); };
@@ -901,6 +924,11 @@ if (!r("c-encode.json").includes(process.env.EXPECTED_CALLDATA)) fail("rotated C
 const n = JSON.parse(r("tool-call-log-count.json")); if (n.allowedAfter !== n.allowedBefore + 2) fail("expected two allowed encode calls (B and C) " + JSON.stringify(n));
 if (status("d-encode.headers") !== 401 || JSON.parse(r("d-encode.json")).error.code !== -32043) fail("D (other public URL, same key) accepted A's token");
 if (status("b-token-from-c.headers") !== 401) fail("B accepted a token signed by C's new key it does not know");
+const eAud = JSON.parse(Buffer.from(JSON.parse(r("on-e.token.json")).access_token.split(".")[1], "base64url")).aud;
+if (JSON.stringify(eAud) !== JSON.stringify([PUB, "kaia-mcp"])) fail("legacy-audience instance E minted aud " + JSON.stringify(eAud));
+if (status("b-token-from-e.headers") !== 200) fail("B rejected E's [canonical, legacy] token");
+if (status("b-origin-allowed.headers") !== 200 || !/^access-control-allow-origin: http:\/\/localhost:6274\s*$/im.test(r("b-origin-allowed.headers"))) fail("KAIA_ALLOWED_ORIGINS origin not allowed/echoed on B");
+if (status("b-origin-other.headers") !== 403) fail("unlisted origin not 403 on B");
 for (const f of ["aud-legacy-only", "aud-other-uri", "aud-other-port"]) {
   if (status(f + ".headers") !== 401 || JSON.parse(r(f + ".json")).error.code !== -32043) fail(f + " (wrong aud, valid signature) not rejected: " + r(f + ".json").slice(0, 200));
   if (!/error="invalid_token"/.test(r(f + ".headers"))) fail(f + " lacks the invalid_token challenge");
@@ -911,7 +939,7 @@ if (JSON.parse(r("a-after-revoke.json")).error.code !== -32043) fail("revoked to
 const bAfter = status("b-after-revoke-on-a.headers");
 fs.writeFileSync(process.env.OUT + "/per-process-observation.json", JSON.stringify({ refreshFromAOnB: "invalid_grant", revokedOnA_statusOnB: bAfter }, null, 2));
 if (bAfter !== 200) fail("B rejected a token revoked only on A; the docs say denylists are per process today, update them if this changed");
-console.log("drive stateless-multi-instance: A and B share key + KAIA_PUBLIC_URL; token from A (iss = aud = public URL) works on B with no initialize and no session header; rotated C serves [new, previous] and accepts it; D (other public URL) rejects it; wrong-aud tokens with a valid signature (legacy-only, other URI, other port) -> 401 invalid_token, aud array with canonical accepted; AS state + denylist per process (refresh from A invalid_grant on B; revoke on A not seen by B, as documented)");
+console.log("drive stateless-multi-instance: A and B share key + KAIA_PUBLIC_URL; token from A (iss = aud = public URL) works on B with no initialize and no session header; rotated C serves [new, previous] and accepts it; D (other public URL) rejects it; wrong-aud tokens with a valid signature (legacy-only, other URI, other port) -> 401 invalid_token, aud array with canonical accepted; legacy-audience E mints [canonical, kaia-mcp] and B accepts it; KAIA_ALLOWED_ORIGINS origin allowed on B, others 403; AS state + denylist per process (refresh from A invalid_grant on B; revoke on A not seen by B, as documented)");
 JS
     ;;
 

@@ -53,7 +53,7 @@ Harness is curl against the instance URL in `instance.json` (`http://127.0.0.1:<
 .cursor/skills/verify-kaia-mcp/helpers/drive.sh stateless-transport   # 405 on GET/DELETE, no session, Origin 403, CORS
 .cursor/skills/verify-kaia-mcp/helpers/drive.sh bearer-challenges     # 401 challenges, 403 insufficient_scope
 .cursor/skills/verify-kaia-mcp/helpers/drive.sh resource-indicators   # RFC 8707 resource/aud, RFC 9207 iss, PRM
-.cursor/skills/verify-kaia-mcp/helpers/drive.sh stateless-multi-instance  # starts 4 extra processes; shared key, rotation, aud rejection
+.cursor/skills/verify-kaia-mcp/helpers/drive.sh stateless-multi-instance  # starts 5 extra processes; shared key, rotation, aud rejection, legacy aud, allowed origins
 ```
 
 Stable handles: paths `/health`, `/.well-known/openid-configuration`, `/oauth/authorize`, `/oauth/consent`, `/oauth/token`, `/oauth/device`, `/oauth/device/verify`, `/oauth/revoke`, `/oauth/jwks`, `/oauth/introspect`, `/.well-known/oauth-authorization-server`, `/.well-known/oauth-protected-resource`, `/.well-known/kaia-mcp/tool-scopes`, and MCP `POST /` with JSON-RPC methods `initialize`, `tools/list`, `tools/call`. OAuth parameter `resource` (the issuer URL). Demo client id `kaia-mcp-demo`. Redirect `http://127.0.0.1/callback`. Scopes `kaia:read`, `kaia:encode`, `kaia:wallet`.

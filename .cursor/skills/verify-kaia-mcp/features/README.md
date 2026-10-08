@@ -43,9 +43,10 @@ Keep implementation details out of the map. Name only user paths, stable handles
 
 ## Features
 
-- [OAuth PKCE scoped tools](./oauth-pkce-scoped-tools.md) covers discovery, browser PKCE consent, token exchange, a scope-allowed MCP tool call, plain-PKCE rejection, and Deny.
-- [Fail-closed auth](./fail-closed-auth.md) covers missing bearer, insufficient scope, and revoked token.
+- [OAuth PKCE scoped tools](./oauth-pkce-scoped-tools.md) covers discovery (no ID-token advertisement), browser PKCE consent, token exchange, a scope-allowed MCP tool call, plain-PKCE rejection, and Deny.
+- [Fail-closed auth](./fail-closed-auth.md) covers missing bearer, insufficient scope (with its `outcome=denied` `Tool call` log line), and revoked token.
 - [Generate wallet gated](./generate-wallet-gated.md) covers omission from tools/list and refusal to return a private key.
 - [Device flow](./device-flow.md) covers CLI device authorization, user-code consent, and a scoped tool call.
 - [JWT access tokens](./jwt-access-tokens.md) covers the JWT shape, offline verification via JWKS, forged and `alg=none` rejection, live expiry, the `Tool call` log line, and the tool-scopes metadata endpoint.
-- [Token introspection](./token-introspection.md) covers client-authenticated RFC 7662 introspection, revocation by `jti`, and refresh rotation.
+- [Token introspection](./token-introspection.md) covers client-authenticated RFC 7662 introspection of access and refresh tokens, revocation by `jti`, and refresh rotation.
+- [Revocation across restart](./revocation-restart.md) covers revoked tokens staying rejected after a restart (persisted key + persisted denylist), refusal to start on a corrupt denylist, and in-memory-key restarts invalidating every token.

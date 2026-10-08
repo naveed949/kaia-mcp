@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 # Drive one mapped feature against the launched instance.
-# Usage: helpers/drive.sh <oauth-pkce-scoped-tools|fail-closed-auth|generate-wallet-gated|device-flow|jwt-access-tokens|token-introspection>
+# Usage: helpers/drive.sh <oauth-pkce-scoped-tools|fail-closed-auth|generate-wallet-gated|device-flow|jwt-access-tokens|token-introspection|revocation-restart>
 # Writes evidence under ${EVIDENCE_DIR}/<feature>/ and does not delete it.
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
 FEATURE="${1:-}"
 if [[ -z "${FEATURE}" ]]; then
-  echo "Usage: helpers/drive.sh <oauth-pkce-scoped-tools|fail-closed-auth|generate-wallet-gated|device-flow|jwt-access-tokens|token-introspection>" >&2
+  echo "Usage: helpers/drive.sh <oauth-pkce-scoped-tools|fail-closed-auth|generate-wallet-gated|device-flow|jwt-access-tokens|token-introspection|revocation-restart>" >&2
   exit 2
 fi
 
@@ -95,7 +95,8 @@ mcp_init_only() {
 
 # RFC 7662 introspection. Usage: introspect <prefix> <token> [none|wrong|gateway]
 introspect() {
-  local prefix="$1" token="$2" mode="${3:-gateway}" secret_file auth=()
+  local prefix="$1" token="$2" mode="${3:-gateway}" hint="${4:-}" secret_file auth=() extra=()
+  if [[ -n "${hint}" ]]; then extra=(--data-urlencode "token_type_hint=${hint}"); fi
   secret_file="$(node -e "process.stdout.write(require(process.argv[1]).introspectionSecretFile)" "${INSTANCE_FILE}")"
   case "${mode}" in
     gateway) auth=(-u "$(node -e "const s=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')); process.stdout.write(s.client_id+':'+s.client_secret)" "${secret_file}")") ;;
@@ -103,7 +104,20 @@ introspect() {
     none) auth=() ;;
   esac
   curl -sS -D "${OUT}/${prefix}.headers" -o "${OUT}/${prefix}.json" -X POST "${BASE}/oauth/introspect" \
-    "${auth[@]}" -H "Content-Type: application/x-www-form-urlencoded" --data-urlencode "token=${token}" || true
+    "${auth[@]}" -H "Content-Type: application/x-www-form-urlencoded" --data-urlencode "token=${token}" "${extra[@]}" || true
+}
+
+# Lines for one tool and authorization outcome. Usage: tool_call_outcome_count <tool> <allowed|denied>
+tool_call_outcome_count() {
+  local log
+  log="$(node -e "process.stdout.write(require(process.argv[1]).logFile)" "${INSTANCE_FILE}")"
+  { grep -c "msg=Tool call tool=$1 outcome=$2 " "${log}" || true; } | tr -d '\n'
+}
+
+# Revoke a token over RFC 7009; prints the HTTP status. Usage: revoke_status <prefix> <token>
+revoke_status() {
+  curl -sS -o "${OUT}/$1.json" -w '%{http_code}' -X POST "${BASE}/oauth/revoke" \
+    -H "Content-Type: application/x-www-form-urlencoded" --data-urlencode "token=$2"
 }
 
 tool_call_count() {
@@ -155,6 +169,7 @@ case "${FEATURE}" in
       const fail=(m)=>{ console.error('drive: '+m); process.exit(1); };
       const disc=JSON.parse(r('discovery.json'));
       if (JSON.stringify(disc.code_challenge_methods_supported)!=='[\"S256\"]' || !disc.authorization_endpoint) fail('discovery missing S256/authorization_endpoint');
+      if (JSON.stringify(disc.response_types_supported)!=='[\"code\"]' || JSON.stringify(disc).includes('id_token')) fail('discovery advertises id_token support or a response type other than code');
       const html=r('consent.html');
       if (!html.includes('Authorize kaia-mcp') || !html.includes('kaia:encode')) fail('consent page missing title or scope');
       if (!/state=verify1/.test(r('consent.headers'))) fail('consent redirect missing state');
@@ -206,7 +221,12 @@ case "${FEATURE}" in
       --data-urlencode "redirect_uri=http://127.0.0.1/callback" \
       | save read-token.json
     ACCESS="$(node -e "process.stdout.write(JSON.parse(require('fs').readFileSync('${OUT}/read-token.json','utf8')).access_token)")"
+    DENIED_BEFORE="$(tool_call_outcome_count encode_function_data denied)"
     mcp_call deny-scope "${ACCESS}" "${ENCODE_BODY}"
+    DENIED_AFTER="$(tool_call_outcome_count encode_function_data denied)"
+    LOG_FILE_PATH="$(inst logFile)"
+    grep "msg=Tool call tool=encode_function_data outcome=denied " "${LOG_FILE_PATH}" | tail -n 1 | save deny-scope.tool-call-line.txt || true
+    echo "{\"before\":${DENIED_BEFORE},\"after\":${DENIED_AFTER}}" | save deny-scope.tool-call-log-count.json
     node -e "
       const fs=require('fs');
       const body=fs.readFileSync('${OUT}/deny-scope.json','utf8');
@@ -215,7 +235,11 @@ case "${FEATURE}" in
         process.exit(1);
       }
       if (body.includes('0x70a08231')) { console.error('drive: denied call leaked calldata'); process.exit(1); }
-      console.log('drive fail-closed-auth: deny-by-scope ok');
+      const n=JSON.parse(fs.readFileSync('${OUT}/deny-scope.tool-call-log-count.json','utf8'));
+      if (n.after!==n.before+1) { console.error('drive: expected one outcome=denied Tool call line', n); process.exit(1); }
+      const line=fs.readFileSync('${OUT}/deny-scope.tool-call-line.txt','utf8');
+      if (!/errorCode=-32042/.test(line) || !/reason=insufficient_scope/.test(line) || line.includes('balanceOf')) { console.error('drive: denied Tool call line wrong', line); process.exit(1); }
+      console.log('drive fail-closed-auth: deny-by-scope ok (one outcome=denied errorCode=-32042 Tool call line)');
     "
     curl -sS -X POST "${BASE}/oauth/revoke" \
       -H "Content-Type: application/x-www-form-urlencoded" \
@@ -330,9 +354,11 @@ case "${FEATURE}" in
       fs.writeFileSync(outFile, JSON.stringify({header, claims}, null, 2));
     " "${OUT}/jwt.token.json" "${OUT}/jwks.json" "${BASE}" "$(node -e "process.stdout.write(String(require(process.argv[1]).tokenTtlSeconds))" "${INSTANCE_FILE}")" "${OUT}/decoded.json"
     BEFORE="$(tool_call_count encode_function_data)"
+    ALLOWED_BEFORE="$(tool_call_outcome_count encode_function_data allowed)"
     mcp_call allow "${ACCESS}" "${ENCODE_BODY}"
     AFTER="$(tool_call_count encode_function_data)"
-    echo "{\"before\":${BEFORE},\"after\":${AFTER}}" | save tool-call-log-count.json
+    ALLOWED_AFTER="$(tool_call_outcome_count encode_function_data allowed)"
+    echo "{\"before\":${BEFORE},\"after\":${AFTER},\"allowedBefore\":${ALLOWED_BEFORE},\"allowedAfter\":${ALLOWED_AFTER}}" | save tool-call-log-count.json
     # Forged: same claims and the real kid, signed by a key kaia-mcp never issued.
     FORGED="$(node -e "
       const c=require('crypto'); const [h,p]=process.argv[1].split('.');
@@ -352,7 +378,7 @@ case "${FEATURE}" in
       const fs=require('fs'); const r=(f)=>fs.readFileSync('${OUT}/'+f,'utf8');
       const fail=(m)=>{ console.error('drive: '+m); process.exit(1); };
       if (!r('allow.json').includes('${EXPECTED_CALLDATA}')) fail('allowed call missing calldata');
-      const n=JSON.parse(r('tool-call-log-count.json')); if (n.after!==n.before+1) fail('expected exactly one new Tool call log line, got '+JSON.stringify(n));
+      const n=JSON.parse(r('tool-call-log-count.json')); if (n.after!==n.before+1 || n.allowedAfter!==n.allowedBefore+1) fail('expected exactly one new outcome=allowed Tool call log line, got '+JSON.stringify(n));
       for (const f of ['forged','alg-none']) {
         if (!/^HTTP\/1\.1 401/m.test(r(f+'.headers'))) fail(f+' not 401');
         const e=JSON.parse(r(f+'.json')).error; if (e.code!==-32043 || e.data.error!=='invalid_token') fail(f+' wrong error '+JSON.stringify(e));
@@ -361,7 +387,7 @@ case "${FEATURE}" in
       const ex=JSON.parse(r('expired.json')).error; if (ex.code!==-32041 || ex.message!=='token_expired: access token has expired') fail('expired wrong error '+JSON.stringify(ex));
       const ts=JSON.parse(r('tool-scopes.json'));
       if (Object.keys(ts.tool_scopes).length!==26 || ts.tool_scopes.encode_function_data!=='kaia:encode' || ts.tool_scopes.generate_wallet!=='kaia:wallet' || ts.tool_scopes.get_block_number!=='kaia:read') fail('tool-scopes map wrong');
-      console.log('drive jwt-access-tokens: JWT verifies offline via JWKS; allowed call logged once; forged + alg=none -> invalid_token; expired -> token_expired; tool-scopes map ok');
+      console.log('drive jwt-access-tokens: JWT verifies offline via JWKS; allowed call logged once (outcome=allowed); forged + alg=none -> invalid_token; expired -> token_expired; tool-scopes map ok');
     "
     ;;
 
@@ -383,6 +409,14 @@ case "${FEATURE}" in
     NEW_ACCESS="$(node -e "process.stdout.write(JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')).access_token)" "${OUT}/rotated.token.json")"
     introspect rotated-old "${OLD_ACCESS}" gateway
     introspect rotated-new "${NEW_ACCESS}" gateway
+    # Refresh tokens are introspectable too (token_type refresh_token).
+    NEW_REFRESH="$(node -e "process.stdout.write(JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')).refresh_token)" "${OUT}/rotated.token.json")"
+    introspect refresh-old "${REFRESH}" gateway refresh_token
+    introspect refresh-active "${NEW_REFRESH}" gateway refresh_token
+    introspect refresh-active-nohint "${NEW_REFRESH}" gateway
+    curl -sS -o "${OUT}/revoke-refresh.json" -X POST "${BASE}/oauth/revoke" \
+      -H "Content-Type: application/x-www-form-urlencoded" --data-urlencode "token=${NEW_REFRESH}"
+    introspect refresh-revoked "${NEW_REFRESH}" gateway refresh_token
     node -e "
       const fs=require('fs'); const r=(f)=>fs.readFileSync('${OUT}/'+f,'utf8');
       const fail=(m)=>{ console.error('drive: '+m); process.exit(1); };
@@ -398,7 +432,107 @@ case "${FEATURE}" in
       const m=JSON.parse(r('revoked-mcp.json')).error; if (m.code!==-32043) fail('revoked bearer reached MCP '+JSON.stringify(m));
       if (JSON.parse(r('rotated-old.json')).active!==false) fail('old access token active after refresh rotation');
       if (JSON.parse(r('rotated-new.json')).active!==true) fail('rotated access token inactive');
-      console.log('drive token-introspection: unauthenticated/wrong secret -> 401 invalid_client; active claims; revoke -> inactive + MCP invalid_token; refresh rotation retires old jti');
+      for (const f of ['refresh-active','refresh-active-nohint']) {
+        const x=JSON.parse(r(f+'.json'));
+        if (x.active!==true || x.token_type!=='refresh_token' || x.scope!=='kaia:read' || x.client_id!=='kaia-mcp-demo' || x.sub!=='demo-user' || x.iss!=='${BASE}' || typeof x.exp!=='number') fail(f+' wrong '+JSON.stringify(x));
+        if (r(f+'.json').includes('${REFRESH}') || r(f+'.json').includes(JSON.parse(r('rotated.token.json')).refresh_token)) fail(f+' echoed the refresh token');
+      }
+      for (const f of ['refresh-old','refresh-revoked']) if (JSON.stringify(JSON.parse(r(f+'.json')))!=='{\"active\":false}') fail(f+' should be exactly {active:false}');
+      console.log('drive token-introspection: unauthenticated/wrong secret -> 401 invalid_client; active claims; revoke -> inactive + MCP invalid_token; refresh rotation retires old jti; refresh token active (token_type refresh_token) until rotated/revoked');
+    "
+    ;;
+
+  revocation-restart)
+    # Restarts this run's instance on the same port (helpers/restart.sh) and restores the
+    # launch key mode at the end. Phase 1: persisted key -> revoked tokens stay revoked.
+    # Phase 2: corrupt denylist -> refuses to start. Phase 3: in-memory key -> a restart
+    # invalidates every token.
+    "${HELPERS_DIR}/restart.sh" file | save restart-1-file.txt
+    "${HELPERS_DIR}/doctor.sh" | save doctor-1.txt
+    curl -sS "${BASE}/oauth/jwks" | save jwks-a.json
+    KEPT="$(device_token kept kaia:encode)"
+    REVOKED="$(device_token revoked kaia:read)"
+    REFRESH_ACCESS="$(device_token refreshed kaia:read)"
+    REFRESH="$(node -e "process.stdout.write(JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')).refresh_token)" "${OUT}/refreshed.token.json")"
+    echo "{\"access\":$(revoke_status revoke-access "${REVOKED}"),\"refresh\":$(revoke_status revoke-refresh "${REFRESH}")}" | save revoke-status.json
+    mcp_init_only revoked-before "${REVOKED}"
+    STATE_DIR="$(dirname "$(inst logFile)")/state"
+    cp "${STATE_DIR}/revoked-jti.json" "${OUT}/denylist.json"
+    stat -c '%a' "${STATE_DIR}/revoked-jti.json" | save denylist.mode.txt
+    "${HELPERS_DIR}/restart.sh" file | save restart-2-file.txt
+    "${HELPERS_DIR}/doctor.sh" | save doctor-2.txt
+    curl -sS "${BASE}/oauth/jwks" | save jwks-b.json
+    mcp_call kept-after "${KEPT}" "${ENCODE_BODY}"
+    mcp_init_only revoked-after "${REVOKED}"
+    mcp_init_only refreshed-access-after "${REFRESH_ACCESS}"
+    introspect revoked-after-introspect "${REVOKED}" gateway
+    introspect kept-after-introspect "${KEPT}" gateway
+    curl -sS -X POST "${BASE}/oauth/token" -H "Content-Type: application/x-www-form-urlencoded" \
+      --data-urlencode "grant_type=refresh_token" --data-urlencode "client_id=kaia-mcp-demo" \
+      --data-urlencode "refresh_token=${REFRESH}" | save refresh-after.json
+
+    # A corrupt denylist next to a persisted key must stop startup, not start empty.
+    CORRUPT_DIR="$(dirname "$(inst logFile)")/corrupt"
+    mkdir -p "${CORRUPT_DIR}"
+    cp "${STATE_DIR}/signing-key.pem" "${CORRUPT_DIR}/signing-key.pem"
+    printf '{"version":1,"entries":[{"id":' > "${CORRUPT_DIR}/revoked-jti.json"
+    CPORT="$(node -e 'const n=require("net");const s=n.createServer();s.listen(0,"127.0.0.1",()=>{console.log(s.address().port);s.close()});')"
+    set +e
+    (
+      set -a
+      # shellcheck disable=SC1091
+      source "$(dirname "$(inst logFile)")/server.env"
+      set +a
+      export KAIA_OAUTH_SIGNING_KEY_FILE="${CORRUPT_DIR}/signing-key.pem" LOG_LEVEL=info
+      cd "${REPO_ROOT}"
+      timeout 20 node dist/bin/kaia-mcp.js --transport http --port "${CPORT}"
+    ) >"${OUT}/corrupt-start.log" 2>&1
+    CORRUPT_EXIT=$?
+    set -e
+    CORRUPT_LISTENING=false
+    if curl -s -o /dev/null "http://127.0.0.1:${CPORT}/health"; then CORRUPT_LISTENING=true; fi
+    echo "{\"exit\":${CORRUPT_EXIT},\"listening\":${CORRUPT_LISTENING}}" | save corrupt-start.json
+
+    # In-memory key: the restart mints a new key, so even the never-revoked token dies.
+    "${HELPERS_DIR}/restart.sh" memory | save restart-3-memory.txt
+    "${HELPERS_DIR}/doctor.sh" | save doctor-3.txt
+    curl -sS "${BASE}/oauth/jwks" | save jwks-c.json
+    mcp_init_only kept-after-memory "${KEPT}"
+    mcp_init_only revoked-after-memory "${REVOKED}"
+
+    # Back to the launch mode so later drives see the baseline.
+    "${HELPERS_DIR}/restart.sh" "$(inst launchKeyMode)" | save restart-4-restore.txt
+    "${HELPERS_DIR}/doctor.sh" | save doctor-4.txt
+    node -e "
+      const fs=require('fs'); const r=(f)=>fs.readFileSync('${OUT}/'+f,'utf8');
+      const fail=(m)=>{ console.error('drive: '+m); process.exit(1); };
+      const jti=(t)=>JSON.parse(Buffer.from(t.split('.')[1],'base64url')).jti;
+      const kid=(f)=>JSON.parse(r(f)).keys[0].kid;
+      const st=JSON.parse(r('revoke-status.json')); if (st.access!==200 || st.refresh!==200) fail('revoke status '+JSON.stringify(st));
+      if (JSON.parse(r('revoked-before.json')).error.code!==-32043) fail('revoked token accepted before restart');
+      const dl=JSON.parse(r('denylist.json'));
+      const ids=(dl.entries||[]).map(e=>e.id);
+      if (dl.version!==1 || !ids.includes(jti('${REVOKED}')) || !ids.includes(jti('${REFRESH_ACCESS}'))) fail('denylist missing jtis '+JSON.stringify(dl));
+      if (ids.includes(jti('${KEPT}'))) fail('denylist contains an unrevoked jti');
+      if (/eyJ/.test(r('denylist.json')) || r('denylist.json').includes('${REFRESH}')) fail('denylist contains token material');
+      if (r('denylist.mode.txt').trim()!=='600') fail('denylist mode '+r('denylist.mode.txt'));
+      if (kid('jwks-a.json')!==kid('jwks-b.json')) fail('file-mode restart changed the kid');
+      if (!r('kept-after.json').includes('${EXPECTED_CALLDATA}')) fail('unrevoked token did not work after file-mode restart');
+      for (const f of ['revoked-after','refreshed-access-after']) {
+        if (!/^HTTP\/1\.1 401/m.test(r(f+'.headers'))) fail(f+' not 401');
+        const e=JSON.parse(r(f+'.json')).error; if (e.code!==-32043 || e.message!=='invalid_token: access token is invalid or revoked') fail(f+' wrong '+JSON.stringify(e));
+      }
+      if (JSON.stringify(JSON.parse(r('revoked-after-introspect.json')))!=='{\"active\":false}') fail('revoked token active in introspection after restart');
+      if (JSON.parse(r('kept-after-introspect.json')).active!==true) fail('kept token inactive after restart');
+      if (JSON.parse(r('refresh-after.json')).error!=='invalid_grant') fail('refresh token survived restart '+r('refresh-after.json'));
+      const c=JSON.parse(r('corrupt-start.json'));
+      if (c.exit===0 || c.exit===124 || c.listening) fail('corrupt denylist did not refuse startup '+JSON.stringify(c));
+      if (!/revocation store .* is corrupt/.test(r('corrupt-start.log'))) fail('corrupt start log missing reason');
+      if (kid('jwks-c.json')===kid('jwks-b.json')) fail('memory-mode restart kept the kid');
+      for (const f of ['kept-after-memory','revoked-after-memory']) {
+        if (!/^HTTP\/1\.1 401/m.test(r(f+'.headers')) || JSON.parse(r(f+'.json')).error.code!==-32043) fail(f+' should be invalid_token after memory restart');
+      }
+      console.log('drive revocation-restart: file key -> revoked access + refresh-linked jti stay invalid_token after restart, unrevoked token still allowed, introspection inactive, refresh token invalid_grant; corrupt denylist refuses startup; memory key -> restart invalidates every token');
     "
     ;;
 

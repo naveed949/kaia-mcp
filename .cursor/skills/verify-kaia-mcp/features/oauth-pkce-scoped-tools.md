@@ -4,7 +4,7 @@ A partner agent discovers the demo authorization server, sends the user through 
 
 ## Sub-features
 
-- `pkce-discover` loads authorization-server metadata.
+- `pkce-discover` loads authorization-server metadata. It advertises `response_types_supported=["code"]` and no ID-token support, because no ID tokens are issued.
 - `pkce-consent` shows the consent page and records Approve.
 - `pkce-token` exchanges `code` + `code_verifier` for an access token.
 - `pkce-allow` calls `encode_function_data` with scope `kaia:encode`.
@@ -27,7 +27,7 @@ Preconditions:
 - `doctor.sh` reports `authMode=required` and `unsafeWallet=false`.
 - No access token has been issued yet for this recipe.
 
-- **Discover.** Fetch metadata. Run `.cursor/skills/verify-kaia-mcp/helpers/drive.sh oauth-pkce-scoped-tools` (or `curl -sS http://127.0.0.1:<port>/.well-known/openid-configuration`). Body includes `"code_challenge_methods_supported":["S256"]` and `authorization_endpoint`.
+- **Discover.** Fetch metadata. Run `.cursor/skills/verify-kaia-mcp/helpers/drive.sh oauth-pkce-scoped-tools` (or `curl -sS http://127.0.0.1:<port>/.well-known/openid-configuration`). Body includes `"code_challenge_methods_supported":["S256"]`, `authorization_endpoint`, and `"response_types_supported":["code"]`. The document does not mention `id_token` anywhere.
 - **Open consent.** GET `/oauth/authorize` with PKCE S256 and `scope=kaia:encode`. HTML title contains `Authorize kaia-mcp` and lists `kaia:encode`.
 - **Approve.** POST `/oauth/consent` with `request_id` from the hidden field and `decision=approve` without following redirects. `Location` contains `code` and `state=verify1`.
 - **Exchange token.** POST `/oauth/token` with `grant_type=authorization_code`, `code_verifier`, and the same `redirect_uri`. Body includes `"token_type":"Bearer"` and `"scope":"kaia:encode"`.

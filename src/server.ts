@@ -315,6 +315,13 @@ export async function runKaiaMcpServerHttp(port: number): Promise<KaiaHttpServer
   const signingKey = config.oauthSigningKeyFile
     ? SigningKey.fromFileOrCreate(config.oauthSigningKeyFile)
     : SigningKey.generate();
+  const previousSigningKeys = config.oauthPreviousSigningKeyFiles.map((file) => {
+    try {
+      return SigningKey.fromFile(file);
+    } catch (err) {
+      throw new Error(`previous signing key ${file} is unreadable`, { cause: err });
+    }
+  });
   const revocationStore: RevocationStore = config.oauthRevocationFile
     ? FileRevocationStore.open(config.oauthRevocationFile)
     : new MemoryRevocationStore();
@@ -478,6 +485,7 @@ export async function runKaiaMcpServerHttp(port: number): Promise<KaiaHttpServer
     legacyAudience: config.oauthLegacyAudience,
     requireResource: config.oauthRequireResource,
     signingKey,
+    previousSigningKeys,
     revocationStore,
     introspectionClient: config.introspectionClientSecret
       ? { clientId: config.introspectionClientId, clientSecret: config.introspectionClientSecret }
@@ -492,6 +500,7 @@ export async function runKaiaMcpServerHttp(port: number): Promise<KaiaHttpServer
     legacyAudience: runtime.provider.legacyAudience ?? "none",
     requireResource: runtime.provider.requireResource,
     kid: runtime.provider.signingKey.kid,
+    previousKids: runtime.provider.previousSigningKeys.map((k) => k.kid).join(",") || "none",
     introspection: runtime.provider.introspectionEnabled,
     revocationStore: config.oauthRevocationFile ? "file" : "memory",
   });

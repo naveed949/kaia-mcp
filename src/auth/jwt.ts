@@ -72,6 +72,11 @@ export class SigningKey {
     return key;
   }
 
+  /** Load an existing PKCS#8/PKCS#1 PEM (verify-only rotation keys). Throws if unreadable. */
+  static fromFile(path: string): SigningKey {
+    return new SigningKey(createPrivateKey(readFileSync(path)));
+  }
+
   publicJwk(): Record<string, unknown> {
     return {
       kty: "RSA",

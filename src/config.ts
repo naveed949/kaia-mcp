@@ -126,6 +126,15 @@ const envSchema = z.object({
   KAIA_ALLOWED_ORIGINS: allowedOriginsSchema,
   KAIA_OAUTH_SIGNING_KEY_FILE: z.string().optional(),
   KAIA_OAUTH_REVOCATION_FILE: z.string().optional(),
+  KAIA_OAUTH_PREVIOUS_SIGNING_KEY_FILES: z
+    .string()
+    .optional()
+    .transform((v) =>
+      (v ?? "")
+        .split(",")
+        .map((x) => x.trim())
+        .filter(Boolean)
+    ),
   KAIA_INTROSPECTION_CLIENT_ID: z.string().min(1).optional().default("kaia-mcp-gateway"),
   KAIA_INTROSPECTION_CLIENT_SECRET: z.string().optional(),
 });
@@ -171,6 +180,12 @@ export type Config = {
   /** Optional gitignored PEM path for a dev signing key that survives restarts. Unset: in-memory key. */
   oauthSigningKeyFile?: string;
   /**
+   * KAIA_OAUTH_PREVIOUS_SIGNING_KEY_FILES: comma-separated PEMs of retired keys. They are
+   * published in the JWKS and accepted for verification, never used to sign. Each must
+   * exist; an unreadable one refuses startup.
+   */
+  oauthPreviousSigningKeyFiles: string[];
+  /**
    * Where revoked access-token jtis are persisted. Default: `revoked-jti.json` next to
    * `oauthSigningKeyFile` when that is set (a persisted key needs a persisted denylist),
    * otherwise unset and revocations stay in memory.
@@ -203,6 +218,7 @@ function parseEnv(): Config {
     KAIA_ALLOWED_ORIGINS: process.env.KAIA_ALLOWED_ORIGINS,
     KAIA_OAUTH_SIGNING_KEY_FILE: process.env.KAIA_OAUTH_SIGNING_KEY_FILE || undefined,
     KAIA_OAUTH_REVOCATION_FILE: process.env.KAIA_OAUTH_REVOCATION_FILE || undefined,
+    KAIA_OAUTH_PREVIOUS_SIGNING_KEY_FILES: process.env.KAIA_OAUTH_PREVIOUS_SIGNING_KEY_FILES,
     KAIA_INTROSPECTION_CLIENT_ID: process.env.KAIA_INTROSPECTION_CLIENT_ID || undefined,
     KAIA_INTROSPECTION_CLIENT_SECRET: process.env.KAIA_INTROSPECTION_CLIENT_SECRET || undefined,
   };
@@ -236,6 +252,7 @@ function parseEnv(): Config {
     oauthRequireResource: d.KAIA_OAUTH_REQUIRE_RESOURCE,
     allowedOrigins: d.KAIA_ALLOWED_ORIGINS,
     oauthSigningKeyFile: d.KAIA_OAUTH_SIGNING_KEY_FILE,
+    oauthPreviousSigningKeyFiles: d.KAIA_OAUTH_PREVIOUS_SIGNING_KEY_FILES,
     oauthRevocationFile:
       d.KAIA_OAUTH_REVOCATION_FILE ??
       (d.KAIA_OAUTH_SIGNING_KEY_FILE

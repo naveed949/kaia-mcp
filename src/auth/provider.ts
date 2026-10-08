@@ -5,6 +5,11 @@ import { checkAccessTokenClaims, SigningKey } from "./jwt.js";
 import { MemoryRevocationStore, type RevocationStore } from "./revocation-store.js";
 import { canonicalResource, invalidTarget } from "./resource.js";
 import {
+  createMemoryStateStores,
+  type AuthzRequest,
+  type OAuthStateStores,
+} from "./state-store.js";
+import {
   ALL_SCOPES,
   AUTH_CODE_TTL_SECONDS,
   AUTH_ERRORS,
@@ -66,6 +71,13 @@ export type DemoOAuthProviderOptions = {
   /** RS256 signing key. Default: a fresh in-memory key per process. */
   signingKey?: SigningKey;
   /**
+   * Retired keys still published in the JWKS and accepted for verification (never used to
+   * sign), so tokens minted before a key rotation stay valid until they expire.
+   */
+  previousSigningKeys?: readonly SigningKey[];
+  /** Authorization-server state (codes, device codes, refresh tokens). Default: in memory. */
+  stores?: OAuthStateStores;
+  /**
    * Denylist of revoked access-token `jti`s. Default: in memory. Use a persistent store
    * whenever the signing key outlives the process, or revoked tokens revive on restart.
    */
@@ -99,51 +111,6 @@ export type IntrospectionResponse =
       exp: number;
     };
 
-type RefreshRecord = {
-  accessJti: string;
-  /**
-   * `exp` (epoch ms) of the access token minted alongside this refresh token. Rotating or
-   * revoking the refresh token denies `accessJti` until then, not just for the default TTL.
-   */
-  accessExpMs: number;
-  clientId: string;
-  subject: string;
-  scopes: string[];
-  expiresAtMs: number;
-  revoked: boolean;
-};
-
-type AuthzRequest = {
-  clientId: string;
-  redirectUri: string;
-  state?: string;
-  scopes: string[];
-  codeChallenge: string;
-  codeChallengeMethod: string;
-  createdAtMs: number;
-};
-
-type AuthzCode = {
-  clientId: string;
-  redirectUri: string;
-  scopes: string[];
-  subject: string;
-  codeChallenge: string;
-  codeChallengeMethod: string;
-  expiresAtMs: number;
-  consumed: boolean;
-};
-
-type DevicePending = {
-  clientId: string;
-  scopes: string[];
-  userCode: string;
-  expiresAtMs: number;
-  status: "pending" | "authorized" | "denied";
-  subject?: string;
-  access?: IssuedTokens;
-};
-
 /**
  * In-process demo OIDC/OAuth 2.1 provider (PKCE + device flow + revoke + introspection).
  *
@@ -164,15 +131,14 @@ export class DemoOAuthProvider {
   readonly legacyAudience?: string;
   readonly requireResource: boolean;
   readonly signingKey: SigningKey;
+  /** Verify-only keys from before a rotation. */
+  readonly previousSigningKeys: readonly SigningKey[];
   private readonly introspectionClient?: { clientId: string; clientSecret: string };
 
   /** Revoked access-token jtis, each kept until the token would have expired anyway. */
   private readonly revocations: RevocationStore;
-  private readonly refresh = new Map<string, RefreshRecord>();
-  private readonly authzRequests = new Map<string, AuthzRequest>();
-  private readonly authzCodes = new Map<string, AuthzCode>();
-  private readonly devices = new Map<string, DevicePending>();
-  private readonly devicesByUserCode = new Map<string, string>();
+  /** Every other piece of AS state; see state-store.ts. */
+  private readonly stores: OAuthStateStores;
 
   constructor(options: DemoOAuthProviderOptions) {
     this.issuer = options.issuer.replace(/\/$/, "");
@@ -190,6 +156,10 @@ export class DemoOAuthProvider {
     }
     this.requireResource = Boolean(options.requireResource);
     this.signingKey = options.signingKey ?? SigningKey.generate();
+    this.previousSigningKeys = (options.previousSigningKeys ?? []).filter(
+      (k, i, all) => k.kid !== this.signingKey.kid && all.findIndex((o) => o.kid === k.kid) === i
+    );
+    this.stores = options.stores ?? createMemoryStateStores();
     this.revocations = options.revocationStore ?? new MemoryRevocationStore();
     if (options.introspectionClient?.clientSecret) {
       this.introspectionClient = options.introspectionClient;
@@ -219,8 +189,20 @@ export class DemoOAuthProvider {
     }
   }
 
+  /** Current key first, then retired keys still accepted for verification. */
   jwks(): { keys: Record<string, unknown>[] } {
-    return this.signingKey.jwks();
+    return {
+      keys: [this.signingKey, ...this.previousSigningKeys].map((k) => k.publicJwk()),
+    };
+  }
+
+  /** Signature + header check against the current or a retired key (selected by kid). */
+  private verifySignature(token: string): Record<string, unknown> | null {
+    for (const key of [this.signingKey, ...this.previousSigningKeys]) {
+      const payload = key.verifySignature(token);
+      if (payload) return payload;
+    }
+    return null;
   }
 
   get introspectionEnabled(): boolean {
@@ -310,15 +292,20 @@ export class DemoOAuthProvider {
     const scopes = parseScopes(params.scope);
     this.checkResource(params.resource);
     const requestId = randomToken();
-    this.authzRequests.set(requestId, {
-      clientId: params.clientId,
-      redirectUri: params.redirectUri,
-      state: params.state,
-      scopes,
-      codeChallenge: params.codeChallenge,
-      codeChallengeMethod: params.codeChallengeMethod,
-      createdAtMs: Date.now(),
-    });
+    const now = Date.now();
+    this.stores.authzRequests.set(
+      sha256Hex(requestId),
+      {
+        clientId: params.clientId,
+        redirectUri: params.redirectUri,
+        state: params.state,
+        scopes,
+        codeChallenge: params.codeChallenge,
+        codeChallengeMethod: params.codeChallengeMethod,
+        createdAtMs: now,
+      },
+      now + AUTH_CODE_TTL_SECONDS * 1000
+    );
     logger.info("oauth authorization request created", {
       requestFingerprint: fingerprint(requestId),
       clientId: params.clientId,
@@ -328,17 +315,17 @@ export class DemoOAuthProvider {
   }
 
   getAuthorizationRequest(requestId: string): AuthzRequest | undefined {
-    return this.authzRequests.get(requestId);
+    return this.stores.authzRequests.get(sha256Hex(requestId));
   }
 
   consent(requestId: string, decision: "approve" | "deny"): { redirectUri: string } {
-    const req = this.authzRequests.get(requestId);
+    // take(): a consent request is answered at most once, even across instances.
+    const req = requestId ? this.stores.authzRequests.take(sha256Hex(requestId)) : undefined;
     if (!req) {
       throw Object.assign(new Error("invalid_request: unknown consent request"), {
         oauthError: "invalid_request",
       });
     }
-    this.authzRequests.delete(requestId);
     const url = new URL(req.redirectUri);
     if (req.state) url.searchParams.set("state", req.state);
     url.searchParams.set("iss", this.issuer);
@@ -348,16 +335,20 @@ export class DemoOAuthProvider {
       return { redirectUri: url.toString() };
     }
     const code = randomToken();
-    this.authzCodes.set(sha256Hex(code), {
-      clientId: req.clientId,
-      redirectUri: req.redirectUri,
-      scopes: req.scopes,
-      subject: DEMO_SUBJECT,
-      codeChallenge: req.codeChallenge,
-      codeChallengeMethod: req.codeChallengeMethod,
-      expiresAtMs: Date.now() + AUTH_CODE_TTL_SECONDS * 1000,
-      consumed: false,
-    });
+    const expiresAtMs = Date.now() + AUTH_CODE_TTL_SECONDS * 1000;
+    this.stores.authzCodes.set(
+      sha256Hex(code),
+      {
+        clientId: req.clientId,
+        redirectUri: req.redirectUri,
+        scopes: req.scopes,
+        subject: DEMO_SUBJECT,
+        codeChallenge: req.codeChallenge,
+        codeChallengeMethod: req.codeChallengeMethod,
+        expiresAtMs,
+      },
+      expiresAtMs
+    );
     url.searchParams.set("code", code);
     logger.info("oauth consent approved", {
       clientId: req.clientId,
@@ -378,14 +369,15 @@ export class DemoOAuthProvider {
       throw Object.assign(new Error("invalid_client"), { oauthError: "invalid_client" });
     }
     this.checkResource(params.resource);
-    const record = this.authzCodes.get(sha256Hex(params.code));
-    if (!record || record.consumed) {
+    const codeKey = sha256Hex(params.code);
+    const record = this.stores.authzCodes.get(codeKey);
+    if (!record) {
       throw Object.assign(new Error("invalid_grant: authorization code is invalid"), {
         oauthError: "invalid_grant",
       });
     }
     if (record.expiresAtMs <= Date.now()) {
-      this.authzCodes.delete(sha256Hex(params.code));
+      this.stores.authzCodes.delete(codeKey);
       throw Object.assign(new Error("invalid_grant: authorization code has expired"), {
         oauthError: "invalid_grant",
       });
@@ -400,8 +392,13 @@ export class DemoOAuthProvider {
         oauthError: "invalid_grant",
       });
     }
-    record.consumed = true;
-    this.authzCodes.delete(sha256Hex(params.code));
+    // Validation passed: redeem atomically. A concurrent redemption (another instance) wins
+    // the take() and this one fails, so a code can never mint twice.
+    if (!this.stores.authzCodes.take(codeKey)) {
+      throw Object.assign(new Error("invalid_grant: authorization code is invalid"), {
+        oauthError: "invalid_grant",
+      });
+    }
     return this.mintTokens({
       subject: record.subject,
       clientId: record.clientId,
@@ -428,14 +425,13 @@ export class DemoOAuthProvider {
     this.checkResource(params.resource);
     const deviceCode = randomToken();
     const code = userCode();
-    this.devices.set(sha256Hex(deviceCode), {
-      clientId: params.clientId,
-      scopes,
-      userCode: code,
-      expiresAtMs: Date.now() + DEVICE_CODE_TTL_SECONDS * 1000,
-      status: "pending",
-    });
-    this.devicesByUserCode.set(code, sha256Hex(deviceCode));
+    const expiresAtMs = Date.now() + DEVICE_CODE_TTL_SECONDS * 1000;
+    this.stores.devices.set(
+      sha256Hex(deviceCode),
+      { clientId: params.clientId, scopes, userCode: code, expiresAtMs, status: "pending" },
+      expiresAtMs
+    );
+    this.stores.deviceUserCodes.set(code, sha256Hex(deviceCode), expiresAtMs);
     logger.info("oauth device authorization started", {
       deviceFingerprint: fingerprint(deviceCode),
       userCode: code,
@@ -453,37 +449,37 @@ export class DemoOAuthProvider {
 
   peekDeviceByUserCode(userCodeRaw: string): { scopes: string[] } | undefined {
     const user = userCodeRaw.trim().toUpperCase();
-    const hash = this.devicesByUserCode.get(user);
+    const hash = this.stores.deviceUserCodes.get(user);
     if (!hash) return undefined;
-    const pending = this.devices.get(hash);
+    const pending = this.stores.devices.get(hash);
     if (!pending) return undefined;
     return { scopes: pending.scopes };
   }
 
   consentDevice(userCodeRaw: string, decision: "approve" | "deny"): void {
     const user = userCodeRaw.trim().toUpperCase();
-    const hash = this.devicesByUserCode.get(user);
+    const hash = this.stores.deviceUserCodes.get(user);
     if (!hash) {
       throw Object.assign(new Error("invalid_request: unknown user_code"), {
         oauthError: "invalid_request",
       });
     }
-    const pending = this.devices.get(hash);
+    const pending = this.stores.devices.get(hash);
     if (!pending || pending.expiresAtMs <= Date.now()) {
       throw Object.assign(new Error("expired_token"), { oauthError: "expired_token" });
     }
+    // Tokens are minted when the device redeems its code, not here, so no plaintext token
+    // ever sits in the device store. The updated record is written back (stores copy).
     if (decision !== "approve") {
-      pending.status = "denied";
+      this.stores.devices.set(hash, { ...pending, status: "denied" }, pending.expiresAtMs);
       logger.info("oauth device consent denied", { userCode: user });
       return;
     }
-    pending.status = "authorized";
-    pending.subject = DEMO_SUBJECT;
-    pending.access = this.mintTokens({
-      subject: DEMO_SUBJECT,
-      clientId: pending.clientId,
-      scopes: pending.scopes,
-    });
+    this.stores.devices.set(
+      hash,
+      { ...pending, status: "authorized", subject: DEMO_SUBJECT },
+      pending.expiresAtMs
+    );
     logger.info("oauth device consent approved", {
       userCode: user,
       scopes: pending.scopes.join(" "),
@@ -499,7 +495,8 @@ export class DemoOAuthProvider {
       throw Object.assign(new Error("invalid_client"), { oauthError: "invalid_client" });
     }
     this.checkResource(params.resource);
-    const pending = this.devices.get(sha256Hex(params.deviceCode));
+    const deviceKey = sha256Hex(params.deviceCode);
+    const pending = this.stores.devices.get(deviceKey);
     if (!pending) {
       throw Object.assign(new Error("invalid_grant"), { oauthError: "invalid_grant" });
     }
@@ -517,13 +514,17 @@ export class DemoOAuthProvider {
     if (pending.status === "denied") {
       throw Object.assign(new Error("access_denied"), { oauthError: "access_denied" });
     }
-    if (!pending.access) {
+    // Authorized: redeem atomically, so the device code mints exactly once.
+    const redeemed = this.stores.devices.take(deviceKey);
+    if (!redeemed || redeemed.status !== "authorized") {
       throw Object.assign(new Error("invalid_grant"), { oauthError: "invalid_grant" });
     }
-    const tokens = pending.access;
-    this.devices.delete(sha256Hex(params.deviceCode));
-    this.devicesByUserCode.delete(pending.userCode);
-    return tokens;
+    this.stores.deviceUserCodes.delete(redeemed.userCode);
+    return this.mintTokens({
+      subject: redeemed.subject ?? DEMO_SUBJECT,
+      clientId: redeemed.clientId,
+      scopes: redeemed.scopes,
+    });
   }
 
   exchangeRefreshToken(params: {
@@ -535,7 +536,8 @@ export class DemoOAuthProvider {
       throw Object.assign(new Error("invalid_client"), { oauthError: "invalid_client" });
     }
     this.checkResource(params.resource);
-    const record = this.refresh.get(sha256Hex(params.refreshToken));
+    const refreshKey = sha256Hex(params.refreshToken);
+    const record = this.stores.refreshTokens.get(refreshKey);
     if (!record || record.revoked || record.expiresAtMs <= Date.now()) {
       throw Object.assign(new Error("invalid_grant: refresh token is invalid or expired"), {
         oauthError: "invalid_grant",
@@ -544,11 +546,21 @@ export class DemoOAuthProvider {
     if (record.clientId !== params.clientId) {
       throw Object.assign(new Error("invalid_grant"), { oauthError: "invalid_grant" });
     }
+    // Redeem atomically: of two concurrent rotations (possibly on two instances) one wins.
+    if (!this.stores.refreshTokens.take(refreshKey)) {
+      throw Object.assign(new Error("invalid_grant: refresh token is invalid or expired"), {
+        oauthError: "invalid_grant",
+      });
+    }
     // Persist the old access jti first: if that throws (RevocationStoreError), the refresh
-    // token is not consumed and the client can retry the same rotation. The store still
-    // denies the jti in this process, so the failure never widens access.
-    this.revokeJti(record.accessJti, record.accessExpMs);
-    record.revoked = true;
+    // token is put back unconsumed and the client can retry the same rotation. The store
+    // still denies the jti in this process, so the failure never widens access.
+    try {
+      this.revokeJti(record.accessJti, record.accessExpMs);
+    } catch (err) {
+      this.stores.refreshTokens.set(refreshKey, record, record.expiresAtMs);
+      throw err;
+    }
     return this.mintTokens({
       subject: record.subject,
       clientId: record.clientId,
@@ -572,7 +584,7 @@ export class DemoOAuthProvider {
 
   /** RFC 7009. Unknown or malformed tokens are ignored (the endpoint still answers 200). */
   revoke(token: string): void {
-    const payload = token ? this.signingKey.verifySignature(token) : null;
+    const payload = token ? this.verifySignature(token) : null;
     if (payload && typeof payload.jti === "string") {
       const expMs = typeof payload.exp === "number" ? payload.exp * 1000 : Date.now();
       this.revokeJti(payload.jti, expMs);
@@ -582,12 +594,16 @@ export class DemoOAuthProvider {
       });
       return;
     }
-    const refresh = this.refresh.get(sha256Hex(token));
+    // Revoking only ever narrows access: the refresh token is tombstoned (revoked: true)
+    // before its access jti is persisted, so it is dead even if that write throws (the jti
+    // is still denied in-process and the caller gets a retryable 503). The tombstone keeps
+    // the record so a retried revoke re-attempts the write; success deletes it.
+    const refreshKey = token ? sha256Hex(token) : "";
+    const refresh = token ? this.stores.refreshTokens.get(refreshKey) : undefined;
     if (refresh) {
-      // Revoking only ever narrows access, so the refresh token is dead in-process even if
-      // persisting its access jti throws; a retried revoke re-attempts the write.
-      refresh.revoked = true;
+      this.stores.refreshTokens.set(refreshKey, { ...refresh, revoked: true }, refresh.expiresAtMs);
       this.revokeJti(refresh.accessJti, refresh.accessExpMs);
+      this.stores.refreshTokens.delete(refreshKey);
       logger.info("oauth refresh token revoked", { tokenFingerprint: fingerprint(token) });
     }
   }
@@ -600,7 +616,7 @@ export class DemoOAuthProvider {
     if (!token) {
       return { ok: false, status: 401, ...AUTH_ERRORS.UNAUTHORIZED };
     }
-    const payload = this.signingKey.verifySignature(token);
+    const payload = this.verifySignature(token);
     if (!payload) {
       return { ok: false, status: 401, ...AUTH_ERRORS.INVALID_TOKEN };
     }
@@ -651,7 +667,7 @@ export class DemoOAuthProvider {
 
   /** Active refresh-token metadata, or undefined when `token` is not a live refresh token. */
   private introspectRefresh(token: string): IntrospectionResponse | undefined {
-    const record = this.refresh.get(sha256Hex(token));
+    const record = this.stores.refreshTokens.get(sha256Hex(token));
     if (!record || record.revoked || record.expiresAtMs <= Date.now()) return undefined;
     return {
       active: true,
@@ -665,7 +681,7 @@ export class DemoOAuthProvider {
   }
 
   private introspectAccess(token: string): IntrospectionResponse {
-    const payload = this.signingKey.verifySignature(token);
+    const payload = this.verifySignature(token);
     if (!payload) return { active: false };
     const checked = checkAccessTokenClaims(payload, {
       issuer: this.issuer,
@@ -734,15 +750,19 @@ export class DemoOAuthProvider {
       jti,
     });
     const refreshToken = randomToken();
-    this.refresh.set(sha256Hex(refreshToken), {
-      accessJti: jti,
-      accessExpMs: expSeconds * 1000,
-      clientId: params.clientId,
-      subject: params.subject,
-      scopes: params.scopes,
-      expiresAtMs: Date.now() + this.refreshTokenTtlSeconds * 1000,
-      revoked: false,
-    });
+    const refreshExpiresAtMs = Date.now() + this.refreshTokenTtlSeconds * 1000;
+    this.stores.refreshTokens.set(
+      sha256Hex(refreshToken),
+      {
+        accessJti: jti,
+        accessExpMs: expSeconds * 1000,
+        clientId: params.clientId,
+        subject: params.subject,
+        scopes: params.scopes,
+        expiresAtMs: refreshExpiresAtMs,
+      },
+      refreshExpiresAtMs
+    );
     const expiresIn = Math.max(0, Math.floor((expiresAtMs - Date.now()) / 1000));
     logger.info("oauth tokens issued", {
       tokenFingerprint: fingerprint(accessToken),

@@ -16,7 +16,7 @@ Stdio remains a local-process transport. It does not speak OAuth. `generate_wall
 
 The HTTP transport is stateless (see [Stateless HTTP](#stateless-http-mcp-2026-07-28)): each request's own access token is the only authority, and its scopes map onto the allowed-tool registry.
 
-`tools/list` stays filtered per token: it lists only the tools the token's scopes allow (and never `generate_wallet` unless the unsafe flag is set). This is deliberate: a client should not be shown tools it cannot call, and it leaks nothing a scope-holder may not already use. The result therefore depends on the caller's token. MCP 2026-07-28 lets servers mark list results with `cacheScope`; SDK 1.32 has no such field, so `cacheScope: "private"` is a phase 2 item (SDK v2). Until then, intermediaries must not share a cached `tools/list` across tokens.
+`tools/list` stays filtered per token: it lists only the tools the token's scopes allow (and never `generate_wallet` unless the unsafe flag is set). This is deliberate: a client should not be shown tools it cannot call, and it leaks nothing a scope-holder may not already use. The result therefore depends on the caller's token. MCP 2026-07-28 lets servers mark list results with `cacheScope`; SDK 1.32 has no such field, so `cacheScope: "private"` waits for the SDK v2 migration. Until then, intermediaries must not share a cached `tools/list` across tokens.
 
 | Scope         | Tools                                                                             |
 | ------------- | --------------------------------------------------------------------------------- |
@@ -50,7 +50,10 @@ Transport-level refusals (before auth):
 | `Origin` present and not allow-listed | 403  | `{"jsonrpc":"2.0","error":{"code":-32000,"message":"Forbidden: Origin not allowed"}}` |
 | `GET` or `DELETE` on the MCP endpoint | 405  | JSON-RPC `-32000`, header `Allow: POST`                                               |
 | Body is not JSON                      | 400  | JSON-RPC `-32700`                                                                     |
-| Body over 4 MB                        | 413  | JSON-RPC `-32600`                                                                     |
+| Body over 4 MB                        | 413  | JSON-RPC `-32600`, header `Connection: close`                                         |
+| Body stream broken (client aborted)   | 400  | JSON-RPC `-32600`, header `Connection: close`                                         |
+
+A body over the limit is not read further (a declared `Content-Length` over the limit is refused before any of it is read), and the response closes the connection, so a keep-alive client sends its next request on a fresh connection instead of one the server has stopped reading. The OAuth endpoints do the same with a 1 MB limit: `413 {"error":"invalid_request","error_description":"payload too large"}` with `Connection: close`.
 
 Access tokens are not stored (they are self-contained JWTs); refresh tokens are stored hashed. Logs emit a 12-character sha256 fingerprint and the `jti`, never the raw token. `Authorization`, `access_token`, `refresh_token`, `client_secret`, `code_verifier`, and `device_code` fields, `Bearer …` values, and bare compact JWTs are redacted if they reach the logger.
 
@@ -82,12 +85,12 @@ kaia-mcp verifies every request itself: `alg` must be exactly `RS256`, `kid` mus
 
 ### Signing key
 
-| Setting                                               | Behavior                                                                                                                                                                                                                                                                                                                           |
-| ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| default                                               | A fresh RSA-2048 key is generated at startup and kept in memory. Restarting the server invalidates every outstanding token.                                                                                                                                                                                                        |
-| `KAIA_OAUTH_SIGNING_KEY_FILE=<path>`                  | Dev persistence. The PKCS#8 PEM is loaded from `<path>`, or created there with mode `0600`. Use a gitignored path; `.kaia-dev/` is ignored for this.                                                                                                                                                                               |
-| `KAIA_OAUTH_REVOCATION_FILE=<path>`                   | Where the revocation denylist is persisted. Defaults to `revoked-jti.json` in the signing key's directory whenever `KAIA_OAUTH_SIGNING_KEY_FILE` is set. The path must be a regular file owned by the server user and not group/world-writable; a symlink or FIFO there refuses startup.                                           |
-| `KAIA_OAUTH_PREVIOUS_SIGNING_KEY_FILES=<a.pem,b.pem>` | Key rotation. Retired keys are published in the JWKS and accepted for verification (never used to sign), so tokens minted before a rotation stay valid until `exp`. Each file must exist; an unreadable one refuses startup. Rotate by moving the old `KAIA_OAUTH_SIGNING_KEY_FILE` here and pointing that variable at a new path. |
+| Setting                                               | Behavior                                                                                                                                                                                                                                                                                                                                                                              |
+| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| default                                               | A fresh RSA-2048 key is generated at startup and kept in memory. Restarting the server invalidates every outstanding token.                                                                                                                                                                                                                                                           |
+| `KAIA_OAUTH_SIGNING_KEY_FILE=<path>`                  | Dev persistence. The PKCS#8 PEM is loaded from `<path>`, or created there with mode `0600`. Use a gitignored path; `.kaia-dev/` is ignored for this.                                                                                                                                                                                                                                  |
+| `KAIA_OAUTH_REVOCATION_FILE=<path>`                   | Where the revocation denylist is persisted. Defaults to `revoked-jti.json` in the signing key's directory whenever `KAIA_OAUTH_SIGNING_KEY_FILE` is set. The path must be a regular file owned by the server user and not group/world-writable; a symlink or FIFO there refuses startup. One file per process: a file another running instance holds (`<path>.lock`) refuses startup. |
+| `KAIA_OAUTH_PREVIOUS_SIGNING_KEY_FILES=<a.pem,b.pem>` | Key rotation. Retired keys are published in the JWKS and accepted for verification (never used to sign), so tokens minted before a rotation stay valid until `exp`. Each file must exist; an unreadable one refuses startup. Rotate by moving the old `KAIA_OAUTH_SIGNING_KEY_FILE` here and pointing that variable at a new path.                                                    |
 
 No signing key is committed. Production deployments use their own authorization server and never this provider.
 
@@ -103,7 +106,8 @@ Revocations and restarts:
 
 - **In-memory signing key (default).** The denylist is in memory too. A restart generates a new key, so every token from the previous process fails signature verification (`invalid_token`), revoked or not.
 - **Persisted signing key (`KAIA_OAUTH_SIGNING_KEY_FILE`).** Tokens outlive the process, so the denylist is persisted as well, to `KAIA_OAUTH_REVOCATION_FILE` (default `revoked-jti.json` next to the key). The format is `{"version":1,"entries":[{"id":"<jti>","expMs":<epoch ms>}]}`. It never contains tokens. Writes go to a temp file created exclusively (`O_EXCL`, so nothing planted at that path is followed) with mode `0600`, written in full, fsynced, renamed over the file, and then the directory is fsynced. Adding an entry that is already present (or already expired) does not rewrite the file. Entries are dropped once the token would have expired. The file is loaded before the port is bound. A missing file means an empty list (first start). An unreadable, corrupt or insecure file (not a regular file, writable by group or others, or not owned by the server's user) stops startup with an error; the server never falls back to an empty list.
-- **One file, one process.** Each server keeps its own view of the denylist and rewrites the whole file, so two processes pointed at the same file would drop each other's entries. Give every instance its own file; multi-instance deployments that must share revocations need a shared store.
+- **One file, one process (enforced).** Each server keeps its own view of the denylist and rewrites the whole file, so two processes pointed at the same file would drop each other's entries and a revoked token would work again after a restart. The server therefore locks the file at startup (`<file>.lock`, held until it exits) and refuses to start when another live instance holds it: `revocation store <file> is in use by another kaia-mcp process (pid <n> on <host>, lock file <file>.lock) … Set a distinct KAIA_OAUTH_REVOCATION_FILE for each instance`. The default path is next to the signing key, so instances that share `KAIA_OAUTH_SIGNING_KEY_FILE` must each set their own `KAIA_OAUTH_REVOCATION_FILE` (see [Stateless HTTP](#stateless-http-mcp-2026-07-28)).
+- **How the lock behaves.** Node has no OS file-lock API without a native addon, so the lock is a lock file created atomically that records the holder (pid, host, boot id, pid namespace, process start time) and is refreshed every 5 s. A clean stop (`SIGTERM`/`SIGINT`) removes it. After a crash it is taken over at the next start: at once when the holder is on the same machine and its process is gone (a reused pid is told apart by its start time), or, when the holder cannot be checked (another host on a shared volume, another container), once its heartbeat is older than 30 s. A lock file that cannot be read refuses startup until it is 30 s old. While running, every write re-checks the lock: if another process took it, the revocation answers `503` instead of overwriting that process's file; if the lock file vanished, it is re-created and the file's current entries are merged before writing.
 - If a revocation cannot be written, `POST /oauth/revoke` and a refresh rotation (`POST /oauth/token`, `grant_type=refresh_token`) answer `503 {"error":"server_error","error_description":"revocation could not be persisted"}`. The token is still rejected by this process, and the client should retry: a failed rotation does not consume the refresh token. The server log records the `jti` and the errno.
 - Other unexpected failures on any OAuth endpoint answer `500 {"error":"server_error","error_description":"internal error"}`. Internal details such as file paths are logged, never returned.
 - Refresh tokens are kept only in memory, so a restart invalidates every refresh token (`invalid_grant`) whatever the key setting.
@@ -136,8 +140,21 @@ The Streamable HTTP endpoint is `POST /` and has no protocol-level sessions:
 - Every POST is served by a fresh MCP server and transport. `Mcp-Session-Id` is never minted or echoed; a legacy client's header is ignored. No `initialize` is needed before `tools/list` or `tools/call`.
 - `GET` and `DELETE` on the MCP endpoint answer `405` with `Allow: POST` (no standalone SSE stream, no session to delete).
 - Any instance can answer any request when instances share the signing key (`KAIA_OAUTH_SIGNING_KEY_FILE`) and `KAIA_PUBLIC_URL`. A token minted on one instance verifies on another.
-- Still per process today (shared stores are phase 3): the demo AS's codes, device codes and refresh tokens (see [AS state](#authorization-server-state)), and the revocation denylist (one `KAIA_OAUTH_REVOCATION_FILE` per process). Behind a load balancer, keep the OAuth flow on one instance (sticky routing) or front a real AS.
-- SDK 1.32 negotiates protocol versions up to `2025-11-25`; a request with `MCP-Protocol-Version: 2026-07-28` is refused by the SDK with 400 until the phase 2 SDK v2 migration.
+- Still per process (there is no shared store yet): the demo AS's codes, device codes and refresh tokens (see [AS state](#authorization-server-state)), and the revocation denylist. Behind a load balancer, keep the OAuth flow on one instance (sticky routing) or front a real AS.
+- **Revocations are per instance.** A token revoked on one instance is still accepted by the others until it expires; there is no shared denylist yet. Keep access-token TTLs short, or route each client to a single instance (sticky routing). Each instance must also have its own denylist file (a shared one is refused at startup, see [Revocation](#revocation-and-introspection)):
+
+  ```sh
+  # instance A
+  KAIA_OAUTH_SIGNING_KEY_FILE=/srv/kaia/signing-key.pem \
+  KAIA_OAUTH_REVOCATION_FILE=/srv/kaia/revoked-jti.a.json \
+  KAIA_PUBLIC_URL=https://kaia.example.com kaia-mcp --transport http --port 3100
+  # instance B
+  KAIA_OAUTH_SIGNING_KEY_FILE=/srv/kaia/signing-key.pem \
+  KAIA_OAUTH_REVOCATION_FILE=/srv/kaia/revoked-jti.b.json \
+  KAIA_PUBLIC_URL=https://kaia.example.com kaia-mcp --transport http --port 3101
+  ```
+
+- SDK 1.32 negotiates protocol versions up to `2025-11-25`; a request with `MCP-Protocol-Version: 2026-07-28` is refused by the SDK with 400 until the SDK v2 migration.
 
 ## Public URL and resource indicators (RFC 8707)
 
@@ -174,7 +191,7 @@ Everything the demo AS remembers between requests sits behind store interfaces (
 
 - Keys are sha256 digests of the secret; stored values never contain a plaintext token, code or device code (device-flow tokens are minted when the device redeems its code, not at consent).
 - Every entry expires (consent requests and codes after 600 s, device codes after 600 s, refresh tokens after their TTL).
-- Single-use values (codes, device codes, refresh tokens) are redeemed with an atomic `take()`, so a shared store implementation (phase 3) cannot let two instances redeem the same code.
+- Single-use values (codes, device codes, refresh tokens) are redeemed with an atomic `take()`, so a shared store implementation cannot let two instances redeem the same code.
 - The interface is synchronous like the provider; a network store needs the provider's OAuth methods to become async first.
 
 ## Tool → scope metadata

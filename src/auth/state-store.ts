@@ -3,14 +3,14 @@
  * talks to `OAuthStateStores`, so where that state lives is a deployment choice:
  *
  * - `createMemoryStateStores()` (default): per process. Fine for one instance.
- * - A shared store (Redis/KV, phase 3) lets several stateless instances act as one AS.
+ * - A shared store (Redis/KV) lets several stateless instances act as one AS.
  *
  * Keys are sha256 digests of the secret (code, device code, refresh token, request id),
  * never the secret itself, and values never contain a plaintext token. Every entry has an
  * expiry, so nothing grows without bound.
  *
  * The interface is synchronous because the provider is; an async network store needs the
- * provider's OAuth methods to become async first (tracked for phase 2/3).
+ * provider's OAuth methods to become async first.
  */
 import type { IssuedTokens } from "./types.js";
 

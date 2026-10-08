@@ -1,5 +1,5 @@
 /**
- * Phase 1 / MCP 2026-07-28 Streamable HTTP: no protocol-level sessions. Every POST is
+ * MCP 2026-07-28 Streamable HTTP: no protocol-level sessions. Every POST is
  * served by a fresh server+transport, Mcp-Session-Id is never minted or echoed (and is
  * ignored when a legacy client sends one), and GET/DELETE on the MCP endpoint are 405.
  */

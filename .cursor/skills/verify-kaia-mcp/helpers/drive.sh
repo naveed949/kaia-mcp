@@ -906,6 +906,56 @@ JS
     curl -sS -o "${OUT}/a-revoke.json" -X POST "${A}/oauth/revoke" -H "Content-Type: application/x-www-form-urlencoded" --data-urlencode "token=${TOKEN_A}"
     mcp_call a-after-revoke "${TOKEN_A}" '{"jsonrpc":"2.0","id":5,"method":"tools/list","params":{}}' "${A}"
     mcp_call b-after-revoke-on-a "${TOKEN_A}" '{"jsonrpc":"2.0","id":5,"method":"tools/list","params":{}}' "${B}"
+    # One denylist file per process, enforced. B revokes its own token; with distinct files
+    # both revocations survive a restart of both processes.
+    TOKEN_B="$(device_token on-b kaia:read "${B}")"
+    curl -sS -o "${OUT}/b-revoke.json" -X POST "${B}/oauth/revoke" -H "Content-Type: application/x-www-form-urlencoded" --data-urlencode "token=${TOKEN_B}"
+    ls -1 "${MDIR}" | grep -E '^revoked-[ab]\.json(\.lock)?$' | sort | save denylist-files-running.txt
+    # Q points at A's file while A runs; G uses the default path (next to the shared key)
+    # while F already does. Both must refuse to start, naming the file and the fix.
+    refused_start() {
+      local name="$1"
+      shift
+      local port code=0
+      port="$(free_port)"
+      (
+        set -a
+        # shellcheck disable=SC1091
+        source "${INSTANCE_DIR}/server.env"
+        set +a
+        for kv in "$@"; do export "${kv?}"; done
+        cd "${REPO_ROOT}"
+        exec timeout 15 node dist/bin/kaia-mcp.js --transport http --port "${port}"
+      ) >"${OUT}/${name}.log" 2>&1 || code=$?
+      echo "{\"exitCode\":${code},\"port\":${port}}" | save "${name}.exit.json"
+    }
+    refused_start q-same-file-as-a "KAIA_PUBLIC_URL=${PUB}" "KAIA_OAUTH_SIGNING_KEY_FILE=${MDIR}/shared.pem" "KAIA_OAUTH_REVOCATION_FILE=${MDIR}/revoked-a.json"
+    PF="$(free_port)"
+    FPID="$(start_extra_kaia "${PF}" "KAIA_PUBLIC_URL=${PUB}" "KAIA_OAUTH_SIGNING_KEY_FILE=${MDIR}/shared.pem")"
+    wait_ready "${PF}" "${FPID}"
+    refused_start g-default-path "KAIA_PUBLIC_URL=${PUB}" "KAIA_OAUTH_SIGNING_KEY_FILE=${MDIR}/shared.pem"
+    curl -sS -o /dev/null -w '%{http_code}' "http://127.0.0.1:${PF}/health" | save f-health-after-g.txt
+    curl -sS -o /dev/null -w '%{http_code}' "${A}/health" | save a-health-after-q.txt
+    # A crash (SIGKILL, no exit hooks) leaves the lock file; the next start takes it over.
+    kill -9 "${FPID}" 2>/dev/null || true
+    for _ in $(seq 1 30); do kill -0 "${FPID}" 2>/dev/null || break; sleep 0.1; done
+    { [[ -f "${MDIR}/revoked-jti.json.lock" ]] && echo present || echo absent; } | save f-lock-after-crash.txt
+    F2PID="$(start_extra_kaia "${PF}" "KAIA_PUBLIC_URL=${PUB}" "KAIA_OAUTH_SIGNING_KEY_FILE=${MDIR}/shared.pem")"
+    wait_ready "${PF}" "${F2PID}"
+    curl -sS -o /dev/null -w '%{http_code}' "http://127.0.0.1:${PF}/health" | save f-health-after-crash-restart.txt
+    stop_pid "${F2PID}"
+    # Restart A and B on their ports (a clean stop releases each lock file).
+    stop_pid "${APID}"
+    stop_pid "${BPID}"
+    ls -1 "${MDIR}" | grep -E '^revoked-[ab]\.json(\.lock)?$' | sort | save denylist-files-stopped.txt
+    APID="$(start_extra_kaia "${PA}" "KAIA_PUBLIC_URL=${PUB}" "KAIA_OAUTH_SIGNING_KEY_FILE=${MDIR}/shared.pem" "KAIA_OAUTH_REVOCATION_FILE=${MDIR}/revoked-a.json")"
+    wait_ready "${PA}" "${APID}"
+    BPID="$(start_extra_kaia "${PB}" "KAIA_PUBLIC_URL=${PUB}" "KAIA_OAUTH_SIGNING_KEY_FILE=${MDIR}/shared.pem" "KAIA_OAUTH_REVOCATION_FILE=${MDIR}/revoked-b.json" "KAIA_ALLOWED_ORIGINS=http://localhost:6274")"
+    wait_ready "${PB}" "${BPID}"
+    mcp_call a-after-restart "${TOKEN_A}" '{"jsonrpc":"2.0","id":7,"method":"tools/list","params":{}}' "${A}"
+    mcp_call b-after-restart "${TOKEN_B}" '{"jsonrpc":"2.0","id":8,"method":"tools/list","params":{}}' "${B}"
+    cp "${MDIR}/revoked-a.json" "${OUT}/revoked-a.json"
+    cp "${MDIR}/revoked-b.json" "${OUT}/revoked-b.json"
     for p in "${APID}" "${BPID}" "${CPID}" "${DPID}" "${EPID}"; do stop_pid "${p}"; done
     OUT="${OUT}" PUB="${PUB}" EXPECTED_CALLDATA="${EXPECTED_CALLDATA}" node - <<'JS'
 const fs = require("fs"); const r = (f) => fs.readFileSync(process.env.OUT + "/" + f, "utf8");
@@ -939,6 +989,28 @@ if (JSON.parse(r("a-after-revoke.json")).error.code !== -32043) fail("revoked to
 const bAfter = status("b-after-revoke-on-a.headers");
 fs.writeFileSync(process.env.OUT + "/per-process-observation.json", JSON.stringify({ refreshFromAOnB: "invalid_grant", revokedOnA_statusOnB: bAfter }, null, 2));
 if (bAfter !== 200) fail("B rejected a token revoked only on A; the docs say denylists are per process today, update them if this changed");
+// One denylist file per process (enforced by a lock file held while the process runs).
+if (r("denylist-files-running.txt").trim() !== "revoked-a.json\nrevoked-a.json.lock\nrevoked-b.json\nrevoked-b.json.lock") fail("running A/B must hold their denylist and lock files: " + r("denylist-files-running.txt"));
+if (r("denylist-files-stopped.txt").trim() !== "revoked-a.json\nrevoked-b.json") fail("a clean stop must remove the lock files: " + r("denylist-files-stopped.txt"));
+const jti = (f) => JSON.parse(Buffer.from(JSON.parse(r(f)).access_token.split(".")[1], "base64url")).jti;
+for (const [name, file] of [["q-same-file-as-a", "revoked-a.json"], ["g-default-path", "revoked-jti.json"]]) {
+  const exit = JSON.parse(r(name + ".exit.json")).exitCode;
+  const log = r(name + ".log");
+  if (exit === 0 || exit === 124) fail(name + " was not refused (exit " + exit + "): two processes on one denylist file");
+  if (!log.includes("is in use by another kaia-mcp process") || !log.includes("/" + file) || !log.includes("KAIA_OAUTH_REVOCATION_FILE")) fail(name + " refusal does not name the file and the fix: " + log.slice(0, 400));
+  if (log.includes("HTTP server listening")) fail(name + " bound its port before refusing");
+}
+if (r("a-health-after-q.txt") !== "200") fail("A stopped serving after Q was refused");
+if (r("f-health-after-g.txt") !== "200") fail("F stopped serving after G was refused");
+if (r("f-lock-after-crash.txt").trim() !== "present" || r("f-health-after-crash-restart.txt") !== "200") fail("a crashed holder's lock was not taken over on restart");
+if (JSON.parse(r("b-revoke.json")) && Object.keys(JSON.parse(r("b-revoke.json"))).length !== 0) fail("revoke on B did not answer {}");
+for (const [f, tok, file, other] of [["a-after-restart", "on-a.token.json", "revoked-a.json", "on-b.token.json"], ["b-after-restart", "on-b.token.json", "revoked-b.json", "on-a.token.json"]]) {
+  if (status(f + ".headers") !== 401 || JSON.parse(r(f + ".json")).error.code !== -32043) fail(f + ": a revoked token works again after restart: " + r(f + ".json").slice(0, 200));
+  const ids = JSON.parse(r(file)).entries.map((e) => e.id);
+  if (!ids.includes(jti(tok))) fail(file + " lost its own revocation");
+  if (ids.includes(jti(other))) fail(file + " holds the other instance's revocation (files are not distinct)");
+}
+console.log("drive stateless-multi-instance: one denylist per process enforced (Q on A's file and G on the default path refused with the file named and KAIA_OAUTH_REVOCATION_FILE advice, A and F kept serving; crashed F's lock taken over); with distinct files A's and B's revocations both survive a restart of both");
 console.log("drive stateless-multi-instance: A and B share key + KAIA_PUBLIC_URL; token from A (iss = aud = public URL) works on B with no initialize and no session header; rotated C serves [new, previous] and accepts it; D (other public URL) rejects it; wrong-aud tokens with a valid signature (legacy-only, other URI, other port) -> 401 invalid_token, aud array with canonical accepted; legacy-audience E mints [canonical, kaia-mcp] and B accepts it; KAIA_ALLOWED_ORIGINS origin allowed on B, others 403; AS state + denylist per process (refresh from A invalid_grant on B; revoke on A not seen by B, as documented)");
 JS
     ;;

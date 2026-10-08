@@ -4,6 +4,7 @@ import type { DemoOAuthProvider } from "./provider.js";
 import { bearerFromHeader } from "./provider.js";
 import { TOOL_SCOPES } from "./scopes.js";
 import { logger } from "../utils/logger.js";
+import { MCP_ERROR_CODES } from "../utils/errors.js";
 import { RevocationStoreError } from "./revocation-store.js";
 import type { AuthContext, VerifyResult } from "./types.js";
 
@@ -167,17 +168,40 @@ export function applyCors(res: ServerResponse): void {
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
 }
 
+/** Scope named in 401 challenges: the least-privilege scope for basic use (MCP scope selection). */
+export const CHALLENGE_SCOPE = "kaia:read";
+
+/** RFC 6750 quoted-string: drop characters that cannot appear in one. */
+function quoted(value: string): string {
+  return `"${value.replace(/[\\"\r\n]/g, "")}"`;
+}
+
+function bearerChallenge(params: Record<string, string | undefined>): string {
+  const parts = Object.entries(params)
+    .filter(([, v]) => v !== undefined)
+    .map(([k, v]) => `${k}=${quoted(v!)}`);
+  return `Bearer ${parts.join(", ")}`;
+}
+
+/**
+ * 401 for a missing, invalid, expired or revoked token. The challenge carries
+ * resource_metadata (RFC 9728) and scope (MCP 2026-07-28); `error` is omitted when the
+ * request had no credentials at all (RFC 6750 §3.1). The body is the JSON-RPC
+ * -32040/-32041/-32043 error gateways already parse.
+ */
 export function writeAuthFailure(
   res: ServerResponse,
-  result: Extract<VerifyResult, { ok: false }>
+  result: Extract<VerifyResult, { ok: false }>,
+  resourceMetadataUrl: string
 ): void {
-  const wwwError =
-    result.error === "unauthorized"
-      ? "invalid_token"
-      : result.error === "token_expired"
-        ? "invalid_token"
-        : result.error;
-  const www = `Bearer realm="${WWW_AUTHENTICATE_REALM}", error="${wwwError}", error_description="${result.message}"`;
+  const noCredentials = result.error === "unauthorized";
+  const www = bearerChallenge({
+    realm: WWW_AUTHENTICATE_REALM,
+    error: noCredentials ? undefined : "invalid_token",
+    error_description: noCredentials ? undefined : result.message,
+    resource_metadata: resourceMetadataUrl,
+    scope: CHALLENGE_SCOPE,
+  });
   json(
     res,
     401,
@@ -185,6 +209,42 @@ export function writeAuthFailure(
       jsonrpc: "2.0",
       error: { code: result.code, message: result.message, data: { error: result.error } },
       id: null,
+    },
+    { "WWW-Authenticate": www }
+  );
+}
+
+/**
+ * 403 for a valid token that lacks the scope a tools/call needs (RFC 6750 §3.1, MCP
+ * runtime insufficient-scope). The body keeps the JSON-RPC -32042 error and the request id.
+ */
+export function writeInsufficientScope(
+  res: ServerResponse,
+  opts: {
+    id: string | number | null;
+    scope: string;
+    message: string;
+    resourceMetadataUrl: string;
+  }
+): void {
+  const www = bearerChallenge({
+    realm: WWW_AUTHENTICATE_REALM,
+    error: "insufficient_scope",
+    scope: opts.scope,
+    resource_metadata: opts.resourceMetadataUrl,
+    error_description: opts.message,
+  });
+  json(
+    res,
+    403,
+    {
+      jsonrpc: "2.0",
+      id: opts.id,
+      error: {
+        code: MCP_ERROR_CODES.InsufficientScope,
+        message: opts.message,
+        data: { error: "insufficient_scope" },
+      },
     },
     { "WWW-Authenticate": www }
   );

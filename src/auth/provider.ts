@@ -260,9 +260,14 @@ export class DemoOAuthProvider {
     };
   }
 
+  /** RFC 9728 metadata URL for this resource (served at the origin's well-known path). */
+  get resourceMetadataUrl(): string {
+    return `${this.issuer}/.well-known/oauth-protected-resource`;
+  }
+
   protectedResourceMetadata(): Record<string, unknown> {
     return {
-      resource: this.issuer,
+      resource: this.resource,
       authorization_servers: [this.issuer],
       scopes_supported: [...ALL_SCOPES],
       bearer_methods_supported: ["header"],

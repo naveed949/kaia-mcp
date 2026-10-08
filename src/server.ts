@@ -31,6 +31,7 @@ import {
   readBody,
   tryHandleAuxRequest,
   writeAuthFailure,
+  writeInsufficientScope,
 } from "./auth/http.js";
 import type { AuthContext } from "./auth/types.js";
 
@@ -340,6 +341,49 @@ export async function runKaiaMcpServerHttp(port: number): Promise<KaiaHttpServer
     await transport.handleRequest(req, res, parsedBody);
   }
 
+  /**
+   * HTTP-level scope check for tools/call (MCP 2026-07-28 runtime insufficient scope):
+   * a valid token lacking the tool's scope gets 403 + Bearer error="insufficient_scope"
+   * before any server is built. Only the insufficient-scope outcome of the same
+   * authorizeToolCall gate is handled here; tool_disabled, unknown tools and the rest
+   * stay in-band JSON-RPC errors from the handler (which re-checks everything anyway).
+   * A batch is refused whole on its first under-scoped call.
+   */
+  function rejectInsufficientScope(
+    res: ServerResponse,
+    parsedBody: unknown,
+    auth: AuthContext | null
+  ): boolean {
+    const messages = Array.isArray(parsedBody) ? parsedBody : [parsedBody];
+    for (const msg of messages) {
+      if (!msg || typeof msg !== "object") continue;
+      const { method, params, id } = msg as { method?: unknown; params?: unknown; id?: unknown };
+      if (method !== "tools/call" || !params || typeof params !== "object") continue;
+      const name = (params as { name?: unknown }).name;
+      if (typeof name !== "string") continue;
+      try {
+        authorizeToolCall(name, { requireAuth: true, auth });
+      } catch (err) {
+        if (!(err instanceof AuthError) || err.code !== MCP_ERROR_CODES.InsufficientScope) continue;
+        logger.info("Tool call", {
+          tool: logSafeName(name),
+          outcome: "denied",
+          errorCode: err.code,
+          reason: err.error,
+          tokenFingerprint: auth?.tokenFingerprint,
+        });
+        writeInsufficientScope(res, {
+          id: typeof id === "string" || typeof id === "number" ? id : null,
+          scope: requiredScopeForTool(name) ?? "",
+          message: err.message,
+          resourceMetadataUrl: runtime.provider!.resourceMetadataUrl,
+        });
+        return true;
+      }
+    }
+    return false;
+  }
+
   const httpServer = createServer(async (req, res) => {
     applyCors(res);
     if (req.method === "OPTIONS") {
@@ -371,7 +415,7 @@ export async function runKaiaMcpServerHttp(port: number): Promise<KaiaHttpServer
       if (authMode === "required") {
         const result = authenticateRequest(req, runtime.provider!);
         if (!result.ok) {
-          writeAuthFailure(res, result);
+          writeAuthFailure(res, result, runtime.provider!.resourceMetadataUrl);
           return;
         }
         auth = result.context;
@@ -395,6 +439,8 @@ export async function runKaiaMcpServerHttp(port: number): Promise<KaiaHttpServer
         jsonRpcError(res, 400, -32700, "Parse error: body is not valid JSON");
         return;
       }
+
+      if (authMode === "required" && rejectInsufficientScope(res, parsedBody, auth)) return;
 
       await serveMcpPost(req, res, auth, parsedBody);
     } catch (err) {

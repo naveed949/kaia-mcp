@@ -472,8 +472,11 @@ export class DemoOAuthProvider {
     if (record.clientId !== params.clientId) {
       throw Object.assign(new Error("invalid_grant"), { oauthError: "invalid_grant" });
     }
-    record.revoked = true;
+    // Persist the old access jti first: if that throws (RevocationStoreError), the refresh
+    // token is not consumed and the client can retry the same rotation. The store still
+    // denies the jti in this process, so the failure never widens access.
     this.revokeJti(record.accessJti, record.accessExpMs);
+    record.revoked = true;
     return this.mintTokens({
       subject: record.subject,
       clientId: record.clientId,
@@ -508,6 +511,8 @@ export class DemoOAuthProvider {
     }
     const refresh = this.refresh.get(sha256Hex(token));
     if (refresh) {
+      // Revoking only ever narrows access, so the refresh token is dead in-process even if
+      // persisting its access jti throws; a retried revoke re-attempts the write.
       refresh.revoked = true;
       this.revokeJti(refresh.accessJti, refresh.accessExpMs);
       logger.info("oauth refresh token revoked", { tokenFingerprint: fingerprint(token) });

@@ -4,6 +4,7 @@ import type { DemoOAuthProvider } from "./provider.js";
 import { bearerFromHeader } from "./provider.js";
 import { TOOL_SCOPES } from "./scopes.js";
 import { logger } from "../utils/logger.js";
+import { RevocationStoreError } from "./revocation-store.js";
 import type { AuthContext, VerifyResult } from "./types.js";
 
 function escapeHtml(s: string): string {
@@ -85,13 +86,35 @@ function oauthErrorStatus(code: string): number {
   return 400;
 }
 
+type PublicOAuthError = { status: number; error: string; description: string };
+
+/**
+ * What an OAuth endpoint may tell the client about `err`. Only errors the provider raised
+ * deliberately (tagged `oauthError`) keep their message. A revocation that could not be
+ * persisted is a retryable 503 (RFC 7009 2.2.1). Anything else is a generic 500: raw
+ * exception text can carry file paths and other internals, so it goes to the log only.
+ */
+function publicOAuthError(err: unknown): PublicOAuthError {
+  if (err instanceof RevocationStoreError) {
+    logger.error("oauth revocation not persisted", {
+      jti: err.entryId,
+      errno: err.errno ?? "none",
+      error: err,
+    });
+    return { status: 503, error: "server_error", description: "revocation could not be persisted" };
+  }
+  if (err && typeof err === "object" && "oauthError" in err) {
+    const error = String((err as { oauthError?: string }).oauthError);
+    const description = err instanceof Error ? err.message : error;
+    return { status: oauthErrorStatus(error), error, description };
+  }
+  logger.error("oauth endpoint error", { error: err });
+  return { status: 500, error: "server_error", description: "internal error" };
+}
+
 function sendOAuthError(res: ServerResponse, err: unknown): void {
-  const oauthError =
-    err && typeof err === "object" && "oauthError" in err
-      ? String((err as { oauthError?: string }).oauthError)
-      : "server_error";
-  const description = err instanceof Error ? err.message : String(err);
-  json(res, oauthErrorStatus(oauthError), { error: oauthError, error_description: description });
+  const e = publicOAuthError(err);
+  json(res, e.status, { error: e.error, error_description: e.description });
 }
 
 function consentPage(opts: {
@@ -280,7 +303,8 @@ export async function tryHandleAuxRequest(
         })
       );
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const e = publicOAuthError(err);
+      const msg = e.description;
       const redirectUri = url.searchParams.get("redirect_uri") ?? "";
       const state = url.searchParams.get("state");
       if (
@@ -289,7 +313,10 @@ export async function tryHandleAuxRequest(
         msg !== "invalid_request: redirect_uri is not registered"
       ) {
         const loc = new URL(redirectUri);
-        loc.searchParams.set("error", "invalid_request");
+        loc.searchParams.set(
+          "error",
+          e.error === "server_error" ? "server_error" : "invalid_request"
+        );
         loc.searchParams.set("error_description", msg);
         if (state) loc.searchParams.set("state", state);
         res.writeHead(302, { Location: loc.toString() });
@@ -411,20 +438,9 @@ export async function tryHandleAuxRequest(
   if (req.method === "POST" && path === "/oauth/revoke") {
     try {
       const fields = parseForm(await readBody(req), req.headers["content-type"]);
-      try {
-        ctx.provider.revoke(fields.token ?? "");
-      } catch (err) {
-        // The token is denied in this process, but the denylist is not durable: say so
-        // (RFC 7009 2.2.1 server_error) so the client can retry instead of trusting a 200.
-        logger.error("oauth revocation not persisted", { error: err });
-        json(
-          res,
-          503,
-          { error: "server_error", error_description: "revocation could not be persisted" },
-          { "Cache-Control": "no-store" }
-        );
-        return true;
-      }
+      // A RevocationStoreError means the token is denied in this process but not durably;
+      // sendOAuthError answers 503 server_error so the client retries instead of trusting 200.
+      ctx.provider.revoke(fields.token ?? "");
       res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
       res.end("{}");
     } catch (err) {

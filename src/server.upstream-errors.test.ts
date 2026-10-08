@@ -252,7 +252,35 @@ describe("M1: an upstream RPC fault is never classified as a caller mistake", ()
       code: -32001,
     });
     expect(lines().filter((l) => l.includes("msg=Request denied"))).toEqual([]);
-    expect(lines().filter((l) => l.includes(" level=error msg=Tool error "))).toHaveLength(1);
+    const errorLines = lines().filter((l) => l.includes(" level=error msg=Tool error "));
+    expect(errorLines).toHaveLength(1);
+    // The upstream error itself reaches the handler wrapper (not a pre-wrapped ProtocolError),
+    // so the log keeps the upstream's code and description.
+    expect(errorLines[0]).toMatch(
+      / msg=Tool error code=-32001 method=resources\/read category=rpc_provider errorType=\w+ upstreamCode=-32601 detail=\S+$/
+    );
+    expect(errorLines[0]).not.toContain("errorType=ProtocolError");
+    expectCallerSafe();
+  });
+
+  it("a KaiaScan fault behind a resource read is -32004 at error with the upstream status", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      fakeScan(() => new Response("nope", { status: 502 }))
+    );
+    const client = await connect();
+    await expect(client.readResource({ uri: "kaia://mainnet/top-accounts" })).rejects.toMatchObject(
+      {
+        code: -32004,
+        message: "KaiaScan API request failed (top accounts): HTTP 502.",
+        data: { upstreamStatus: 502 },
+      }
+    );
+    expect(lines().filter((l) => l.includes("msg=Request denied"))).toEqual([]);
+    const errorLines = lines().filter((l) => l.includes(" level=error msg=Tool error "));
+    expect(errorLines).toHaveLength(1);
+    expect(errorLines[0]).toMatch(
+      / msg=Tool error code=-32004 method=resources\/read category=kaiascan_api errorType=KaiaScanApiError upstreamStatus=502 detail=\S+$/
+    );
     expectCallerSafe();
   });
 });

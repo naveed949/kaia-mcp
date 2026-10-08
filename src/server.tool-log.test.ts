@@ -174,12 +174,24 @@ describe("Tool call audit log", () => {
     });
     getChainId.mockClear();
     const client = await connect(auth([SCOPES.READ]));
-    await expect(client.callTool({ name: "get_chain_info", arguments: {} })).rejects.toThrow();
+    await expect(client.callTool({ name: "get_chain_info", arguments: {} })).rejects.toMatchObject({
+      code: -32603,
+      message: "Internal error: authorization failed",
+    });
     const lines = toolCallLines();
     expect(lines).toHaveLength(1);
     expect(lines[0]).toContain("msg=Tool call tool=get_chain_info outcome=denied ");
     expect(lines[0]).toContain("reason=internal_error");
     expect(getChainId).not.toHaveBeenCalled();
+    // kaia's own -32603 ProtocolError is a server fault, not a caller mistake: one error line,
+    // no "Request denied".
+    const out = chunks.join("");
+    expect(out).not.toContain("msg=Request denied");
+    const errorLines = out.split("\n").filter((l) => l.includes("msg=Tool error"));
+    expect(errorLines).toHaveLength(1);
+    expect(errorLines[0]).toMatch(
+      / level=error msg=Tool error code=-32603 method=tools\/call category=internal errorType=ProtocolError detail=Internal%20error:%20authorization%20failed$/
+    );
   });
 
   it("a failing auth-context lookup logs one denied line and fails closed", async () => {

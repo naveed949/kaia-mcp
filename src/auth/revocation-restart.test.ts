@@ -7,7 +7,15 @@
  *   too. It is persisted to revoked-jti.json next to the key (or KAIA_OAUTH_REVOCATION_FILE).
  *   An unreadable or corrupt denylist refuses startup instead of starting empty.
  */
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,17 +26,36 @@ import { AUTH_ERRORS, SCOPES } from "./constants.js";
 
 const SECRET = "test-only-introspection-secret";
 
-/** The issuer embeds the port, so a restart must reuse it for old tokens to keep their iss. */
-async function freePort(): Promise<number> {
+/** Hold a port so a server that tried to bind it would fail with EADDRINUSE. */
+async function occupyPort(): Promise<{ port: number; release: () => Promise<void> }> {
   return new Promise((resolve, reject) => {
     const srv = createServer();
     srv.once("error", reject);
-    srv.listen(0, "127.0.0.1", () => {
+    srv.listen(0, () => {
       const addr = srv.address();
       const port = typeof addr === "object" && addr ? addr.port : 0;
-      srv.close(() => resolve(port));
+      resolve({ port, release: () => new Promise<void>((r) => srv.close(() => r())) });
     });
   });
+}
+
+/**
+ * Start kaia-mcp. The first start binds port 0 and the OS picks a free port (no
+ * probe-then-bind race); every restart reuses that port, because the issuer embeds it and
+ * a new port would reject old tokens for an iss mismatch and mask the bug under test. A
+ * restart retries briefly if the port is momentarily still held.
+ */
+async function start(port: number): Promise<KaiaHttpServerHandle> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await runKaiaMcpServerHttp(port);
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (port === 0 || code !== "EADDRINUSE" || attempt >= 20) throw err;
+      await new Promise((r) => setTimeout(r, 50));
+      resetConfigCache();
+    }
+  }
 }
 
 /**
@@ -111,10 +138,11 @@ const INVALID = {
 describe("revocation across restart", () => {
   let handle: KaiaHttpServerHandle | undefined;
   let dir: string;
+  /** 0 until the first start picks a port; restarts then reuse it. */
   let port: number;
 
   beforeEach(async () => {
-    port = await freePort();
+    port = 0;
     dir = mkdtempSync(join(tmpdir(), "kaia-revoke-"));
     process.env.LOG_LEVEL = "error";
     process.env.KAIA_AUTH_MODE = "required";
@@ -138,11 +166,33 @@ describe("revocation across restart", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  /**
+   * The store is loaded before the port is bound. Proven without a race: hold a port, and
+   * start on it. Loading first means the store error wins; binding first would be EADDRINUSE.
+   */
+  async function expectRefusedBeforeBind(match: RegExp = /revocation store/i): Promise<void> {
+    const held = await occupyPort();
+    try {
+      resetConfigCache();
+      const err = await runKaiaMcpServerHttp(held.port).then(
+        () => {
+          throw new Error("server started");
+        },
+        (e: unknown) => e
+      );
+      expect((err as NodeJS.ErrnoException).code).not.toBe("EADDRINUSE");
+      expect(String(err)).toMatch(match);
+    } finally {
+      await held.release();
+    }
+  }
+
   async function restart(): Promise<KaiaHttpServerHandle> {
     if (handle) await handle.close();
     handle = undefined;
     resetConfigCache();
-    handle = await runKaiaMcpServerHttp(port);
+    handle = await start(port);
+    port = handle.port;
     return handle;
   }
 
@@ -242,19 +292,21 @@ describe("revocation across restart", () => {
     ["bad entry", JSON.stringify({ version: 1, entries: [{ id: 7, expMs: "x" }] })],
   ])("refuses to start on a corrupt denylist (%s)", async (_name, content) => {
     process.env.KAIA_OAUTH_SIGNING_KEY_FILE = join(dir, "signing-key.pem");
-    writeFileSync(join(dir, "revoked-jti.json"), content);
-    resetConfigCache();
-    await expect(runKaiaMcpServerHttp(port)).rejects.toThrow(/revocation store/i);
-    // Nothing is left listening: the port is still free.
-    await expect(fetch(`http://127.0.0.1:${port}/health`)).rejects.toThrow();
+    writeFileSync(join(dir, "revoked-jti.json"), content, { mode: 0o600 });
+    await expectRefusedBeforeBind();
   });
 
   it("refuses to start when the denylist path is unreadable", async () => {
     process.env.KAIA_OAUTH_SIGNING_KEY_FILE = join(dir, "signing-key.pem");
     mkdirSync(join(dir, "revoked-jti.json"));
-    resetConfigCache();
-    await expect(runKaiaMcpServerHttp(port)).rejects.toThrow(/revocation store/i);
-    // Nothing is left listening: the port is still free.
-    await expect(fetch(`http://127.0.0.1:${port}/health`)).rejects.toThrow();
+    await expectRefusedBeforeBind();
+  });
+
+  it("refuses to start when the denylist is writable by others", async () => {
+    process.env.KAIA_OAUTH_SIGNING_KEY_FILE = join(dir, "signing-key.pem");
+    const denylist = join(dir, "revoked-jti.json");
+    writeFileSync(denylist, JSON.stringify({ version: 1, entries: [] }), { mode: 0o600 });
+    chmodSync(denylist, 0o666);
+    await expectRefusedBeforeBind(/writable by group or others/);
   });
 });

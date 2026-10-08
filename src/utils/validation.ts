@@ -317,6 +317,27 @@ function checkParams(params: unknown, kind: "input" | "output"): void {
 }
 
 const MAX_TUPLE_DEPTH = 32;
+/**
+ * Longest ABI parameter type accepted (`uint256[2][]`, `tuple[]`...; a tuple's members are
+ * in `components`, not in the type). Far above any real type, and it bounds the work done
+ * on caller text before any RPC call.
+ */
+export const MAX_ABI_TYPE_LENGTH = 256;
+
+/**
+ * `type` without its array suffixes (`T[]`, `T[3]`, `T[][2]` -> `T`): what repeatedly
+ * removing a trailing `/\[\d*\]$/` gives, in one backward scan.
+ */
+function stripArraySuffixes(type: string): string {
+  let end = type.length;
+  while (end > 0 && type.charCodeAt(end - 1) === 0x5d /* ] */) {
+    let i = end - 2;
+    while (i >= 0 && type.charCodeAt(i) >= 0x30 && type.charCodeAt(i) <= 0x39) i--;
+    if (i < 0 || type.charCodeAt(i) !== 0x5b /* [ */) break;
+    end = i;
+  }
+  return type.slice(0, end);
+}
 
 function checkParam(param: unknown, kind: "input" | "output", depth: number): void {
   const bad = (why: string): never => {
@@ -325,9 +346,10 @@ function checkParam(param: unknown, kind: "input" | "output", depth: number): vo
   if (!param || typeof param !== "object" || Array.isArray(param)) bad("must be an object");
   const { type, components } = param as { type?: unknown; components?: unknown };
   if (typeof type !== "string") return bad("has no type");
-  let base = type.trim();
-  // Strip array suffixes: T[], T[3], T[][2] ...
-  while (/\[\d*\]$/.test(base)) base = base.replace(/\[\d*\]$/, "");
+  if (type.length > MAX_ABI_TYPE_LENGTH) {
+    bad(`has a type longer than ${MAX_ABI_TYPE_LENGTH} characters`);
+  }
+  const base = stripArraySuffixes(type.trim());
   if (base === "tuple") {
     if (depth >= MAX_TUPLE_DEPTH) bad("nests tuples too deeply");
     if (!Array.isArray(components)) bad('of type "tuple" needs a components array');

@@ -4,7 +4,7 @@ import type { DemoOAuthProvider } from "./provider.js";
 import { parseBearerCredential } from "./provider.js";
 import { TOOL_SCOPES } from "./scopes.js";
 import { logger, truncateUtf8 } from "../utils/logger.js";
-import { redactString } from "../utils/redact.js";
+import { boundRedactionInput, redactString } from "../utils/redact.js";
 import { MCP_ERROR_CODES } from "../utils/errors.js";
 import { RevocationStoreError } from "./revocation-store.js";
 import type { AuthContext, VerifyResult } from "./types.js";
@@ -265,12 +265,12 @@ export function checkOrigin(
     normalized = undefined;
   }
   if (normalized && normalized !== "null" && allowedOrigins.includes(normalized)) return true;
-  // Caller input from an unauthenticated request: redact first (a JWT as Origin would leave
-  // an `eyJ…` fragment if we cut before the JWT regex could match), then cut to
-  // ORIGIN_LOG_MAX_BYTES so the line stays small. The logger then percent-encodes '=',
-  // whitespace and the rest.
+  // Caller input from an unauthenticated request: bound it at a whitespace boundary (which
+  // never cuts a secret) and redact (a JWT as Origin would leave an `eyJ…` fragment if we
+  // cut it before redaction), then cut to ORIGIN_LOG_MAX_BYTES so the line stays small. The
+  // logger then percent-encodes '=', whitespace and the rest.
   logger.warn("request refused: Origin not allowed", {
-    origin: truncateUtf8(redactString(origin), ORIGIN_LOG_MAX_BYTES),
+    origin: truncateUtf8(redactString(boundRedactionInput(origin)), ORIGIN_LOG_MAX_BYTES),
     method: req.method ?? "",
   });
   res.writeHead(403, { "Content-Type": "application/json", "Cache-Control": "no-store" });

@@ -13,7 +13,7 @@
 
 import { getConfig } from "../config.js";
 import type { LogLevel } from "../config.js";
-import { isSecretKey, redactString } from "./redact.js";
+import { boundRedactionInput, isSecretKey, redactString } from "./redact.js";
 
 const LEVEL_ORDER: LogLevel[] = ["debug", "info", "warn", "error"];
 
@@ -93,17 +93,27 @@ export function truncateUtf8(text: string, maxBytes: number): string {
   return out + "\u2026";
 }
 
+/**
+ * Text ready for the cap: bounded at a whitespace boundary (boundRedactionInput keeps or
+ * drops each non-whitespace run whole, so no secret is cut), then redacted. The bound keeps
+ * the redactor's work at a few KB whatever the value's size (a 4 MB tool name, a contract's
+ * revert reason).
+ */
+function redactForLog(text: string): string {
+  return redactString(boundRedactionInput(text));
+}
+
 function escapeMessage(message: string): string {
-  return escapeLogText(redactString(message), { allowSpace: true });
+  return escapeLogText(redactForLog(message), { allowSpace: true });
 }
 
 /**
- * One log field: redact the full raw text first (a JWT or `Bearer <token>` anywhere in it,
- * whatever the value's type), then cap and percent-encode. Redacting after the cap would
+ * One log field: bound and redact the raw text first (a JWT or `Bearer <token>` anywhere in
+ * it, whatever the value's type), then cap and percent-encode. Redacting after the cap would
  * miss a token cut by it and leave its `eyJ...` header and payload in the log.
  */
 function fieldText(value: unknown, maxBytes: number = LOG_VALUE_MAX_BYTES): string {
-  return escapeLogText(redactString(toText(value)), { maxBytes });
+  return escapeLogText(redactForLog(toText(value)), { maxBytes });
 }
 
 function formatEntry(
@@ -113,7 +123,7 @@ function formatEntry(
 ): string {
   const timestamp = new Date().toISOString();
   // Secret-named keys (token, authorization, ...) are replaced whole; every other value is
-  // redacted on its full raw text in fieldText (the one redaction point), before the cap.
+  // bounded and redacted in fieldText (the one redaction point), before the cap.
   const safeMeta = meta
     ? Object.fromEntries(
         Object.entries(meta).map(([k, v]) => [k, isSecretKey(k) ? "[redacted]" : v])

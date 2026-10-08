@@ -138,13 +138,14 @@ export class KaiaScanRateLimitError extends KaiaScanApiError {} // 429 after one
 
 export function describeFailure(err: unknown): FailureDescription {
   // KaiaScanRateLimitError -> -32003; KaiaScanApiError -> -32004;
-  // viem BaseError (any RPC failure, whatever upstream code) -> -32001, or -32003 for HTTP 429;
+  // viem BaseError (any RPC failure, whatever upstream code) -> -32001, or -32003 for HTTP 429
+  // or a JSON-RPC rate-limit code (429, -32007); upstreamCode only when a safe integer;
   // a network error code (ECONNREFUSED, ...) -> -32001; anything else -> -32603.
   // Returns { code, message (fixed, for the caller), upstreamCode?, upstreamStatus?, detail (log only) }.
 }
 ```
 
-Order of checks in `toMcpError` matters only for kaia's own errors: `AuthError` and `InvalidParamsError` come first and keep their kaia-authored messages (so caller text such as a function name containing "429" cannot turn a validation error into a rate-limit one). Everything else goes through `describeFailure`, which classifies by error type and structured fields (the viem error class, an HTTP status of 429), never by searching message text, and never passes an upstream's JSON-RPC code through as kaia's.
+Order of checks in `toMcpError` matters only for kaia's own errors: `AuthError` and `InvalidParamsError` come first and keep their kaia-authored messages (so caller text such as a function name containing "429" cannot turn a validation error into a rate-limit one). Everything else goes through `describeFailure`, which classifies by error type and structured fields (the viem error class, an HTTP status of 429, a JSON-RPC code of 429 or -32007), never by searching message text (viem's message carries the caller's function name and the contract's revert reason), and never passes an upstream's JSON-RPC code through as kaia's.
 
 ### 2.4 Annotated Code: toMcpError and Server Usage
 

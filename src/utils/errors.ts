@@ -11,6 +11,7 @@
  */
 
 import { BaseError, HttpRequestError, RpcRequestError, TimeoutError } from "viem";
+import { boundRedactionInput } from "./redact.js";
 
 export const MCP_ERROR_CODES = {
   Parse: -32700,
@@ -156,7 +157,17 @@ function viemDetail(err: BaseError): string {
   return parts.join(" | ");
 }
 
-const RATE_LIMIT_TEXT = /\b(rate.?limit(ed)?|too many requests)\b/i;
+/**
+ * JSON-RPC error codes providers use for "too many requests": 429 (Alchemy, Infura, in the
+ * JSON-RPC body) and -32007 (QuickNode), the two viem's own retry logic treats as rate
+ * limits. Not -32005 ("limit exceeded"), which also means a result-size limit.
+ */
+const RATE_LIMIT_RPC_CODES: ReadonlySet<number> = new Set([429, -32007]);
+
+/** A JSON-RPC code worth reporting: a safe integer (never a string, object, NaN or 1.5). */
+function rpcCode(value: unknown): number | undefined {
+  return Number.isSafeInteger(value) ? (value as number) : undefined;
+}
 
 function describeRpc(err: BaseError): FailureDescription {
   let upstreamCode: number | undefined;
@@ -166,21 +177,27 @@ function describeRpc(err: BaseError): FailureDescription {
       upstreamStatus = e.status;
     }
     if (upstreamCode === undefined && e instanceof RpcRequestError) {
-      upstreamCode = e.code;
+      // The node's `code` is upstream data: a hostile node can put its URL, key or a token
+      // in a string or object `code`, which would reach the caller in error.data.
+      upstreamCode = rpcCode(e.code);
     }
     return false;
   });
   if (upstreamCode === undefined) {
     const coded = err.walk(
-      (e) => typeof (e as { code?: unknown }).code === "number" && e !== err
-    ) as { code?: number } | null;
-    const own = (err as unknown as { code?: unknown }).code;
-    upstreamCode =
-      typeof coded?.code === "number" ? coded.code : typeof own === "number" ? own : undefined;
+      (e) => rpcCode((e as { code?: unknown }).code) !== undefined && e !== err
+    ) as { code?: unknown } | null;
+    upstreamCode = rpcCode(coded?.code) ?? rpcCode((err as unknown as { code?: unknown }).code);
   }
-  const detail = viemDetail(err);
+  const detail = boundRedactionInput(viemDetail(err));
   const timedOut = err.walk((e) => e instanceof TimeoutError) !== null;
-  if (upstreamStatus === 429 || RATE_LIMIT_TEXT.test(detail)) {
+  // Structured signals only. Text is never consulted: viem's message carries the caller's
+  // function name and the contract's revert reason, so a function named `rateLimit` that
+  // reverts, or a revert reason saying "Too Many Requests", must not read as a rate limit.
+  if (
+    upstreamStatus === 429 ||
+    (upstreamCode !== undefined && RATE_LIMIT_RPC_CODES.has(upstreamCode))
+  ) {
     return {
       code: MCP_ERROR_CODES.RateLimit,
       message: "Upstream RPC rate limit reached; retry later.",

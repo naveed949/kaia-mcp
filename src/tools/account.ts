@@ -6,7 +6,7 @@ import type { Address } from "viem";
 import { createRpcClient } from "../clients/rpc.js";
 import { createKaiaScanClient } from "../clients/kaiascan.js";
 import { formatKaia, formatPeb } from "../utils/format.js";
-import { validateAddress, validateNetwork, type KaiaNetwork } from "../utils/validation.js";
+import { validateAddress, validateNetwork } from "../utils/validation.js";
 
 // --- Tool definitions (name, description, inputSchema) ---
 

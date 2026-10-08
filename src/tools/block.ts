@@ -189,7 +189,7 @@ export async function handleGetBlockRewards(args: {
 
   try {
     burns = await client.get<BlockBurnsResponse>(burnsPath);
-  } catch (err) {
+  } catch {
     // Burns endpoint may not exist for all blocks; continue with rewards only
     burns = {};
   }

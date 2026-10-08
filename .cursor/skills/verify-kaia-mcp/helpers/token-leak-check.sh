@@ -3,7 +3,8 @@ set -euo pipefail
 # After cleanup: prove no issued secret appears in plaintext in the server log.
 # Usage: helpers/token-leak-check.sh
 # Scans ${EVIDENCE_DIR}/server.log for every access_token, refresh_token, device_code,
-# authorization code, and PKCE verifier captured under ${EVIDENCE_DIR}. Exit 1 on any hit.
+# authorization code, PKCE verifier, and introspection client secret captured under
+# ${EVIDENCE_DIR}, plus any compact JWT at all (access tokens are JWTs). Exit 1 on any hit.
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
@@ -27,7 +28,7 @@ const walk = (d) => {
     if (e.name.endsWith(".json")) {
       try {
         const j = JSON.parse(t);
-        for (const k of ["access_token", "refresh_token", "device_code", "verifier"]) if (typeof j[k] === "string") secrets.add(j[k]);
+        for (const k of ["access_token", "refresh_token", "device_code", "verifier", "client_secret"]) if (typeof j[k] === "string") secrets.add(j[k]);
       } catch {}
     }
     if (e.name === "authorization.code.txt" && t.trim()) secrets.add(t.trim());
@@ -35,6 +36,8 @@ const walk = (d) => {
 };
 walk(dir);
 const hits = [...secrets].filter((s) => s.length >= 16 && log.includes(s));
+const jwtHits = log.match(/eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g) || [];
+if (jwtHits.length) { console.error("token-leak-check: LEAK " + jwtHits.length + " compact JWT(s) in plaintext"); process.exit(1); }
 console.log("token-leak-check: scanned " + secrets.size + " secrets against " + logFile + " (" + log.split("\n").length + " lines)");
 if (hits.length) { console.error("token-leak-check: LEAK " + hits.length + " secret(s) found in plaintext"); process.exit(1); }
 console.log("token-leak-check: no plaintext secrets in server log");

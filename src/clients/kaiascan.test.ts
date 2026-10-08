@@ -31,6 +31,8 @@ describe("createKaiaScanClient", () => {
       allowUnsafeWallet: false,
       oauthClientId: "kaia-mcp-demo",
       accessTokenTtlSeconds: 900,
+      oauthAudience: "kaia-mcp",
+      introspectionClientId: "kaia-mcp-gateway",
     });
     expect(typeof client.get).toBe("function");
   });
@@ -63,6 +65,8 @@ describe("createKaiaScanClient", () => {
       allowUnsafeWallet: false,
       oauthClientId: "kaia-mcp-demo",
       accessTokenTtlSeconds: 900,
+      oauthAudience: "kaia-mcp",
+      introspectionClientId: "kaia-mcp-gateway",
     });
     await expect(client.get("/api")).rejects.toThrow(KaiaScanRateLimitError);
     const err = new KaiaScanRateLimitError();

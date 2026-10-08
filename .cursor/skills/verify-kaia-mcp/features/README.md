@@ -5,7 +5,7 @@ This directory is the maintained source for verifying the user-facing behavior o
 ## Baseline preconditions
 
 - Launch with `.cursor/skills/verify-kaia-mcp/helpers/launch.sh` so the instance uses a disposable port and `KAIA_VERIFY_RUN_ID`.
-- Require `KAIA_AUTH_MODE=required` and `KAIA_ALLOW_UNSAFE_WALLET` unset.
+- Require `KAIA_AUTH_MODE=required` and `KAIA_ALLOW_UNSAFE_WALLET` unset. `launch.sh` also sets a short access-token TTL (`tokenTtlSeconds`, default 20) and a per-run introspection secret.
 - Invoke the helpers from the repo root; do not attach to some other process on 3100.
 - Run `.cursor/skills/verify-kaia-mcp/helpers/doctor.sh` and require `status=ok`, `authMode=required`, `unsafeWallet=false`, and the recorded issuer.
 - Never drive an instance that was not started by this verification run.
@@ -17,7 +17,8 @@ This directory is the maintained source for verifying the user-facing behavior o
 - Drive HTTP with curl (or `helpers/drive.sh <feature-id>`, which wraps those curls).
 - MCP calls are real sessions: `initialize` with the bearer, then `notifications/initialized`, then the request with `Authorization` and `Mcp-Session-Id`.
 - Do not follow OAuth redirects automatically; read the `Location` header for `code`.
-- Restore nothing on the chain: these recipes use local encode/auth only. Do not remove proof artifacts during cleanup.
+- Restore nothing on the chain: these recipes use local encode/auth only.
+- Tokens live for `tokenTtlSeconds`. Every recipe mints its own token right before use; do not reuse a token across recipes. Do not remove proof artifacts during cleanup.
 
 ## Proof and skip reporting
 
@@ -46,3 +47,5 @@ Keep implementation details out of the map. Name only user paths, stable handles
 - [Fail-closed auth](./fail-closed-auth.md) covers missing bearer, insufficient scope, and revoked token.
 - [Generate wallet gated](./generate-wallet-gated.md) covers omission from tools/list and refusal to return a private key.
 - [Device flow](./device-flow.md) covers CLI device authorization, user-code consent, and a scoped tool call.
+- [JWT access tokens](./jwt-access-tokens.md) covers the JWT shape, offline verification via JWKS, forged and `alg=none` rejection, live expiry, the `Tool call` log line, and the tool-scopes metadata endpoint.
+- [Token introspection](./token-introspection.md) covers client-authenticated RFC 7662 introspection, revocation by `jti`, and refresh rotation.

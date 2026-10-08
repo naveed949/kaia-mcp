@@ -31,12 +31,71 @@ Default partner tool list **omits** `generate_wallet`. A call still fails with `
 | Missing `Authorization` | 401 | `-32040` | `unauthorized` | `unauthorized: missing access token` |
 | Expired access token | 401 | `-32041` | `token_expired` | `token_expired: access token has expired` |
 | Token lacks the tool’s scope | 200 (MCP error) | `-32042` | `insufficient_scope` | `insufficient_scope: <tool> requires <scope>` |
-| Unknown, malformed, or revoked token | 401 | `-32043` | `invalid_token` | `invalid_token: access token is invalid or revoked` |
+| Unknown, malformed, forged, wrong `iss`/`aud`, not-yet-valid (`nbf`), or revoked (`jti`) token | 401 | `-32043` | `invalid_token` | `invalid_token: access token is invalid or revoked` |
 | `generate_wallet` in partner mode | MCP error | `-32044` | `tool_disabled` | `tool_disabled: generate_wallet is not available in partner mode; set KAIA_ALLOW_UNSAFE_WALLET=1 for local development only` |
 
 The matching tool handler is never invoked on these paths.
 
-Tokens are stored hashed. Logs emit a 12-character fingerprint, never the raw token. `Authorization`, `access_token`, `refresh_token`, `code_verifier`, and `device_code` fields are redacted if they reach the logger.
+Access tokens are not stored (they are self-contained JWTs); refresh tokens are stored hashed. Logs emit a 12-character sha256 fingerprint and the `jti`, never the raw token. `Authorization`, `access_token`, `refresh_token`, `client_secret`, `code_verifier`, and `device_code` fields, `Bearer …` values, and bare compact JWTs are redacted if they reach the logger.
+
+Every `tools/call` that reaches kaia-mcp logs one `Tool call` info line with the tool name and token fingerprint (no arguments). A gateway in front of kaia-mcp can use this to prove a denied call never arrived.
+
+## Access tokens (JWT) and JWKS
+
+Access tokens are RS256-signed JWTs in the RFC 9068 shape. Header: `{"alg":"RS256","typ":"at+jwt","kid":"<RFC 7638 thumbprint>"}`. Claims:
+
+| Claim | Value |
+|---|---|
+| `iss` | The server's issuer, e.g. `http://127.0.0.1:3100` |
+| `aud` | `KAIA_OAUTH_AUDIENCE` (default `kaia-mcp`) |
+| `sub` | Subject (`demo-user` in the demo IdP) |
+| `client_id` | OAuth client that obtained the token |
+| `scope` | Space-separated scopes |
+| `iat`, `nbf` | Issue time (seconds) |
+| `exp` | `iat + KAIA_ACCESS_TOKEN_TTL_SECONDS` |
+| `jti` | Random UUID, the revocation handle |
+
+Public keys: `GET /oauth/jwks` (also `jwks_uri` in discovery). Only the public JWK (`kty`, `n`, `e`, `kid`, `use`, `alg`) is published.
+
+kaia-mcp verifies every request itself: `alg` must be exactly `RS256`, `kid` must match the active key, the signature must verify, `iss` and `aud` must match, `exp` must be in the future (else `token_expired`), `nbf` must have passed, and the `jti` must not be revoked. Anything else is `invalid_token`.
+
+### Signing key
+
+| Setting | Behavior |
+|---|---|
+| default | A fresh RSA-2048 key is generated at startup and kept in memory. Restarting the server invalidates every outstanding token. |
+| `KAIA_OAUTH_SIGNING_KEY_FILE=<path>` | Dev persistence. The PKCS#8 PEM is loaded from `<path>`, or created there with mode `0600`. Use a gitignored path; `.kaia-dev/` is ignored for this. |
+
+No signing key is committed. Production deployments use their own authorization server and never this provider.
+
+## Revocation and introspection
+
+`POST /oauth/revoke` (RFC 7009) with `token=<access_or_refresh>` always answers `200 {}`.
+
+- Access token: its `jti` is added to an in-memory revocation set until the token's `exp`.
+- Refresh token: the refresh token is revoked and so is the `jti` of the access token it was issued with.
+- Refresh rotation (`grant_type=refresh_token`) revokes the previous access `jti`.
+
+A revoked JWT still has a valid signature until `exp`. Anything that verifies tokens offline from the JWKS cannot see revocation on its own. For that, kaia-mcp offers **RFC 7662 introspection**:
+
+```
+POST /oauth/introspect
+Authorization: Basic base64(<KAIA_INTROSPECTION_CLIENT_ID>:<KAIA_INTROSPECTION_CLIENT_SECRET>)
+Content-Type: application/x-www-form-urlencoded
+
+token=<access_token>
+```
+
+- **Client-authenticated** (`client_secret_basic`), not local-only. It is offered only when `KAIA_INTROSPECTION_CLIENT_SECRET` is set; otherwise the route returns `404` and discovery omits `introspection_endpoint`. The client id defaults to `kaia-mcp-gateway`. The secret is compared in constant time.
+- Missing or wrong credentials: `401 {"error":"invalid_client",…}` with `WWW-Authenticate: Basic`.
+- A valid, unexpired, unrevoked access token for this issuer and audience: `{"active":true,"token_type":"Bearer","scope","client_id","sub","aud","iss","exp","iat","nbf","jti"}`.
+- Anything else, including refresh tokens, expired, forged, and revoked tokens: `{"active":false}`.
+
+The response never echoes the token.
+
+## Tool → scope metadata
+
+`GET /.well-known/kaia-mcp/tool-scopes` (unauthenticated, like other metadata) returns `{"resource":"kaia-mcp","scopes":[…],"tool_scopes":{"<tool>":"<scope>",…}}` from the same registry kaia-mcp enforces. Gateways that keep their own copy of the map compare against it to detect drift.
 
 ## Browser flow (Authorization Code + PKCE S256)
 
@@ -85,7 +144,7 @@ Registered demo redirect URIs: `http://127.0.0.1/callback`, `http://localhost/ca
 ## Consent and revoke
 
 - Consent is explicit (Approve / Deny) on `/oauth/consent` (browser) and `/oauth/device/verify` (device).
-- `POST /oauth/revoke` with `token=<access_or_refresh>` immediately invalidates the token. Subsequent MCP calls return `invalid_token`.
+- `POST /oauth/revoke` with `token=<access_or_refresh>` immediately invalidates the token at kaia-mcp (by `jti`). Subsequent MCP calls return `invalid_token`. See [Revocation and introspection](#revocation-and-introspection) for what offline verifiers see.
 - Refresh: `grant_type=refresh_token` rotates the refresh token and revokes the previous access token.
 
 ## Demo client
@@ -96,6 +155,7 @@ Registered demo redirect URIs: `http://127.0.0.1/callback`, `http://localhost/ca
 | Client type | Public (PKCE required, no client secret) |
 | Demo subject | `demo-user` |
 | Access token TTL | 900s (`KAIA_ACCESS_TOKEN_TTL_SECONDS`) |
+| Access token format | RS256 JWT, `aud` = `KAIA_OAUTH_AUDIENCE` (default `kaia-mcp`) |
 
 This IdP is for tests, CI, and local partner bring-up. It is not a production identity provider.
 
@@ -110,4 +170,4 @@ curl -s -X POST http://127.0.0.1:3100 \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
 ```
 
-Health (`GET /health`) is unauthenticated so operators can doctor an instance.
+Health (`GET /health`), discovery, `GET /oauth/jwks`, and `GET /.well-known/kaia-mcp/tool-scopes` are unauthenticated so operators and gateways can doctor an instance.

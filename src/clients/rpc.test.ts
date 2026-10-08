@@ -35,6 +35,8 @@ describe("createRpcClient", () => {
       allowUnsafeWallet: false,
       oauthClientId: "kaia-mcp-demo",
       accessTokenTtlSeconds: 900,
+      oauthAudience: "kaia-mcp",
+      introspectionClientId: "kaia-mcp-gateway",
     });
     expect(typeof client.getBlockNumber).toBe("function");
   });

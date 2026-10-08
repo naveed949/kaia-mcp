@@ -21,6 +21,10 @@ describe("getConfig", () => {
       "KAIA_ALLOW_UNSAFE_WALLET",
       "KAIA_OAUTH_CLIENT_ID",
       "KAIA_ACCESS_TOKEN_TTL_SECONDS",
+      "KAIA_OAUTH_AUDIENCE",
+      "KAIA_OAUTH_SIGNING_KEY_FILE",
+      "KAIA_INTROSPECTION_CLIENT_ID",
+      "KAIA_INTROSPECTION_CLIENT_SECRET",
     ];
     for (const k of keys) {
       envBackup[k] = process.env[k];
@@ -49,6 +53,10 @@ describe("getConfig", () => {
     delete process.env.KAIA_ALLOW_UNSAFE_WALLET;
     delete process.env.KAIA_OAUTH_CLIENT_ID;
     delete process.env.KAIA_ACCESS_TOKEN_TTL_SECONDS;
+    delete process.env.KAIA_OAUTH_AUDIENCE;
+    delete process.env.KAIA_OAUTH_SIGNING_KEY_FILE;
+    delete process.env.KAIA_INTROSPECTION_CLIENT_ID;
+    delete process.env.KAIA_INTROSPECTION_CLIENT_SECRET;
 
     const config = getConfig();
     expect(config.kaiaRpcUrl).toBe("https://public-en.node.kaia.io");
@@ -63,6 +71,11 @@ describe("getConfig", () => {
     expect(config.allowUnsafeWallet).toBe(false);
     expect(config.oauthClientId).toBe("kaia-mcp-demo");
     expect(config.accessTokenTtlSeconds).toBe(900);
+    expect(config.oauthAudience).toBe("kaia-mcp");
+    expect(config.oauthSigningKeyFile).toBeUndefined();
+    expect(config.introspectionClientId).toBe("kaia-mcp-gateway");
+    // Introspection is off unless a secret is configured.
+    expect(config.introspectionClientSecret).toBeUndefined();
   });
 
   it("returns config from provided env", () => {

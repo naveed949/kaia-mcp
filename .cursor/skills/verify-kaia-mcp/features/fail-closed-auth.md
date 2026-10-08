@@ -28,6 +28,6 @@ Preconditions:
 
 ## Gotchas
 
-- Expired tokens are covered by the golden evals (`token_expired` / `-32041`). The HTTP demo IdP cannot mint an already-expired token over the public token endpoint; do not invent a sleep-and-wait unless TTL is set to seconds.
+- Expired tokens are driven live in [jwt-access-tokens](./jwt-access-tokens.md), which waits out the short launch TTL. The golden evals also cover `token_expired` / `-32041`.
 - `WWW-Authenticate` is present on 401s; it is not a substitute for asserting the JSON-RPC `code`.
 - A 200 JSON-RPC error for insufficient scope is still a deny. Do not require HTTP 401 for that sub-feature.

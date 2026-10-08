@@ -5,3 +5,6 @@ coverage
 *.log
 .DS_Store
 .cursor/skills/verify-kaia-mcp/evidence/
+
+# Dev-only OAuth signing key (KAIA_OAUTH_SIGNING_KEY_FILE=.kaia-dev/signing-key.pem)
+.kaia-dev/

@@ -116,6 +116,31 @@ tool_call_count() {
   { grep -c "msg=Tool call tool=$1 " "${log}" || true; } | tr -d '\n'
 }
 
+# Allowed tool calls of any tool, counted on the structured fields only: a line whose msg is
+# "Tool call" and whose outcome field is "allowed". Never count the bare substring
+# "outcome=allowed" across the whole log: that also counts text inside other fields.
+# Usage: allowed_outcome_total <log-file>
+allowed_outcome_total() {
+  { grep -cE '^timestamp=[^ ]+ level=info msg=Tool call tool=[^ ]+ outcome=allowed( |$)' "$1" || true; } | tr -d '\n'
+}
+
+# Log lines that break the one-token-per-value format: a raw '=' inside a message or value,
+# a duplicate key, a non-printable byte, or a line that does not start timestamp/level/msg.
+# Prints the count. Usage: log_format_violations <log-file>
+log_format_violations() {
+  node -e '
+    const lines = require("fs").readFileSync(process.argv[1], "utf8").split("\n").filter(Boolean);
+    let bad = 0;
+    for (const l of lines) {
+      const keys = l.split(" ").filter((t) => t.indexOf("=") > 0).map((t) => t.slice(0, t.indexOf("=")));
+      const eq = (l.match(/=/g) || []).length;
+      if (!/^timestamp=\S+ level=(debug|info|warn|error) msg=/.test(l) || eq !== keys.length ||
+          new Set(keys).size !== keys.length || !/^[\x20-\x7e]*$/.test(l)) bad++;
+    }
+    process.stdout.write(String(bad));
+  ' "$1"
+}
+
 case "${FEATURE}" in
   oauth-pkce-scoped-tools)
     curl -sS "${BASE}/.well-known/openid-configuration" | save discovery.json
@@ -236,16 +261,17 @@ case "${FEATURE}" in
     # Unknown and crafted tool names: denied (-32602) with one outcome=denied
     # reason=unknown_tool line each, never outcome=allowed, and no forged log line.
     LOG_FILE_PATH="$(inst logFile)"
-    ALLOWED_TOTAL_BEFORE="$({ grep -c "outcome=allowed" "${LOG_FILE_PATH}" || true; } | tr -d '\n')"
+    ALLOWED_TOTAL_BEFORE="$(allowed_outcome_total "${LOG_FILE_PATH}")"
     UNKNOWN_BEFORE="$(tool_call_outcome_count no_such_tool denied)"
     mcp_call unknown-tool "${ACCESS}" '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"no_such_tool","arguments":{}}}'
     FORGED_NAME='get_chain_info outcome=allowed\nlevel=info msg=Tool call tool=get_chain_info outcome=allowed\r'
     mcp_call forged-tool "${ACCESS}" "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"${FORGED_NAME}\",\"arguments\":{}}}"
     UNKNOWN_AFTER="$(tool_call_outcome_count no_such_tool denied)"
-    ALLOWED_TOTAL_AFTER="$({ grep -c "outcome=allowed" "${LOG_FILE_PATH}" || true; } | tr -d '\n')"
+    ALLOWED_TOTAL_AFTER="$(allowed_outcome_total "${LOG_FILE_PATH}")"
     { grep "reason=unknown_tool" "${LOG_FILE_PATH}" || true; } | tail -n 2 | save unknown-tool.tool-call-lines.txt
+    { grep "msg=Request denied" "${LOG_FILE_PATH}" || true; } | tail -n 2 | save request-denied-lines.txt
     { grep "msg=Tool error" "${LOG_FILE_PATH}" || true; } | save tool-error-lines.txt
-    echo "{\"unknownBefore\":${UNKNOWN_BEFORE},\"unknownAfter\":${UNKNOWN_AFTER},\"allowedBefore\":${ALLOWED_TOTAL_BEFORE},\"allowedAfter\":${ALLOWED_TOTAL_AFTER}}" | save unknown-tool.log-count.json
+    echo "{\"unknownBefore\":${UNKNOWN_BEFORE},\"unknownAfter\":${UNKNOWN_AFTER},\"allowedBefore\":${ALLOWED_TOTAL_BEFORE},\"allowedAfter\":${ALLOWED_TOTAL_AFTER},\"formatViolations\":$(log_format_violations "${LOG_FILE_PATH}")}" | save unknown-tool.log-count.json
     node -e "
       const fs=require('fs'); const r=(f)=>fs.readFileSync('${OUT}/'+f,'utf8');
       const fail=(m)=>{ console.error('drive: '+m); process.exit(1); };
@@ -255,13 +281,16 @@ case "${FEATURE}" in
       const n=JSON.parse(r('unknown-tool.log-count.json'));
       if (n.unknownAfter!==n.unknownBefore+1) fail('expected one outcome=denied line for no_such_tool '+JSON.stringify(n));
       if (n.allowedAfter!==n.allowedBefore) fail('unknown/forged tool produced an outcome=allowed line '+JSON.stringify(n));
+      if (n.formatViolations!==0) fail('log lines with a raw = inside a value, duplicate key or non-printable byte '+JSON.stringify(n));
       const lines=r('unknown-tool.tool-call-lines.txt').trim().split('\\n');
       if (lines.length!==2 || !lines.every(l=>/outcome=denied errorCode=-32602 reason=unknown_tool/.test(l))) fail('unknown_tool lines wrong '+lines.join(' | '));
       if (!/msg=Tool call tool=get_chain_info%20outcome%3Dallowed%0Alevel%3Dinfo/.test(lines[1])) fail('forged name not percent-encoded: '+lines[1]);
+      const rd=r('request-denied-lines.txt').trim().split('\\n');
+      if (rd.length!==2 || !rd.every(l=>/ level=info msg=Request denied code=-32602 method=tools\\/call category=invalid_params errorType=\\S+ outcome=denied/.test(l))) fail('unknown names must log Request denied at info with code/category only: '+rd.join(' | '));
+      if (/balanceOf|no_such_tool|get_chain_info/.test(rd.join(' '))) fail('Request denied line echoes caller input');
       const te=r('tool-error-lines.txt');
-      if (/balanceOf|no_such_tool|get_chain_info outcome/.test(te)) fail('Tool error line echoes caller input');
-      if (!/msg=Tool error code=-32602 category=invalid_params/.test(te)) fail('Tool error line lacks code/category');
-      console.log('drive fail-closed-auth: unknown + forged tool names denied (-32602, reason=unknown_tool), no outcome=allowed, name percent-encoded, Tool error lines carry code/category only');
+      if (/code=-32602/.test(te)) fail('an unknown tool name (client mistake) was logged as a Tool error: '+te.slice(0,300));
+      console.log('drive fail-closed-auth: unknown + forged tool names denied (-32602, reason=unknown_tool), no outcome=allowed, 0 format violations, name percent-encoded, logged as Request denied at info (code/category only), never Tool error');
     "
     curl -sS -X POST "${BASE}/oauth/revoke" \
       -H "Content-Type: application/x-www-form-urlencoded" \
@@ -622,9 +651,10 @@ case "${FEATURE}" in
       if (JSON.stringify(JSON.parse(r('revoked-after-introspect.json')))!=='{\"active\":false}') fail('revoked token active in introspection after restart');
       if (JSON.parse(r('kept-after-introspect.json')).active!==true) fail('kept token inactive after restart');
       if (JSON.parse(r('refresh-after.json')).error!=='invalid_grant') fail('refresh token survived restart '+r('refresh-after.json'));
+      const dec=(s)=>s.replace(/(?:%[0-9A-F]{2})+/g,(m)=>Buffer.from(m.replace(/%/g,''),'hex').toString('utf8'));
       const c=JSON.parse(r('corrupt-start.json'));
       if (c.exit===0 || c.exit===124 || c.listening) fail('corrupt denylist did not refuse startup '+JSON.stringify(c));
-      if (!/revocation store .* is corrupt/.test(r('corrupt-start.log'))) fail('corrupt start log missing reason');
+      if (!/revocation store .* is corrupt/.test(dec(r('corrupt-start.log')))) fail('corrupt start log missing reason');
       if (!JSON.parse(r('rotate-phase.json')).skipped) {
         if (!/^HTTP\/1\.1 503/m.test(r('rotate-broken.headers'))) fail('rotation with unwritable store not 503');
         if (JSON.stringify(JSON.parse(r('rotate-broken.json')))!==JSON.stringify({error:'server_error',error_description:'revocation could not be persisted'})) fail('rotation 503 body '+r('rotate-broken.json'));
@@ -634,11 +664,11 @@ case "${FEATURE}" in
       }
       const ins=JSON.parse(r('insecure-start.json'));
       if (ins.exit===0 || ins.exit===124 || ins.listening) fail('insecure denylist did not refuse startup '+JSON.stringify(ins));
-      if (!/revocation store .* is insecure: writable by group or others/.test(r('insecure-start.log'))) fail('insecure start log missing reason');
+      if (!/revocation store .* is insecure: writable by group or others/.test(dec(r('insecure-start.log')))) fail('insecure start log missing reason');
       for (const [k, re] of [['symlink', /refusing to follow a symlink/], ['fifo', /not a regular file/]]) {
         const s=JSON.parse(r(k+'-start.json'));
         if (s.exit===0 || s.exit===124 || s.listening) fail(k+' denylist did not refuse startup (124 = hung) '+JSON.stringify(s));
-        if (!re.test(r(k+'-start.log'))) fail(k+' start log missing reason');
+        if (!re.test(dec(r(k+'-start.log')))) fail(k+' start log missing reason');
       }
       if (kid('jwks-c.json')===kid('jwks-b.json')) fail('memory-mode restart kept the kid');
       for (const f of ['kept-after-memory','revoked-after-memory']) {
@@ -1003,7 +1033,8 @@ if (r("denylist-files-stopped.txt").trim() !== "revoked-a.json\nrevoked-b.json")
 const jti = (f) => JSON.parse(Buffer.from(JSON.parse(r(f)).access_token.split(".")[1], "base64url")).jti;
 for (const [name, file] of [["q-same-file-as-a", "revoked-a.json"], ["g-default-path", "revoked-jti.json"]]) {
   const exit = JSON.parse(r(name + ".exit.json")).exitCode;
-  const log = r(name + ".log");
+  // the fatal line's error value is percent-encoded like every log value
+  const log = r(name + ".log").replace(/(?:%[0-9A-F]{2})+/g, (m) => Buffer.from(m.replace(/%/g, ""), "hex").toString("utf8"));
   if (exit === 0 || exit === 124) fail(name + " was not refused (exit " + exit + "): two processes on one denylist file");
   if (!log.includes("is in use by another kaia-mcp process") || !log.includes("/" + file) || !log.includes("KAIA_OAUTH_REVOCATION_FILE")) fail(name + " refusal does not name the file and the fix: " + log.slice(0, 400));
   if (log.includes("HTTP server listening")) fail(name + " bound its port before refusing");
@@ -1086,7 +1117,7 @@ fs.writeFileSync(o + "/forge-version.body.json", call("get_chain_info", FORGE));
 fs.writeFileSync(o + "/flood.body.json", call("A".repeat(1024 * 1024)));
 JS
     FORGE_HDR='x msg=Tool call tool=generate_wallet outcome=allowed tokenFingerprint=000000000000'
-    ALLOWED_BEFORE="$({ grep -c "outcome=allowed" "${LOG_FILE_PATH}" || true; } | tr -d '\n')"
+    ALLOWED_BEFORE="$(allowed_outcome_total "${LOG_FILE_PATH}")"
     S1_BEFORE="$({ grep -c "msg=Tool call tool=generate_wallet " "${LOG_FILE_PATH}" || true; } | tr -d '\n')"
     REJECTED_BEFORE="$({ grep -c "msg=MCP request rejected" "${LOG_FILE_PATH}" || true; } | tr -d '\n')"
     BYTES_BEFORE="$(wc -c < "${LOG_FILE_PATH}" | tr -d ' ')"
@@ -1097,6 +1128,12 @@ JS
         -H "MCP-Protocol-Version: ${4:-2026-07-28}" -H "Mcp-Method: tools/call" -H "Mcp-Name: $3" \
         --data-binary "@${OUT}/$2" || true
     }
+    # An unauthenticated foreign Origin carrying a forged field is refused (403); its warn line
+    # must hold the Origin as one encoded value, not a planted outcome=allowed token.
+    curl -sS -D "${OUT}/forge-origin.headers" -o "${OUT}/forge-origin.json" -X POST "${BASE}/" \
+      -H "Origin: http://x.example ${FORGE_HDR}" -H "Content-Type: application/json" \
+      --data-binary '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' || true
+    { grep "msg=request refused: Origin not allowed" "${LOG_FILE_PATH}" || true; } | tail -n 1 | save forge-origin-line.txt
     modern_post forge-name forge-name.body.json x
     modern_post forge-header forge-header.body.json "${FORGE_HDR}"
     # header and envelope agree on the crafted version, so the SDK's UnsupportedProtocolVersion
@@ -1106,13 +1143,14 @@ JS
     for i in 1 2 3; do modern_post "flood-${i}" flood.body.json x; done
     FLOOD_BYTES_AFTER="$(wc -c < "${LOG_FILE_PATH}" | tr -d ' ')"
     rm -f "${OUT}/flood.body.json" "${OUT}"/flood-*.json
-    ALLOWED_AFTER="$({ grep -c "outcome=allowed" "${LOG_FILE_PATH}" || true; } | tr -d '\n')"
+    ALLOWED_AFTER="$(allowed_outcome_total "${LOG_FILE_PATH}")"
+    PLANTED_AFTER="$({ grep -c "outcome=allowed" "${OUT}/forge-origin-line.txt" || true; } | tr -d '\n')"
     S1_AFTER="$({ grep -c "msg=Tool call tool=generate_wallet " "${LOG_FILE_PATH}" || true; } | tr -d '\n')"
     REJECTED_AFTER="$({ grep -c "msg=MCP request rejected" "${LOG_FILE_PATH}" || true; } | tr -d '\n')"
     { grep "msg=MCP request rejected" "${LOG_FILE_PATH}" || true; } | tail -n 6 | save rejected-lines.txt
-    printf '{"allowedBefore":%s,"allowedAfter":%s,"s1ToolCallsBefore":%s,"s1ToolCallsAfter":%s,"rejectedBefore":%s,"rejectedAfter":%s,"bytesBefore":%s,"bytesAfterForge":%s,"bytesAfterFlood":%s}\n' \
+    printf '{"allowedBefore":%s,"allowedAfter":%s,"s1ToolCallsBefore":%s,"s1ToolCallsAfter":%s,"rejectedBefore":%s,"rejectedAfter":%s,"bytesBefore":%s,"bytesAfterForge":%s,"bytesAfterFlood":%s,"originPlanted":%s,"formatViolations":%s}\n' \
       "${ALLOWED_BEFORE}" "${ALLOWED_AFTER}" "${S1_BEFORE}" "${S1_AFTER}" "${REJECTED_BEFORE}" "${REJECTED_AFTER}" \
-      "${BYTES_BEFORE}" "${FORGE_BYTES_AFTER}" "${FLOOD_BYTES_AFTER}" | save forge-log-count.json
+      "${BYTES_BEFORE}" "${FORGE_BYTES_AFTER}" "${FLOOD_BYTES_AFTER}" "${PLANTED_AFTER}" "$(log_format_violations "${LOG_FILE_PATH}")" | save forge-log-count.json
     OUT="${OUT}" node - <<'JS'
 const fs = require("fs"); const r = (f) => fs.readFileSync(process.env.OUT + "/" + f, "utf8");
 const fail = (m) => { console.error("drive: " + m); process.exit(1); };
@@ -1123,6 +1161,11 @@ for (const [f, code] of [["forge-name", -32020], ["forge-header", -32020], ["for
   if (JSON.parse(r(f + ".json")).error?.code !== code) fail(f + " expected " + code + ": " + r(f + ".json").slice(0, 200));
 }
 if (n.allowedAfter !== n.allowedBefore) fail("a forged modern request produced an outcome=allowed line " + JSON.stringify(n));
+if (status("forge-origin.headers") !== 403) fail("foreign Origin not 403: " + status("forge-origin.headers"));
+const ol = r("forge-origin-line.txt").trim();
+if (!/ level=warn msg=request refused: Origin not allowed origin=http:\/\/x\.example%20x%20msg%3DTool%20call%20tool%3Dgenerate_wallet%20outcome%3Dallowed\S* method=POST$/.test(ol)) fail("Origin warn line must hold the Origin as one encoded value: " + ol.slice(0, 300));
+if (n.originPlanted !== 0) fail("a foreign Origin planted outcome=allowed in its warn line " + JSON.stringify(n));
+if (n.formatViolations !== 0) fail("log lines with a raw = inside a value, duplicate key or non-printable byte " + JSON.stringify(n));
 if (n.s1ToolCallsAfter !== n.s1ToolCallsBefore) fail("a forged modern request produced a 'msg=Tool call tool=generate_wallet ' line " + JSON.stringify(n));
 if (n.rejectedAfter - n.rejectedBefore !== 6) fail("expected 6 new 'MCP request rejected' lines " + JSON.stringify(n));
 const lines = r("rejected-lines.txt").trim().split("\n");
@@ -1132,7 +1175,7 @@ for (const l of lines) {
 }
 if (n.bytesAfterForge - n.bytesBefore > 3 * 1024) fail("3 forged requests grew the log by " + (n.bytesAfterForge - n.bytesBefore) + " bytes");
 if (n.bytesAfterFlood - n.bytesAfterForge > 3 * 1024) fail("3 x 1 MiB names grew the log by " + (n.bytesAfterFlood - n.bytesAfterForge) + " bytes");
-console.log("drive protocol-2026-07-28: forged params.name / Mcp-Name / _meta version -> 400 (-32020/-32022), 0 new outcome=allowed, 0 s1 Tool call lines, rejected lines carry cell+code only; 3 x 1 MiB names added " + (n.bytesAfterFlood - n.bytesAfterForge) + " log bytes");
+console.log("drive protocol-2026-07-28: forged params.name / Mcp-Name / _meta version -> 400 (-32020/-32022), 0 new allowed Tool call lines, 0 s1 Tool call lines, rejected lines carry cell+code only; forged foreign Origin -> 403 with the Origin as one encoded value (0 planted tokens); 0 log format violations; 3 x 1 MiB names added " + (n.bytesAfterFlood - n.bytesAfterForge) + " log bytes");
 JS
     ;;
 

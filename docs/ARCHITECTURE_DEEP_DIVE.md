@@ -202,6 +202,7 @@ export function toMcpError(err: unknown): McpErrorShape {
 // src/server.ts (excerpt)
 
 function wrapToolHandler<T, R>(
+  method: string,
   handler: (req: T) => R | Promise<R>
 ): (req: T, extra: unknown) => Promise<R> {
   return async (req: T, extra: unknown) => {
@@ -209,12 +210,25 @@ function wrapToolHandler<T, R>(
       return await Promise.resolve(handler(req));
     } catch (err) {
       const mcp = err instanceof McpError ? { code: err.code, data: err.data } : toMcpError(err);
-      // Code and category only: error messages often echo caller input.
-      logger.error("Tool error", {
-        code: mcp.code,
-        category: errorCategory(mcp.code),
-        errorType: logSafeName(err instanceof Error ? err.name : typeof err),
-      });
+      // Code and category only: error messages often echo caller input. The logger
+      // percent-encodes every value, so even errorType cannot add a field.
+      const errorType = err instanceof Error ? err.name : typeof err;
+      if (CLIENT_HANDLER_CODES.has(mcp.code)) {
+        // unknown name, bad arguments, in-band auth denial: a client mistake, not a fault
+        logger.info("Request denied", {
+          method,
+          code: mcp.code,
+          category: errorCategory(mcp.code),
+          errorType,
+          outcome: "denied",
+        });
+      } else {
+        logger.error("Tool error", {
+          code: mcp.code,
+          category: errorCategory(mcp.code),
+          errorType,
+        });
+      }
       if (err instanceof McpError) throw err;
       const shape = toMcpError(err);
       throw new McpError(shape.code, shape.message, shape.data);

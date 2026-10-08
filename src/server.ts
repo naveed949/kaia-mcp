@@ -6,8 +6,9 @@ import {
   ProtocolErrorCode,
   createMcpHandler,
   type AuthInfo,
+  type Transport,
 } from "@modelcontextprotocol/server";
-import { serveStdio } from "@modelcontextprotocol/server/stdio";
+import { serveStdio, type StdioServerHandle } from "@modelcontextprotocol/server/stdio";
 import { toNodeHandler } from "@modelcontextprotocol/node";
 import { getConfig } from "./config.js";
 import { AuthError, MCP_ERROR_CODES, toMcpError } from "./utils/errors.js";
@@ -51,24 +52,6 @@ export type CreateKaiaMcpServerOptions = {
   getAuthContext?: () => AuthContext | null;
 };
 
-/**
- * A caller-supplied name, safe for one key=value log field: names made only of
- * [A-Za-z0-9_.-] (every real tool) pass through unchanged; anything else is
- * percent-encoded byte by byte (UTF-8), so spaces, '=', CR/LF and control characters
- * can never appear raw, and it is capped at 128 bytes.
- */
-export function logSafeName(value: unknown): string {
-  const s = typeof value === "string" ? value : String(value);
-  if (/^[A-Za-z0-9_.-]{1,128}$/.test(s)) return s;
-  const bytes = Buffer.from(s, "utf8");
-  let out = "";
-  for (const b of bytes.subarray(0, 128)) {
-    const c = String.fromCharCode(b);
-    out += /[A-Za-z0-9_.-]/.test(c) ? c : `%${b.toString(16).toUpperCase().padStart(2, "0")}`;
-  }
-  return bytes.length > 128 ? `${out}%E2%80%A6` : out;
-}
-
 /** Coarse class of a JSON-RPC error code, for logs that must not carry the raw message. */
 export function errorCategory(code: number): string {
   if (code <= MCP_ERROR_CODES.Unauthorized && code >= MCP_ERROR_CODES.ToolDisabled) return "auth";
@@ -93,7 +76,7 @@ export function errorCategory(code: number): string {
 }
 
 /** JSON-RPC codes the SDK uses for a request the client got wrong (not a server fault). */
-const CLIENT_PROTOCOL_CODES = new Set<number>([
+const CLIENT_PROTOCOL_CODES: ReadonlySet<number> = new Set<number>([
   ProtocolErrorCode.ParseError,
   ProtocolErrorCode.InvalidRequest,
   ProtocolErrorCode.MethodNotFound,
@@ -103,9 +86,12 @@ const CLIENT_PROTOCOL_CODES = new Set<number>([
   ProtocolErrorCode.UnsupportedProtocolVersion,
 ]);
 
-/** "Rejected ... (<cell>): <message that may echo caller input>" from createMcpHandler. */
+/**
+ * "Rejected ... (<cell>): <message that may echo caller input>" from createMcpHandler, and
+ * the stdio entry's form of the 2025-era rejection ("... on a modern-only stdio connection").
+ */
 const SDK_REJECTION =
-  /^Rejected (?:inbound request|2025-era request on a modern-only endpoint) \(([^)]{0,200})\):/;
+  /^Rejected (?:inbound request|2025-era request on a modern-only (?:endpoint|stdio connection)) \(([^)]{0,200})\):/;
 const SDK_CELL_SHAPE = /^[a-z0-9-]{1,64}$/;
 
 /**
@@ -136,7 +122,39 @@ const SDK_CELL_CODES: Readonly<Record<string, number>> = {
   "batch-with-modern-element": ProtocolErrorCode.InvalidRequest,
   "batch-with-invalid-element": ProtocolErrorCode.InvalidRequest,
   "invalid-json-rpc-body": ProtocolErrorCode.InvalidRequest,
+  // 2025-era request on a modern-only endpoint or stdio connection
+  "modern-only-missing-envelope": ProtocolErrorCode.UnsupportedProtocolVersion,
+  "modern-only-batch-not-supported": ProtocolErrorCode.InvalidRequest,
+  "modern-only-response-post": ProtocolErrorCode.InvalidRequest,
+  "modern-only-method-not-allowed": -32000,
 };
+
+/**
+ * Messages the stdio entry reports when it drops a client message it cannot use (a
+ * response before the era is negotiated, a notification with a bad envelope or revision).
+ * Notifications get no JSON-RPC answer, so the code is the one the SDK gives the same
+ * problem on a request. Matched on the fixed SDK prefix only: the rest can quote caller
+ * input. The generic "Discarded a " entry catches future wordings of the same kind; the
+ * SDK's "Discarded the probe instance ..." (a server-side timeout) is not matched.
+ */
+const SDK_STDIO_DISCARDS: ReadonlyArray<readonly [string, string, number]> = [
+  [
+    "Discarded a JSON-RPC response received before the connection negotiated an era",
+    "response-before-negotiation",
+    ProtocolErrorCode.InvalidRequest,
+  ],
+  [
+    "Discarded a notification with a malformed envelope:",
+    "notification-envelope-invalid",
+    ProtocolErrorCode.InvalidParams,
+  ],
+  [
+    "Discarded a notification claiming unsupported protocol revision",
+    "notification-unsupported-revision",
+    ProtocolErrorCode.UnsupportedProtocolVersion,
+  ],
+  ["Discarded a ", "discarded-message", ProtocolErrorCode.InvalidRequest],
+];
 
 /**
  * Rejections from the SDK's legacy (2025) transport, matched on their fixed SDK prefix
@@ -162,7 +180,8 @@ export type SdkErrorLogEntry = {
 };
 
 /**
- * What to log for an error the MCP SDK hands to `onerror` (HTTP handler and stdio).
+ * What to log for an error the MCP SDK hands to `onerror` (HTTP handler and stdio), and
+ * for an error caught by the HTTP request handler itself.
  *
  * SDK messages routinely echo caller input: the 2026-07-28 ladder puts `params.name`,
  * `Mcp-Name`, `Mcp-Method`, `MCP-Protocol-Version` and the `_meta` version into its
@@ -171,12 +190,12 @@ export type SdkErrorLogEntry = {
  * megabytes per request. So the raw message is never logged:
  * - a client-caused rejection logs a fixed message, the SDK's rejection cell (only if it has
  *   the SDK's own `[a-z0-9-]` shape) and the JSON-RPC code, at info;
- * - anything else logs at error with the error type, code, and a `detail` passed through
- *   logSafeName (percent-encoded, 128-byte cap), so it can never hold a space or `=`.
+ * - anything else logs at error with the error type, code, and a `detail` holding the
+ *   message, which the logger caps and percent-encodes like every other value.
  */
 export function sdkErrorLogEntry(err: unknown): SdkErrorLogEntry {
   const message = err instanceof Error ? err.message : String(err);
-  const errorType = logSafeName(err instanceof Error ? err.name : typeof err);
+  const errorType = err instanceof Error ? err.name : typeof err;
   const rawCode = (err as { code?: unknown } | null)?.code;
   const code = typeof rawCode === "number" && Number.isInteger(rawCode) ? rawCode : undefined;
   const withCode = <M extends SdkErrorLogEntry["meta"]>(meta: M): M =>
@@ -196,6 +215,15 @@ export function sdkErrorLogEntry(err: unknown): SdkErrorLogEntry {
       meta: { code: err.code, cell: "protocol-error", errorType },
     };
   }
+  for (const [prefix, cell, cellCode] of SDK_STDIO_DISCARDS) {
+    if (message.startsWith(prefix)) {
+      return {
+        level: "info",
+        message: "MCP request rejected",
+        meta: { code: cellCode, cell, errorType },
+      };
+    }
+  }
   for (const [prefix, cell] of SDK_CLIENT_PREFIXES) {
     if (message.startsWith(prefix)) {
       return {
@@ -205,14 +233,14 @@ export function sdkErrorLogEntry(err: unknown): SdkErrorLogEntry {
       };
     }
   }
-  if (err instanceof SyntaxError || /ZodError$/.test(errorType)) {
+  if (err instanceof SyntaxError || errorType.endsWith("ZodError")) {
     const cell = err instanceof SyntaxError ? "parse-error" : "invalid-message";
     return { level: "info", message: "MCP request rejected", meta: withCode({ cell, errorType }) };
   }
   return {
     level: "error",
     message: "MCP transport error",
-    meta: withCode({ errorType, detail: logSafeName(message) }),
+    meta: withCode({ errorType, detail: message }),
   };
 }
 
@@ -224,7 +252,25 @@ function logSdkError(err: unknown): void {
   logger[entry.level](entry.message, { ...entry.meta, tokenFingerprint });
 }
 
+/**
+ * Handler error codes that mean the client asked for something it cannot have (an unknown
+ * tool, resource or prompt name, bad arguments, a missing or under-scoped token): logged
+ * at info as a denial, not at error. Everything else is a server-side fault.
+ */
+const CLIENT_HANDLER_CODES: ReadonlySet<number> = new Set<number>([
+  MCP_ERROR_CODES.Parse,
+  MCP_ERROR_CODES.InvalidRequest,
+  MCP_ERROR_CODES.MethodNotFound,
+  MCP_ERROR_CODES.InvalidParams,
+  MCP_ERROR_CODES.Unauthorized,
+  MCP_ERROR_CODES.TokenExpired,
+  MCP_ERROR_CODES.InsufficientScope,
+  MCP_ERROR_CODES.InvalidToken,
+  MCP_ERROR_CODES.ToolDisabled,
+]);
+
 function wrapToolHandler<T, R>(
+  method: string,
   handler: (req: T) => R | Promise<R>
 ): (req: T, extra: unknown) => Promise<R> {
   return async (req: T, _extra: unknown) => {
@@ -235,11 +281,22 @@ function wrapToolHandler<T, R>(
         err instanceof ProtocolError ? { code: err.code, data: err.data } : toMcpError(err);
       // Code and category only: tool, resource and prompt error messages routinely echo
       // caller input (e.g. 'Function "X" not found on ABI', an unknown uri or name).
-      logger.error("Tool error", {
-        code: mcp.code,
-        category: errorCategory(mcp.code),
-        errorType: logSafeName(err instanceof Error ? err.name : typeof err),
-      });
+      const errorType = err instanceof Error ? err.name : typeof err;
+      if (CLIENT_HANDLER_CODES.has(mcp.code)) {
+        logger.info("Request denied", {
+          method,
+          code: mcp.code,
+          category: errorCategory(mcp.code),
+          errorType,
+          outcome: "denied",
+        });
+      } else {
+        logger.error("Tool error", {
+          code: mcp.code,
+          category: errorCategory(mcp.code),
+          errorType,
+        });
+      }
       if (err instanceof ProtocolError) throw err;
       const shape = toMcpError(err);
       throw new ProtocolError(shape.code, shape.message, shape.data);
@@ -284,17 +341,16 @@ export function createKaiaMcpServer(options: CreateKaiaMcpServerOptions = {}): S
 
   server.setRequestHandler(
     "tools/list",
-    wrapToolHandler(() => listTools(authOpts()))
+    wrapToolHandler("tools/list", () => listTools(authOpts()))
   );
 
   server.setRequestHandler(
     "tools/call",
-    wrapToolHandler(async (request) => {
+    wrapToolHandler("tools/call", async (request) => {
       const { name, arguments: args } = request.params;
       // One audit line per call, written after the authorization decision and carrying its
       // outcome. Never logs arguments or token material (only the sha256 fingerprint). The
-      // tool name is caller input, so it is logged through logSafeName.
-      const tool = logSafeName(name);
+      // tool name is caller input; the logger caps and percent-encodes it.
       let opts: ToolAuthOptions | undefined;
       try {
         opts = authOpts();
@@ -311,7 +367,7 @@ export function createKaiaMcpServer(options: CreateKaiaMcpServerOptions = {}): S
               ? { errorCode: err.code, reason: "unknown_tool" }
               : { errorCode: MCP_ERROR_CODES.InternalError, reason: "internal_error" };
         logger.info("Tool call", {
-          tool,
+          tool: name,
           outcome: "denied",
           // Not `code`: the logger hoists `code` ahead of `tool`, and gateways (s1-tool-gate's
           // live e2e) match the stable prefix "msg=Tool call tool=<name> " for every call.
@@ -328,7 +384,7 @@ export function createKaiaMcpServer(options: CreateKaiaMcpServerOptions = {}): S
         throw err;
       }
       logger.info("Tool call", {
-        tool,
+        tool: name,
         outcome: "allowed",
         tokenFingerprint: opts.auth?.tokenFingerprint,
       });
@@ -338,12 +394,12 @@ export function createKaiaMcpServer(options: CreateKaiaMcpServerOptions = {}): S
 
   server.setRequestHandler(
     "resources/list",
-    wrapToolHandler(() => listResources())
+    wrapToolHandler("resources/list", () => listResources())
   );
 
   server.setRequestHandler(
     "resources/read",
-    wrapToolHandler(async (request) => {
+    wrapToolHandler("resources/read", async (request) => {
       const uri = request.params?.uri ?? "";
       return readResource(uri);
     })
@@ -351,12 +407,12 @@ export function createKaiaMcpServer(options: CreateKaiaMcpServerOptions = {}): S
 
   server.setRequestHandler(
     "prompts/list",
-    wrapToolHandler(() => listPrompts())
+    wrapToolHandler("prompts/list", () => listPrompts())
   );
 
   server.setRequestHandler(
     "prompts/get",
-    wrapToolHandler(async (request) => {
+    wrapToolHandler("prompts/get", async (request) => {
       const name = request.params?.name ?? "";
       const args = request.params?.arguments;
       return getPrompt(name, args);
@@ -371,13 +427,17 @@ export function createKaiaMcpServer(options: CreateKaiaMcpServerOptions = {}): S
  * Validates config at startup (fail-fast on bad env).
  * Stdio is local-process only: OAuth is not applied. generate_wallet stays disabled unless the unsafe flag is set.
  * Uses serveStdio so the connection can speak 2026-07-28 (server/discover) or fall back to
- * the 2025 initialize handshake.
+ * the 2025 initialize handshake. `transport` defaults to the process's stdio (tests pass a
+ * StdioServerTransport over in-memory streams).
  */
-export async function runKaiaMcpServer(): Promise<void> {
+export async function runKaiaMcpServer(
+  options: { transport?: Transport } = {}
+): Promise<StdioServerHandle> {
   getConfig();
   logger.info("Starting Kaia MCP server (stdio)");
-  await serveStdio(() => createKaiaMcpServer({ requireAuth: false }), {
+  return serveStdio(() => createKaiaMcpServer({ requireAuth: false }), {
     onerror: logSdkError,
+    ...(options.transport ? { transport: options.transport } : {}),
   });
 }
 
@@ -521,7 +581,7 @@ export async function runKaiaMcpServerHttp(port: number): Promise<KaiaHttpServer
       } catch (err) {
         if (!(err instanceof AuthError) || err.code !== MCP_ERROR_CODES.InsufficientScope) continue;
         logger.info("Tool call", {
-          tool: logSafeName(name),
+          tool: name,
           outcome: "denied",
           errorCode: err.code,
           reason: err.error,

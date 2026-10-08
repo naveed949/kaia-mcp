@@ -46,7 +46,7 @@ Keep implementation details out of the map. Name only user paths, stable handles
 ## Features
 
 - [OAuth PKCE scoped tools](./oauth-pkce-scoped-tools.md) covers discovery (no ID-token advertisement), browser PKCE consent, token exchange, a scope-allowed MCP tool call, plain-PKCE rejection, and Deny.
-- [Fail-closed auth](./fail-closed-auth.md) covers missing bearer, insufficient scope (with its `outcome=denied` `Tool call` log line), unknown and crafted tool names (`reason=unknown_tool`, no forged log line), `Tool error` lines without caller input, and revoked token.
+- [Fail-closed auth](./fail-closed-auth.md) covers missing bearer, insufficient scope (with its `outcome=denied` `Tool call` log line), unknown and crafted tool names (`reason=unknown_tool`, no forged log line), client mistakes logged as `Request denied` at info and server-side `Tool error` lines, both without caller input, and revoked token.
 - [Generate wallet gated](./generate-wallet-gated.md) covers omission from tools/list and refusal to return a private key.
 - [Device flow](./device-flow.md) covers CLI device authorization, user-code consent, and a scoped tool call.
 - [JWT access tokens](./jwt-access-tokens.md) covers the JWT shape, offline verification via JWKS, forged and `alg=none` rejection, live expiry, the `Tool call` log line, and the tool-scopes metadata endpoint.

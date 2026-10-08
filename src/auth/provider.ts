@@ -786,8 +786,14 @@ export function createDemoOAuthProvider(options: DemoOAuthProviderOptions): Demo
   return new DemoOAuthProvider(options);
 }
 
+/**
+ * The token of an `Authorization: Bearer <token>` header, per RFC 6750 2.1:
+ * `"Bearer" 1*SP b64token`. The scheme is case-insensitive (RFC 9110 11.1) and one or more
+ * spaces may separate it from the token; a tab or other whitespace separator, a second
+ * credential, quoting or any character outside b64token is not a bearer token.
+ */
 export function bearerFromHeader(authorization: string | undefined): string | undefined {
   if (!authorization) return undefined;
-  const match = /^Bearer\s+(\S+)$/i.exec(authorization.trim());
+  const match = /^Bearer +([A-Za-z0-9\-._~+/]+=*)$/i.exec(authorization.trim());
   return match?.[1];
 }

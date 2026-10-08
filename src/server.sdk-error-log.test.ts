@@ -14,6 +14,7 @@ import {
 import { runKaiaMcpServerHttp, sdkErrorLogEntry, type KaiaHttpServerHandle } from "./server.js";
 import { resetConfigCache } from "./config.js";
 import { SCOPES } from "./auth/constants.js";
+import { logger } from "./utils/logger.js";
 import { mcpPost } from "./test-support/mcp-http.js";
 
 vi.mock("./clients/rpc.js", () => ({
@@ -302,10 +303,30 @@ describe("sdkErrorLogEntry", () => {
     );
     expect(e.level).toBe("error");
     expect(e.message).toBe("MCP transport error");
-    const detail = String(e.meta.detail);
+    // The logger caps and percent-encodes the detail like every other value.
+    const chunks: string[] = [];
+    const orig = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      chunks.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write;
+    try {
+      logger[e.level](e.message, e.meta);
+    } finally {
+      process.stderr.write = orig;
+    }
+    const line = chunks.join("").trimEnd();
+    const detail = / detail=(\S*)/.exec(line)?.[1] ?? "";
+    expect(detail.startsWith("Received%20a%20response")).toBe(true);
     expect(detail).not.toMatch(/[ =\n]/);
-    expect(Buffer.byteLength(detail)).toBeLessThanOrEqual(128 * 3 + 9);
-    expect(detail).not.toContain("outcome=allowed");
+    expect(Buffer.byteLength(detail)).toBeLessThanOrEqual(256 * 3 + 9);
+    expect(line).not.toContain("outcome=allowed");
+    expect(
+      line
+        .split(" ")
+        .filter((t) => t.includes("="))
+        .map((t) => t.split("=")[0])
+    ).toEqual(["timestamp", "level", "msg", "errorType", "detail"]);
   });
 
   it("does not trust a caller-shaped cell", () => {

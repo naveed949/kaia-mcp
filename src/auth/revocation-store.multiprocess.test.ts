@@ -10,6 +10,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { decodeLogText } from "../test-support/log-fuzz.js";
 
 const ROOT = resolve(__dirname, "../..");
 let outDir: string;
@@ -104,9 +105,12 @@ describe("two processes on one default revocation file", () => {
     ]);
     expect(qCode).not.toBe("still running after 15s");
     expect(qCode).not.toBe(0);
-    expect(q.stderr()).toContain(denylist);
-    expect(q.stderr()).toMatch(/in use by another kaia-mcp process/);
-    expect(q.stderr()).toContain("KAIA_OAUTH_REVOCATION_FILE");
+    // The fatal line's error value is percent-encoded like every log value.
+    const refusal = decodeLogText(q.stderr());
+    expect(q.stderr()).toMatch(/ level=error msg=kaia-mcp failed error=\S+$/m);
+    expect(refusal).toContain(denylist);
+    expect(refusal).toMatch(/in use by another kaia-mcp process/);
+    expect(refusal).toContain("KAIA_OAUTH_REVOCATION_FILE");
 
     // P is unaffected: still healthy, still enforcing auth, still able to revoke.
     expect((await fetch(`http://127.0.0.1:${portP}/health`)).status).toBe(200);

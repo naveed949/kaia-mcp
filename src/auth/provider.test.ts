@@ -354,3 +354,33 @@ describe("revocation via a refresh token denies the access token until its real 
     expect(provider.verifyAccessToken(t.access_token).ok).toBe(true);
   });
 });
+
+describe('bearerFromHeader (RFC 6750 2.1: "Bearer" 1*SP b64token)', () => {
+  it("accepts the scheme in any case and one or more spaces before a b64token", async () => {
+    const { bearerFromHeader } = await import("./provider.js");
+    expect(bearerFromHeader("Bearer abc.DEF-_~+/123==")).toBe("abc.DEF-_~+/123==");
+    expect(bearerFromHeader("bearer abc")).toBe("abc");
+    expect(bearerFromHeader("Bearer  abc")).toBe("abc");
+  });
+
+  it("refuses tabs or other whitespace as the separator and non-b64token characters", async () => {
+    const { bearerFromHeader } = await import("./provider.js");
+    for (const h of [
+      "Bearer\tabc",
+      "Bearer\u00a0abc",
+      "Bearer\u3000abc",
+      "Bearer \tabc",
+      "Bearer abc,",
+      "Bearer abc, Bearer def",
+      'Bearer "abc"',
+      "Bearer ab=c",
+      "Bearer abc\u00e9",
+      "Bearer",
+      "Bearer ",
+      "Bearerabc",
+      "Basic abc",
+    ]) {
+      expect(bearerFromHeader(h), JSON.stringify(h)).toBeUndefined();
+    }
+  });
+});

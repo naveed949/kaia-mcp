@@ -5,7 +5,7 @@ Thanks for your interest in contributing. This document covers how to set up the
 ## Clone and install
 
 ```bash
-git clone https://github.com/YOUR_ORG/kaia-mcp.git
+git clone https://github.com/naveed949/kaia-mcp.git
 cd kaia-mcp
 npm install
 ```

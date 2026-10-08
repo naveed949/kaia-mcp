@@ -20,6 +20,7 @@ import { createKaiaMcpServer } from "./server.js";
 import { resetConfigCache } from "./config.js";
 import { DEMO_CLIENT_ID, SCOPES } from "./auth/constants.js";
 import type { AuthContext } from "./auth/types.js";
+import { encodeErrorResult } from "viem";
 
 const RPC_KEY = "FAKEKEYpath7Qx9v2mN4bLr8Tz3Wc6Yd";
 const RPC_QUERY_KEY = "FAKEQUERYkey5Hs1Jp0Ku7"; // in ?apikey=
@@ -45,6 +46,42 @@ const ERR: Record<string, { code: number; message: string }> = {
   "rpc-32603": { code: -32603, message: "internal error" },
   "rpc-32000": { code: -32000, message: "execution reverted" },
   "rpc-32005": { code: -32005, message: "limit exceeded" },
+};
+
+/** A Solidity `Error(string)` revert, as a node returns it in `error.data` for eth_call. */
+const revertData = (reason: string) =>
+  encodeErrorResult({
+    abi: [{ type: "error", name: "Error", inputs: [{ name: "", type: "string" }] }],
+    errorName: "Error",
+    args: [reason],
+  });
+const EYJ_REASON = "eyJ".repeat(30_000); // 90 KB: quadratic redaction took 7.2 s on 93ba944
+/** Round 3 modes (verify r2 L-1, L-2, M-1): a `code` of any type, optional revert data. */
+const ERR3: Record<string, () => { code: unknown; message: string; data?: string }> = {
+  "code-url-string": () => ({
+    code: `http://127.0.0.1:${rpcPort}/v2/${RPC_KEY}?apikey=${RPC_QUERY_KEY}`,
+    message: "x",
+  }),
+  "code-object": () => ({ code: { key: RPC_KEY }, message: "x" }),
+  "code-float": () => ({ code: 1.5, message: "x" }),
+  "code-429": () => ({ code: 429, message: "Your app has exceeded its compute units per second" }),
+  "code-32007": () => ({ code: -32007, message: "10/second request limit reached" }),
+  "text-rate-limit": () => ({ code: -32000, message: "rate limit exceeded, Too Many Requests" }),
+  "revert-paused": () => ({
+    code: 3,
+    message: "execution reverted: paused",
+    data: revertData("paused"),
+  }),
+  "revert-too-many": () => ({
+    code: 3,
+    message: "execution reverted: Too Many Requests",
+    data: revertData("Too Many Requests"),
+  }),
+  "revert-eyj-90k": () => ({
+    code: 3,
+    message: `execution reverted: ${EYJ_REASON}`,
+    data: revertData(EYJ_REASON),
+  }),
 };
 
 let mode = "ok";
@@ -81,8 +118,9 @@ const rpc = http.createServer((req, res) => {
     }
     if (mode === "reset") return void req.socket.destroy();
     const m = JSON.parse(b) as { id: number; method: string };
-    const body = ERR[mode]
-      ? { jsonrpc: "2.0", id: m.id, error: ERR[mode] }
+    const error = ERR[mode] ?? ERR3[mode]?.();
+    const body = error
+      ? { jsonrpc: "2.0", id: m.id, error }
       : { jsonrpc: "2.0", id: m.id, result: answer(m.method) };
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify(body));
@@ -283,6 +321,102 @@ describe("M1: an upstream RPC fault is never classified as a caller mistake", ()
     );
     expectCallerSafe();
   });
+});
+
+describe("round 3: upstream code type (L-1), structured rate limits (L-2), bounded detail (M-1)", () => {
+  const RATE_LIMIT_ABI = [
+    {
+      type: "function",
+      name: "rateLimit",
+      inputs: [],
+      outputs: [{ name: "", type: "uint256" }],
+      stateMutability: "view",
+    },
+  ];
+  const callRateLimit = (client: Client) =>
+    client
+      .callTool({
+        name: "read_contract",
+        arguments: {
+          contractAddress: ADDR,
+          abi: RATE_LIMIT_ABI,
+          functionName: "rateLimit",
+          args: [],
+        },
+      })
+      .then(
+        () => {
+          throw new Error("expected an error");
+        },
+        (e: { code: number; message: string; data?: { upstreamCode?: unknown } }) => e
+      );
+  const toolErrors = () => lines().filter((l) => l.includes(" level=error msg=Tool error "));
+
+  for (const m of ["code-url-string", "code-object", "code-float"]) {
+    it(`${m}: -32001 with no upstreamCode, nothing of the code reaches the caller`, async () => {
+      mode = m;
+      const client = await connect();
+      const err = await client.callTool({ name: "get_block_number", arguments: {} }).then(
+        () => {
+          throw new Error("expected an error");
+        },
+        (e: { code: number; data?: unknown }) => e
+      );
+      expect(err.code).toBe(-32001);
+      expect(err.data).toBeUndefined();
+      expect(wire.join("\n")).not.toContain("upstreamCode");
+      expect(toolErrors()).toHaveLength(1);
+      expect(toolErrors()[0]).not.toContain("upstreamCode=");
+      expectCallerSafe();
+      expectLogRedacted();
+    });
+  }
+
+  for (const [m, code] of [
+    ["code-429", 429],
+    ["code-32007", -32007],
+  ] as const) {
+    it(`${m}: JSON-RPC code ${code} is -32003 rate_limit`, async () => {
+      mode = m;
+      const client = await connect();
+      const err = await callRateLimit(client);
+      expect(err).toMatchObject({
+        code: -32003,
+        message: "Upstream RPC rate limit reached; retry later.",
+        data: { upstreamCode: code },
+      });
+      expect(toolErrors()).toHaveLength(1);
+      expect(toolErrors()[0]).toContain(" code=-32003 method=tools/call category=rate_limit ");
+      expectCallerSafe();
+    });
+  }
+
+  for (const m of ["text-rate-limit", "revert-paused", "revert-too-many"]) {
+    it(`${m}: rate-limit words or a rateLimit function name are not a rate limit`, async () => {
+      mode = m;
+      const client = await connect();
+      const err = await callRateLimit(client);
+      expect(err.code).toBe(-32001);
+      expect(err.message).toBe("Upstream RPC request failed.");
+      expect(toolErrors()).toHaveLength(1);
+      expect(toolErrors()[0]).toContain(" code=-32001 method=tools/call category=rpc_provider ");
+      expectCallerSafe();
+    });
+  }
+
+  it("a 90 KB eyJ… revert reason answers in bounded time with a bounded log line", async () => {
+    mode = "revert-eyj-90k";
+    const client = await connect();
+    const t0 = performance.now();
+    const err = await callRateLimit(client);
+    const ms = performance.now() - t0;
+    expect(err.code).toBe(-32001);
+    expect(ms).toBeLessThan(3000);
+    expect(toolErrors()).toHaveLength(1);
+    expect(toolErrors()[0].length).toBeLessThan(2048);
+    expect(toolErrors()[0]).toMatch(/ detail=\S+$/);
+    expectCallerSafe();
+  }, 60_000);
 });
 
 /** Route api.kaiascan.io to `answer`, everything else (the fake RPC) to the real fetch. */

@@ -17,6 +17,7 @@ import { listTools, callTool } from "./tools/index.js";
 import { listResources, readResource } from "./resources/index.js";
 import { listPrompts, getPrompt } from "./prompts/index.js";
 import { createDemoOAuthProvider, type DemoOAuthProvider } from "./auth/provider.js";
+import { SigningKey } from "./auth/jwt.js";
 import {
   applyCors,
   authenticateRequest,
@@ -78,6 +79,8 @@ export function createKaiaMcpServer(options: CreateKaiaMcpServerOptions = {}): S
     CallToolRequestSchema,
     wrapToolHandler(async (request) => {
       const { name, arguments: args } = request.params;
+      // One line per call that reaches kaia-mcp. Never logs arguments or the token itself.
+      logger.info("Tool call", { tool: name, tokenFingerprint: options.getAuthContext?.()?.tokenFingerprint });
       return callTool(name, (args ?? {}) as Record<string, unknown>, authOpts());
     })
   );
@@ -313,9 +316,23 @@ export async function runKaiaMcpServerHttp(port: number): Promise<KaiaHttpServer
     issuer,
     clientId: config.oauthClientId,
     accessTokenTtlSeconds: config.accessTokenTtlSeconds,
+    audience: config.oauthAudience,
+    signingKey: config.oauthSigningKeyFile
+      ? SigningKey.fromFileOrCreate(config.oauthSigningKeyFile)
+      : SigningKey.generate(),
+    introspectionClient: config.introspectionClientSecret
+      ? { clientId: config.introspectionClientId, clientSecret: config.introspectionClientSecret }
+      : undefined,
   });
 
-  logger.info("HTTP server listening", { port: actualPort, issuer, authMode });
+  logger.info("HTTP server listening", {
+    port: actualPort,
+    issuer,
+    authMode,
+    audience: runtime.provider.audience,
+    kid: runtime.provider.signingKey.kid,
+    introspection: runtime.provider.introspectionEnabled,
+  });
 
   return {
     port: actualPort,

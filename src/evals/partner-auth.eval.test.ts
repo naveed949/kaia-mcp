@@ -2,6 +2,7 @@
  * Golden evals for partner-mode auth. Assertions use literal expected results.
  */
 
+import { generateKeyPairSync, sign as cryptoSign } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -14,6 +15,7 @@ import {
   resetGenerateWalletInvocationCount,
 } from "../tools/wallet.js";
 import { resetConfigCache } from "../config.js";
+import { createDemoOAuthProvider } from "../auth/provider.js";
 import { createRpcClient } from "../clients/rpc.js";
 import { AUTH_ERRORS, DEMO_CLIENT_ID, SCOPES, insufficientScopeError } from "../auth/constants.js";
 import { MCP_ERROR_CODES } from "../utils/errors.js";
@@ -183,6 +185,7 @@ describe("partner-auth golden evals (HTTP + demo OIDC)", () => {
     }
     delete process.env.KAIA_AUTH_MODE;
     delete process.env.LOG_LEVEL;
+    delete process.env.KAIA_INTROSPECTION_CLIENT_SECRET;
     resetConfigCache();
   }, 20_000);
 
@@ -301,5 +304,126 @@ describe("partner-auth golden evals (HTTP + demo OIDC)", () => {
       await client.close();
       await transport.close();
     }
+  });
+
+  async function initializeWith(http: KaiaHttpServerHandle, token: string): Promise<Response> {
+    return fetch(http.mcpUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json, text/event-stream",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "eval", version: "0" } },
+      }),
+    });
+  }
+
+  const INVALID_TOKEN_BODY = {
+    jsonrpc: "2.0",
+    error: {
+      code: -32043,
+      message: "invalid_token: access token is invalid or revoked",
+      data: { error: "invalid_token" },
+    },
+    id: null,
+  };
+
+  const b64 = (v: unknown) => Buffer.from(JSON.stringify(v)).toString("base64url");
+
+  it("access token is an RS256 JWT with iss, aud, sub, scope, exp, nbf, iat, jti", async () => {
+    const http = await start();
+    const { access_token } = http.oauth.issueAccessToken({ subject: "eval-user", scopes: [SCOPES.READ] });
+    const [h, p] = access_token.split(".");
+    expect(JSON.parse(Buffer.from(h, "base64url").toString())).toEqual({
+      alg: "RS256",
+      typ: "at+jwt",
+      kid: http.oauth.signingKey.kid,
+    });
+    const claims = JSON.parse(Buffer.from(p, "base64url").toString()) as Record<string, unknown>;
+    expect(Object.keys(claims).sort()).toEqual(["aud", "client_id", "exp", "iat", "iss", "jti", "nbf", "scope", "sub"]);
+    expect(claims).toMatchObject({ iss: http.issuer, aud: "kaia-mcp", sub: "eval-user", scope: "kaia:read" });
+    expect((claims.exp as number) - (claims.iat as number)).toBe(900);
+  });
+
+  it("forged token (foreign key, real kid) returns the literal invalid_token body", async () => {
+    const http = await start();
+    const { access_token } = http.oauth.issueAccessToken({ scopes: [SCOPES.ENCODE] });
+    const claims = JSON.parse(Buffer.from(access_token.split(".")[1], "base64url").toString()) as object;
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const input = `${b64({ alg: "RS256", typ: "at+jwt", kid: http.oauth.signingKey.kid })}.${b64(claims)}`;
+    const forged = `${input}.${cryptoSign("sha256", Buffer.from(input), privateKey).toString("base64url")}`;
+    const res = await initializeWith(http, forged);
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual(INVALID_TOKEN_BODY);
+  });
+
+  it("wrong-audience token signed by the real key returns the literal invalid_token body", async () => {
+    const http = await start();
+    const other = createDemoOAuthProvider({ issuer: http.issuer, audience: "other-api", signingKey: http.oauth.signingKey });
+    const res = await initializeWith(http, other.issueAccessToken({ scopes: [SCOPES.READ] }).access_token);
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual(INVALID_TOKEN_BODY);
+  });
+
+  it("revoked jti returns the literal invalid_token body", async () => {
+    const http = await start();
+    const { access_token } = http.oauth.issueAccessToken({ scopes: [SCOPES.READ] });
+    expect((await initializeWith(http, access_token)).status).toBe(200);
+    const revoke = await fetch(`${http.issuer}/oauth/revoke`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ token: access_token }),
+    });
+    expect(revoke.status).toBe(200);
+    const res = await initializeWith(http, access_token);
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual(INVALID_TOKEN_BODY);
+  });
+
+  it("introspection: unauthenticated 401, active claims, then inactive after revoke", async () => {
+    process.env.KAIA_INTROSPECTION_CLIENT_SECRET = "eval-only-secret";
+    resetConfigCache();
+    const http = await start();
+    const { access_token } = http.oauth.issueAccessToken({ subject: "eval-user", scopes: [SCOPES.READ] });
+    const claims = JSON.parse(Buffer.from(access_token.split(".")[1], "base64url").toString()) as Record<string, unknown>;
+    const introspect = (authorization?: string) =>
+      fetch(`${http.issuer}/oauth/introspect`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          ...(authorization ? { Authorization: authorization } : {}),
+        },
+        body: new URLSearchParams({ token: access_token }),
+      });
+    const gateway = `Basic ${Buffer.from("kaia-mcp-gateway:eval-only-secret").toString("base64")}`;
+
+    const anon = await introspect();
+    expect(anon.status).toBe(401);
+    expect(await anon.json()).toEqual({
+      error: "invalid_client",
+      error_description: "introspection requires client authentication",
+    });
+
+    expect(await (await introspect(gateway)).json()).toEqual({
+      active: true,
+      token_type: "Bearer",
+      scope: "kaia:read",
+      client_id: DEMO_CLIENT_ID,
+      sub: "eval-user",
+      aud: "kaia-mcp",
+      iss: http.issuer,
+      exp: claims.exp,
+      iat: claims.iat,
+      nbf: claims.nbf,
+      jti: claims.jti,
+    });
+
+    http.oauth.revoke(access_token);
+    expect(await (await introspect(gateway)).json()).toEqual({ active: false });
   });
 });

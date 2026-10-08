@@ -14,6 +14,8 @@ export type KaiaScope = (typeof SCOPES)[keyof typeof SCOPES];
 export const ALL_SCOPES: readonly KaiaScope[] = [SCOPES.READ, SCOPES.ENCODE, SCOPES.WALLET];
 
 export const DEFAULT_ACCESS_TOKEN_TTL_SECONDS = 900;
+export const DEFAULT_AUDIENCE = "kaia-mcp";
+export const DEFAULT_INTROSPECTION_CLIENT_ID = "kaia-mcp-gateway";
 export const DEFAULT_REFRESH_TOKEN_TTL_SECONDS = 86_400;
 export const AUTH_CODE_TTL_SECONDS = 600;
 export const DEVICE_CODE_TTL_SECONDS = 600;

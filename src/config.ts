@@ -42,6 +42,10 @@ const envSchema = z.object({
   KAIA_ALLOW_UNSAFE_WALLET: boolish,
   KAIA_OAUTH_CLIENT_ID: z.string().optional().default("kaia-mcp-demo"),
   KAIA_ACCESS_TOKEN_TTL_SECONDS: z.coerce.number().int().positive().optional().default(900),
+  KAIA_OAUTH_AUDIENCE: z.string().min(1).optional().default("kaia-mcp"),
+  KAIA_OAUTH_SIGNING_KEY_FILE: z.string().optional(),
+  KAIA_INTROSPECTION_CLIENT_ID: z.string().min(1).optional().default("kaia-mcp-gateway"),
+  KAIA_INTROSPECTION_CLIENT_SECRET: z.string().optional(),
 });
 
 export type LogLevel = z.infer<typeof logLevelSchema>;
@@ -63,6 +67,13 @@ export type Config = {
   allowUnsafeWallet: boolean;
   oauthClientId: string;
   accessTokenTtlSeconds: number;
+  /** `aud` of issued access tokens; kaia-mcp only accepts tokens with this audience. */
+  oauthAudience: string;
+  /** Optional gitignored PEM path for a dev signing key that survives restarts. Unset: in-memory key. */
+  oauthSigningKeyFile?: string;
+  introspectionClientId: string;
+  /** Unset or empty: /oauth/introspect is not offered. */
+  introspectionClientSecret?: string;
 };
 
 function parseEnv(): Config {
@@ -80,6 +91,10 @@ function parseEnv(): Config {
     KAIA_ALLOW_UNSAFE_WALLET: process.env.KAIA_ALLOW_UNSAFE_WALLET,
     KAIA_OAUTH_CLIENT_ID: process.env.KAIA_OAUTH_CLIENT_ID,
     KAIA_ACCESS_TOKEN_TTL_SECONDS: process.env.KAIA_ACCESS_TOKEN_TTL_SECONDS,
+    KAIA_OAUTH_AUDIENCE: process.env.KAIA_OAUTH_AUDIENCE || undefined,
+    KAIA_OAUTH_SIGNING_KEY_FILE: process.env.KAIA_OAUTH_SIGNING_KEY_FILE || undefined,
+    KAIA_INTROSPECTION_CLIENT_ID: process.env.KAIA_INTROSPECTION_CLIENT_ID || undefined,
+    KAIA_INTROSPECTION_CLIENT_SECRET: process.env.KAIA_INTROSPECTION_CLIENT_SECRET || undefined,
   };
 
   const result = envSchema.safeParse(raw);
@@ -106,6 +121,10 @@ function parseEnv(): Config {
     allowUnsafeWallet: d.KAIA_ALLOW_UNSAFE_WALLET,
     oauthClientId: d.KAIA_OAUTH_CLIENT_ID,
     accessTokenTtlSeconds: d.KAIA_ACCESS_TOKEN_TTL_SECONDS,
+    oauthAudience: d.KAIA_OAUTH_AUDIENCE,
+    oauthSigningKeyFile: d.KAIA_OAUTH_SIGNING_KEY_FILE,
+    introspectionClientId: d.KAIA_INTROSPECTION_CLIENT_ID,
+    introspectionClientSecret: d.KAIA_INTROSPECTION_CLIENT_SECRET,
   };
 }
 

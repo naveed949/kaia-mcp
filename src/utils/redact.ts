@@ -6,13 +6,15 @@ const SECRET_KEYS =
   /^(access_token|refresh_token|id_token|token|client_secret|code_verifier|authorization|password|private_key|privatekey|device_code)$/i;
 
 const BEARER_RE = /Bearer\s+[A-Za-z0-9._~+/-]+=*/gi;
+/** Compact JWS (access tokens are JWTs): header and payload both start with base64url("{\""). */
+const JWT_RE = /eyJ[A-Za-z0-9_-]*\.eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]*/g;
 
 export function isSecretKey(key: string): boolean {
   return SECRET_KEYS.test(key);
 }
 
 export function redactString(value: string): string {
-  return value.replace(BEARER_RE, "Bearer [redacted]");
+  return value.replace(BEARER_RE, "Bearer [redacted]").replace(JWT_RE, "[redacted-jwt]");
 }
 
 export function redactValue(key: string, value: unknown): unknown {

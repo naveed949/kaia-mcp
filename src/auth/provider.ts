@@ -1,11 +1,13 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { logger } from "../utils/logger.js";
 import { verifyPkce } from "./pkce.js";
+import { checkAccessTokenClaims, SigningKey } from "./jwt.js";
 import {
   ALL_SCOPES,
   AUTH_CODE_TTL_SECONDS,
   AUTH_ERRORS,
   DEFAULT_ACCESS_TOKEN_TTL_SECONDS,
+  DEFAULT_AUDIENCE,
   DEFAULT_REFRESH_TOKEN_TTL_SECONDS,
   DEMO_CLIENT_ID,
   DEMO_REDIRECT_URIS,
@@ -49,18 +51,32 @@ export type DemoOAuthProviderOptions = {
   redirectUris?: readonly string[];
   accessTokenTtlSeconds?: number;
   refreshTokenTtlSeconds?: number;
+  /** `aud` claim for access tokens. Default "kaia-mcp". */
+  audience?: string;
+  /** RS256 signing key. Default: a fresh in-memory key per process. */
+  signingKey?: SigningKey;
+  /** Resource-server credentials for RFC 7662 introspection. Introspection is disabled when unset. */
+  introspectionClient?: { clientId: string; clientSecret: string };
 };
 
-type AccessRecord = {
-  subject: string;
-  clientId: string;
-  scopes: string[];
-  expiresAtMs: number;
-  revoked: boolean;
-};
+export type IntrospectionResponse =
+  | { active: false }
+  | {
+      active: true;
+      token_type: "Bearer";
+      scope: string;
+      client_id: string;
+      sub: string;
+      aud: string;
+      iss: string;
+      exp: number;
+      iat: number;
+      nbf: number;
+      jti: string;
+    };
 
 type RefreshRecord = {
-  accessHash: string;
+  accessJti: string;
   clientId: string;
   subject: string;
   scopes: string[];
@@ -100,8 +116,12 @@ type DevicePending = {
 };
 
 /**
- * In-process demo OIDC/OAuth 2.1 provider (PKCE + device flow + revoke).
- * Tokens are stored hashed; plaintext is returned once to the client and never logged.
+ * In-process demo OIDC/OAuth 2.1 provider (PKCE + device flow + revoke + introspection).
+ *
+ * Access tokens are RS256 JWTs (RFC 9068 shape: iss, aud, sub, client_id, scope,
+ * iat, nbf, exp, jti) verifiable offline against `jwks()`. Revocation is by `jti`
+ * and is visible to gateways through `introspect()`. Refresh tokens stay opaque
+ * and are stored hashed. No token is ever logged; logs carry a sha256 fingerprint.
  */
 export class DemoOAuthProvider {
   readonly issuer: string;
@@ -109,8 +129,12 @@ export class DemoOAuthProvider {
   readonly redirectUris: readonly string[];
   readonly accessTokenTtlSeconds: number;
   readonly refreshTokenTtlSeconds: number;
+  readonly audience: string;
+  readonly signingKey: SigningKey;
+  private readonly introspectionClient?: { clientId: string; clientSecret: string };
 
-  private readonly access = new Map<string, AccessRecord>();
+  /** jti -> access token expiry (ms). Entries are pruned once the token would have expired anyway. */
+  private readonly revokedJti = new Map<string, number>();
   private readonly refresh = new Map<string, RefreshRecord>();
   private readonly authzRequests = new Map<string, AuthzRequest>();
   private readonly authzCodes = new Map<string, AuthzCode>();
@@ -123,6 +147,19 @@ export class DemoOAuthProvider {
     this.redirectUris = options.redirectUris ?? DEMO_REDIRECT_URIS;
     this.accessTokenTtlSeconds = options.accessTokenTtlSeconds ?? DEFAULT_ACCESS_TOKEN_TTL_SECONDS;
     this.refreshTokenTtlSeconds = options.refreshTokenTtlSeconds ?? DEFAULT_REFRESH_TOKEN_TTL_SECONDS;
+    this.audience = options.audience ?? DEFAULT_AUDIENCE;
+    this.signingKey = options.signingKey ?? SigningKey.generate();
+    if (options.introspectionClient?.clientSecret) {
+      this.introspectionClient = options.introspectionClient;
+    }
+  }
+
+  jwks(): { keys: Record<string, unknown>[] } {
+    return this.signingKey.jwks();
+  }
+
+  get introspectionEnabled(): boolean {
+    return Boolean(this.introspectionClient);
   }
 
   discovery(): Record<string, unknown> {
@@ -144,6 +181,13 @@ export class DemoOAuthProvider {
       scopes_supported: [...ALL_SCOPES],
       subject_types_supported: ["public"],
       id_token_signing_alg_values_supported: ["none"],
+      access_token_signing_alg_values_supported: ["RS256"],
+      ...(this.introspectionEnabled
+        ? {
+            introspection_endpoint: `${this.issuer}/oauth/introspect`,
+            introspection_endpoint_auth_methods_supported: ["client_secret_basic"],
+          }
+        : {}),
     };
   }
 
@@ -154,6 +198,7 @@ export class DemoOAuthProvider {
       scopes_supported: [...ALL_SCOPES],
       bearer_methods_supported: ["header"],
       resource_name: "kaia-mcp",
+      token_audience: this.audience,
     };
   }
 
@@ -398,8 +443,7 @@ export class DemoOAuthProvider {
       throw Object.assign(new Error("invalid_grant"), { oauthError: "invalid_grant" });
     }
     record.revoked = true;
-    const access = this.access.get(record.accessHash);
-    if (access) access.revoked = true;
+    this.revokeJti(record.accessJti, Date.now() + this.accessTokenTtlSeconds * 1000);
     return this.mintTokens({
       subject: record.subject,
       clientId: record.clientId,
@@ -408,7 +452,7 @@ export class DemoOAuthProvider {
   }
 
   /**
-   * Issue tokens for tests and the demo IdP. Plaintext is returned once; store keeps hashes only.
+   * Issue tokens for tests and the demo IdP. The JWT is returned once and not stored; refresh tokens are kept hashed.
    */
   issueAccessToken(params: IssueAccessTokenParams): IssuedTokens {
     return this.mintTokens({
@@ -420,44 +464,117 @@ export class DemoOAuthProvider {
     });
   }
 
+  /** RFC 7009. Unknown or malformed tokens are ignored (the endpoint still answers 200). */
   revoke(token: string): void {
-    const hash = sha256Hex(token);
-    const access = this.access.get(hash);
-    if (access) {
-      access.revoked = true;
-      logger.info("oauth access token revoked", { tokenFingerprint: fingerprint(token) });
+    const payload = token ? this.signingKey.verifySignature(token) : null;
+    if (payload && typeof payload.jti === "string") {
+      const expMs = typeof payload.exp === "number" ? payload.exp * 1000 : Date.now();
+      this.revokeJti(payload.jti, expMs);
+      logger.info("oauth access token revoked", { tokenFingerprint: fingerprint(token), jti: payload.jti });
       return;
     }
-    const refresh = this.refresh.get(hash);
+    const refresh = this.refresh.get(sha256Hex(token));
     if (refresh) {
       refresh.revoked = true;
-      const linked = this.access.get(refresh.accessHash);
-      if (linked) linked.revoked = true;
+      this.revokeJti(refresh.accessJti, Date.now() + this.accessTokenTtlSeconds * 1000);
       logger.info("oauth refresh token revoked", { tokenFingerprint: fingerprint(token) });
     }
+  }
+
+  isRevoked(jti: string): boolean {
+    return this.revokedJti.has(jti);
   }
 
   verifyAccessToken(token: string | undefined): VerifyResult {
     if (!token) {
       return { ok: false, status: 401, ...AUTH_ERRORS.UNAUTHORIZED };
     }
-    const record = this.access.get(sha256Hex(token));
-    if (!record || record.revoked) {
+    const payload = this.signingKey.verifySignature(token);
+    if (!payload) {
       return { ok: false, status: 401, ...AUTH_ERRORS.INVALID_TOKEN };
     }
-    if (record.expiresAtMs <= Date.now()) {
-      return { ok: false, status: 401, ...AUTH_ERRORS.TOKEN_EXPIRED };
+    const checked = checkAccessTokenClaims(payload, {
+      issuer: this.issuer,
+      audience: this.audience,
+      nowSeconds: Date.now() / 1000,
+    });
+    if (!checked.ok) {
+      return {
+        ok: false,
+        status: 401,
+        ...(checked.reason === "expired" ? AUTH_ERRORS.TOKEN_EXPIRED : AUTH_ERRORS.INVALID_TOKEN),
+      };
+    }
+    const { claims } = checked;
+    if (this.isRevoked(claims.jti)) {
+      return { ok: false, status: 401, ...AUTH_ERRORS.INVALID_TOKEN };
     }
     return {
       ok: true,
       context: {
-        subject: record.subject,
-        clientId: record.clientId,
-        scopes: record.scopes,
-        expiresAtMs: record.expiresAtMs,
+        subject: claims.sub,
+        clientId: claims.client_id,
+        scopes: claims.scope.split(" ").filter(Boolean),
+        expiresAtMs: claims.exp * 1000,
         tokenFingerprint: fingerprint(token),
+        tokenId: claims.jti,
       },
     };
+  }
+
+  /**
+   * RFC 7662 introspection for access tokens. Anything that is not a currently valid,
+   * unrevoked access token for this issuer and audience is `{ active: false }`.
+   * Refresh tokens are not introspectable here and report inactive.
+   */
+  introspect(token: string | undefined): IntrospectionResponse {
+    if (!token) return { active: false };
+    const payload = this.signingKey.verifySignature(token);
+    if (!payload) return { active: false };
+    const checked = checkAccessTokenClaims(payload, {
+      issuer: this.issuer,
+      audience: this.audience,
+      nowSeconds: Date.now() / 1000,
+    });
+    if (!checked.ok || this.isRevoked(checked.claims.jti)) return { active: false };
+    const c = checked.claims;
+    return {
+      active: true,
+      token_type: "Bearer",
+      scope: c.scope,
+      client_id: c.client_id,
+      sub: c.sub,
+      aud: c.aud,
+      iss: c.iss,
+      exp: c.exp,
+      iat: c.iat,
+      nbf: c.nbf,
+      jti: c.jti,
+    };
+  }
+
+  /** client_secret_basic check for the introspection caller. Constant-time on the secret digest. */
+  authenticateIntrospectionClient(authorization: string | undefined): boolean {
+    const client = this.introspectionClient;
+    if (!client || !authorization) return false;
+    const match = /^Basic\s+([A-Za-z0-9+/=]+)$/i.exec(authorization.trim());
+    if (!match) return false;
+    const decoded = Buffer.from(match[1], "base64").toString("utf8");
+    const sep = decoded.indexOf(":");
+    if (sep < 0) return false;
+    const id = decodeURIComponent(decoded.slice(0, sep));
+    const secret = decodeURIComponent(decoded.slice(sep + 1));
+    const a = createHash("sha256").update(secret).digest();
+    const b = createHash("sha256").update(client.clientSecret).digest();
+    return id === client.clientId && timingSafeEqual(a, b);
+  }
+
+  private revokeJti(jti: string, expMs: number): void {
+    const now = Date.now();
+    for (const [k, v] of this.revokedJti) {
+      if (v <= now) this.revokedJti.delete(k);
+    }
+    if (expMs > now) this.revokedJti.set(jti, expMs);
   }
 
   private mintTokens(params: {
@@ -468,19 +585,23 @@ export class DemoOAuthProvider {
     expiresAtMs?: number;
   }): IssuedTokens {
     const ttl = params.expiresInSeconds ?? this.accessTokenTtlSeconds;
-    const expiresAtMs = params.expiresAtMs ?? Date.now() + ttl * 1000;
-    const accessToken = randomToken();
-    const refreshToken = randomToken();
-    const accessHash = sha256Hex(accessToken);
-    this.access.set(accessHash, {
-      subject: params.subject,
-      clientId: params.clientId,
-      scopes: params.scopes,
-      expiresAtMs,
-      revoked: false,
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const expiresAtMs = params.expiresAtMs ?? (nowSeconds + ttl) * 1000;
+    const jti = randomUUID();
+    const accessToken = this.signingKey.sign({
+      iss: this.issuer,
+      aud: this.audience,
+      sub: params.subject,
+      client_id: params.clientId,
+      scope: params.scopes.join(" "),
+      iat: nowSeconds,
+      nbf: nowSeconds,
+      exp: Math.floor(expiresAtMs / 1000),
+      jti,
     });
+    const refreshToken = randomToken();
     this.refresh.set(sha256Hex(refreshToken), {
-      accessHash,
+      accessJti: jti,
       clientId: params.clientId,
       subject: params.subject,
       scopes: params.scopes,
@@ -490,6 +611,7 @@ export class DemoOAuthProvider {
     const expiresIn = Math.max(0, Math.floor((expiresAtMs - Date.now()) / 1000));
     logger.info("oauth tokens issued", {
       tokenFingerprint: fingerprint(accessToken),
+      jti,
       subject: params.subject,
       clientId: params.clientId,
       scopes: params.scopes.join(" "),

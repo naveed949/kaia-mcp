@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { AUTH_ERRORS, WWW_AUTHENTICATE_REALM } from "./constants.js";
 import type { DemoOAuthProvider } from "./provider.js";
 import { bearerFromHeader } from "./provider.js";
+import { TOOL_SCOPES } from "./scopes.js";
 import type { AuthContext, VerifyResult } from "./types.js";
 
 function escapeHtml(s: string): string {
@@ -152,6 +153,8 @@ export type AuxRequestContext = {
  * Handle health, discovery, and OAuth demo IdP routes.
  * Returns true when the request was fully handled (do not pass to MCP).
  */
+export const TOOL_SCOPES_PATH = "/.well-known/kaia-mcp/tool-scopes";
+
 export async function tryHandleAuxRequest(
   req: IncomingMessage,
   res: ServerResponse,
@@ -183,7 +186,42 @@ export async function tryHandleAuxRequest(
   }
 
   if (req.method === "GET" && path === "/oauth/jwks") {
-    json(res, 200, { keys: [] });
+    json(res, 200, ctx.provider.jwks(), { "Cache-Control": "public, max-age=300" });
+    return true;
+  }
+
+  // Public tool -> scope map so gateways can detect drift against their own copy.
+  if (req.method === "GET" && path === TOOL_SCOPES_PATH) {
+    json(res, 200, {
+      resource: "kaia-mcp",
+      scopes: [...new Set(Object.values(TOOL_SCOPES))].sort(),
+      tool_scopes: Object.fromEntries(Object.entries(TOOL_SCOPES).sort(([a], [b]) => a.localeCompare(b))),
+    });
+    return true;
+  }
+
+  // RFC 7662. Only offered when KAIA_INTROSPECTION_CLIENT_SECRET is set; callers authenticate
+  // with client_secret_basic. Answers never echo the token.
+  if (req.method === "POST" && path === "/oauth/introspect") {
+    if (!ctx.provider.introspectionEnabled) {
+      json(res, 404, { error: "not_found", error_description: "introspection is not enabled" });
+      return true;
+    }
+    if (!ctx.provider.authenticateIntrospectionClient(req.headers.authorization)) {
+      json(
+        res,
+        401,
+        { error: "invalid_client", error_description: "introspection requires client authentication" },
+        { "WWW-Authenticate": 'Basic realm="kaia-mcp-introspection"', "Cache-Control": "no-store" }
+      );
+      return true;
+    }
+    try {
+      const fields = parseForm(await readBody(req), req.headers["content-type"]);
+      json(res, 200, ctx.provider.introspect(fields.token), { "Cache-Control": "no-store" });
+    } catch (err) {
+      sendOAuthError(res, err);
+    }
     return true;
   }
 

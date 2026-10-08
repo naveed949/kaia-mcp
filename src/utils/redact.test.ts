@@ -9,4 +9,10 @@ describe("redact", () => {
     });
     expect(redactString("Authorization Bearer deadbeefcafebabe")).toBe("Authorization Bearer [redacted]");
   });
+
+  it("redacts bare compact JWTs anywhere in a string", () => {
+    const jwt = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4In0.c2lnbmF0dXJl";
+    expect(redactString(`token=${jwt} tail`)).toBe("token=[redacted-jwt] tail");
+    expect(redactMeta({ note: `got ${jwt}` })).toEqual({ note: "got [redacted-jwt]" });
+  });
 });

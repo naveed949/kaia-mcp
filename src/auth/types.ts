@@ -7,6 +7,8 @@ export type AuthContext = {
   expiresAtMs: number;
   /** sha256 prefix — never the raw token */
   tokenFingerprint: string;
+  /** JWT `jti` of the access token, when the request carried one. */
+  tokenId?: string;
 };
 
 export type IssuedTokens = {

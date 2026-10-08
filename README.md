@@ -100,6 +100,10 @@ Environment variables (see `.env.example`):
 | `KAIA_AUTH_MODE` | HTTP auth: `required` or `off` | `required` |
 | `KAIA_OAUTH_CLIENT_ID` | Demo public client id | `kaia-mcp-demo` |
 | `KAIA_ACCESS_TOKEN_TTL_SECONDS` | Demo access-token TTL | 900 |
+| `KAIA_OAUTH_AUDIENCE` | `aud` of issued JWT access tokens (and the only audience accepted) | `kaia-mcp` |
+| `KAIA_OAUTH_SIGNING_KEY_FILE` | Dev RS256 key path, created 0600 if missing; keep it gitignored (`.kaia-dev/`) | unset (in-memory key per process) |
+| `KAIA_INTROSPECTION_CLIENT_ID` | Gateway client id for `/oauth/introspect` | `kaia-mcp-gateway` |
+| `KAIA_INTROSPECTION_CLIENT_SECRET` | Gateway secret (HTTP Basic). Unset: introspection is not offered | unset |
 | `KAIA_ALLOW_UNSAFE_WALLET` | Enable `generate_wallet` private keys (local only) | off |
 
 ## MCP client setup
@@ -207,21 +211,24 @@ This server is an MCP connector, not a hosted product partnership. Integrate ove
 
 ### Integration checklist
 
-1. Discover `/.well-known/oauth-protected-resource` and `/.well-known/openid-configuration` (demo) or your authorization server’s metadata.
+1. Discover `/.well-known/oauth-protected-resource` and `/.well-known/openid-configuration` (demo) or your authorization server’s metadata. Access tokens are RS256 JWTs; fetch keys from the discovery `jwks_uri` and pin `iss` and `aud` (`kaia-mcp` by default) instead of trusting whatever the token says.
 2. Register a **public** client. Require PKCE `S256` for browser agents; use device flow for CLIs that cannot host a redirect.
 3. Allowlist redirect URIs. The demo IdP accepts only `http://127.0.0.1/callback`, `http://localhost/callback`, and `/cb` variants.
 4. Request least privilege: `kaia:read` for chain reads, add `kaia:encode` only if the agent must build calldata. Never request `kaia:wallet` in production.
 5. Send `Authorization: Bearer <access_token>` on **every** MCP HTTP request. Do not treat `Mcp-Session-Id` as authentication.
 6. Handle fail-closed errors literally: `-32040` unauthorized, `-32041` token_expired, `-32042` insufficient_scope, `-32043` invalid_token. Retry only after a new token; do not retry a denied tool.
-7. On disconnect or user logout, `POST /oauth/revoke` with the access or refresh token.
+7. On disconnect or user logout, `POST /oauth/revoke` with the access or refresh token. Revocation is by `jti` and only the issuer knows about it: a gateway that verifies JWTs offline must also call `/oauth/introspect` (client-authenticated) if it needs to see revocations before `exp`.
 8. Keep tokens out of logs, crash dumps, eval fixtures, and git. Prefer a token fingerprint if you must correlate requests.
 9. Leave `KAIA_ALLOW_UNSAFE_WALLET` unset. `generate_wallet` must not appear in partner tool lists and must not return private keys.
-10. Point production at your own OIDC issuer; the in-process demo IdP is for tests/CI/local bring-up only. No real user secrets belong in this repo.
+10. Point production at your own OIDC issuer; the in-process demo IdP is for tests/CI/local bring-up only. No real user secrets or signing keys belong in this repo.
+11. If you keep your own copy of the tool → scope map (e.g. in a policy gateway), compare it against `GET /.well-known/kaia-mcp/tool-scopes` at startup and refuse to run on drift.
 
 ### Threat notes
 
 - **Scopes.** A `kaia:read` token must not call `encode_function_data`. Scope checks run before handlers; a deny has no chain or wallet side effect.
-- **Secret handling.** Access tokens are hashed at rest in the demo store. The logger redacts bearer values. Private keys are not emitted unless the explicit unsafe dev flag is on.
+- **Secret handling.** Access tokens are signed JWTs and are not stored; refresh tokens are hashed at rest. The logger redacts bearer values and bare JWTs. The signing key is generated at startup (or read from a gitignored dev path) and only the public JWK is published. Wallet private keys are not emitted unless the explicit unsafe dev flag is on.
+- **Offline verification vs revocation.** A JWT stays cryptographically valid until `exp` even after `/oauth/revoke`. kaia-mcp itself rejects revoked `jti`s; external verifiers need introspection or a short TTL.
+- **Algorithm confusion.** Only `RS256` with the published `kid` is accepted; `alg=none`, `HS*`, and foreign keys fail as `invalid_token`.
 - **Session fixation.** A stolen MCP session id without the bearer token cannot call tools when `KAIA_AUTH_MODE=required`.
 - **PKCE downgrade.** `code_challenge_method=plain` is rejected.
 - **Open redirect.** Unregistered `redirect_uri` values are rejected.

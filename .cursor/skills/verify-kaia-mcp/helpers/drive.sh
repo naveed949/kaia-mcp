@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 # Drive one mapped feature against the launched instance.
-# Usage: helpers/drive.sh <oauth-pkce-scoped-tools|fail-closed-auth|generate-wallet-gated|device-flow>
+# Usage: helpers/drive.sh <oauth-pkce-scoped-tools|fail-closed-auth|generate-wallet-gated|device-flow|jwt-access-tokens|token-introspection>
 # Writes evidence under ${EVIDENCE_DIR}/<feature>/ and does not delete it.
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
 FEATURE="${1:-}"
 if [[ -z "${FEATURE}" ]]; then
-  echo "Usage: helpers/drive.sh <oauth-pkce-scoped-tools|fail-closed-auth|generate-wallet-gated|device-flow>" >&2
+  echo "Usage: helpers/drive.sh <oauth-pkce-scoped-tools|fail-closed-auth|generate-wallet-gated|device-flow|jwt-access-tokens|token-introspection>" >&2
   exit 2
 fi
 
@@ -62,6 +62,54 @@ mcp_call() {
     -H "Content-Type: application/json" \
     -H "Accept: application/json, text/event-stream" \
     -d "${body}"
+}
+
+# Device grant end to end (start, approve, exchange). Writes <prefix>.device.json and
+# <prefix>.token.json; prints the access token. Usage: device_token <prefix> <scope>
+device_token() {
+  local prefix="$1" scope="$2" user_code device_code
+  curl -sS -X POST "${BASE}/oauth/device" \
+    -H "Content-Type: application/x-www-form-urlencoded" \
+    --data-urlencode "client_id=kaia-mcp-demo" --data-urlencode "scope=${scope}" > "${OUT}/${prefix}.device.json"
+  user_code="$(node -e "process.stdout.write(JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')).user_code)" "${OUT}/${prefix}.device.json")"
+  device_code="$(node -e "process.stdout.write(JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')).device_code)" "${OUT}/${prefix}.device.json")"
+  curl -sS -o /dev/null -X POST "${BASE}/oauth/device/verify" \
+    -H "Content-Type: application/x-www-form-urlencoded" \
+    --data-urlencode "user_code=${user_code}" --data-urlencode "decision=approve"
+  curl -sS -X POST "${BASE}/oauth/token" \
+    -H "Content-Type: application/x-www-form-urlencoded" \
+    --data-urlencode "grant_type=urn:ietf:params:oauth:grant-type:device_code" \
+    --data-urlencode "client_id=kaia-mcp-demo" \
+    --data-urlencode "device_code=${device_code}" > "${OUT}/${prefix}.token.json"
+  node -e "const t=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')); if(!t.access_token){console.error('drive: no access_token', t.error); process.exit(1);} process.stdout.write(t.access_token);" "${OUT}/${prefix}.token.json"
+}
+
+# Bare MCP initialize with a bearer (no session follow-up). Usage: mcp_init_only <prefix> <token>
+mcp_init_only() {
+  curl -sS -D "${OUT}/$1.headers" -o "${OUT}/$1.json" -X POST "${BASE}/" \
+    -H "Authorization: Bearer $2" \
+    -H "Content-Type: application/json" \
+    -H "Accept: application/json, text/event-stream" \
+    -d "${mcp_init}" || true
+}
+
+# RFC 7662 introspection. Usage: introspect <prefix> <token> [none|wrong|gateway]
+introspect() {
+  local prefix="$1" token="$2" mode="${3:-gateway}" secret_file auth=()
+  secret_file="$(node -e "process.stdout.write(require(process.argv[1]).introspectionSecretFile)" "${INSTANCE_FILE}")"
+  case "${mode}" in
+    gateway) auth=(-u "$(node -e "const s=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')); process.stdout.write(s.client_id+':'+s.client_secret)" "${secret_file}")") ;;
+    wrong) auth=(-u "kaia-mcp-gateway:not-the-secret") ;;
+    none) auth=() ;;
+  esac
+  curl -sS -D "${OUT}/${prefix}.headers" -o "${OUT}/${prefix}.json" -X POST "${BASE}/oauth/introspect" \
+    "${auth[@]}" -H "Content-Type: application/x-www-form-urlencoded" --data-urlencode "token=${token}" || true
+}
+
+tool_call_count() {
+  local log
+  log="$(node -e "process.stdout.write(require(process.argv[1]).logFile)" "${INSTANCE_FILE}")"
+  { grep -c "msg=Tool call tool=$1 " "${log}" || true; } | tr -d '\n'
 }
 
 case "${FEATURE}" in
@@ -256,6 +304,101 @@ case "${FEATURE}" in
       if (!fs.readFileSync('${OUT}/device-approved.html','utf8').includes('Device authorized')) { console.error('drive: device approval page missing Device authorized'); process.exit(1); }
       if (JSON.parse(fs.readFileSync('${OUT}/device-token.json','utf8')).token_type !== 'Bearer') { console.error('drive: device token_type not Bearer'); process.exit(1); }
       console.log('drive device-flow: allow encode_function_data ok');
+    "
+    ;;
+
+  jwt-access-tokens)
+    ACCESS="$(device_token jwt kaia:encode)"
+    curl -sS "${BASE}/.well-known/openid-configuration" | save discovery.json
+    JWKS_URI="$(node -e "process.stdout.write(JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')).jwks_uri)" "${OUT}/discovery.json")"
+    curl -sS "${JWKS_URI}" | save jwks.json
+    curl -sS "${BASE}/.well-known/kaia-mcp/tool-scopes" | save tool-scopes.json
+    # Offline verification with nothing but the published JWKS (no kaia-mcp code).
+    node -e "
+      const fs=require('fs'), c=require('crypto');
+      const [tokFile, jwksFile, issuer, ttl, outFile] = process.argv.slice(1);
+      const fail=(m)=>{ console.error('drive: '+m); process.exit(1); };
+      const tok=JSON.parse(fs.readFileSync(tokFile,'utf8')).access_token;
+      const [h,p,sig]=tok.split('.');
+      const header=JSON.parse(Buffer.from(h,'base64url')), claims=JSON.parse(Buffer.from(p,'base64url'));
+      const key=JSON.parse(fs.readFileSync(jwksFile,'utf8')).keys.find(k=>k.kid===header.kid);
+      if (header.alg!=='RS256' || header.typ!=='at+jwt' || !key) fail('header/kid mismatch '+JSON.stringify(header));
+      if (!c.verify('sha256', Buffer.from(h+'.'+p), c.createPublicKey({key, format:'jwk'}), Buffer.from(sig,'base64url'))) fail('signature does not verify against JWKS');
+      for (const k of ['iss','aud','sub','scope','exp','nbf','iat','jti','client_id']) if (!(k in claims)) fail('missing claim '+k);
+      if (claims.iss!==issuer || claims.aud!=='kaia-mcp' || claims.scope!=='kaia:encode') fail('claims wrong '+JSON.stringify({iss:claims.iss,aud:claims.aud,scope:claims.scope}));
+      if (claims.exp-claims.iat!==Number(ttl)) fail('exp-iat '+(claims.exp-claims.iat)+' != ttl '+ttl);
+      fs.writeFileSync(outFile, JSON.stringify({header, claims}, null, 2));
+    " "${OUT}/jwt.token.json" "${OUT}/jwks.json" "${BASE}" "$(node -e "process.stdout.write(String(require(process.argv[1]).tokenTtlSeconds))" "${INSTANCE_FILE}")" "${OUT}/decoded.json"
+    BEFORE="$(tool_call_count encode_function_data)"
+    mcp_call allow "${ACCESS}" "${ENCODE_BODY}"
+    AFTER="$(tool_call_count encode_function_data)"
+    echo "{\"before\":${BEFORE},\"after\":${AFTER}}" | save tool-call-log-count.json
+    # Forged: same claims and the real kid, signed by a key kaia-mcp never issued.
+    FORGED="$(node -e "
+      const c=require('crypto'); const [h,p]=process.argv[1].split('.');
+      const {privateKey}=c.generateKeyPairSync('rsa',{modulusLength:2048});
+      process.stdout.write(h+'.'+p+'.'+c.sign('sha256',Buffer.from(h+'.'+p),privateKey).toString('base64url'));
+    " "${ACCESS}")"
+    echo "{\"access_token\":\"${FORGED}\"}" | save forged.token.json
+    mcp_init_only forged "${FORGED}"
+    NONE_TOKEN="$(node -e "const [h,p]=process.argv[1].split('.'); const hd=JSON.parse(Buffer.from(h,'base64url')); hd.alg='none'; process.stdout.write(Buffer.from(JSON.stringify(hd)).toString('base64url')+'.'+p+'.')" "${ACCESS}")"
+    mcp_init_only alg-none "${NONE_TOKEN}"
+    # Expiry: wait out the short launch TTL, then reuse the same bearer.
+    WAIT="$(node -e "const c=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')).claims; process.stdout.write(String(Math.max(0, c.exp - Math.floor(Date.now()/1000)) + 2))" "${OUT}/decoded.json")"
+    echo "drive jwt-access-tokens: waiting ${WAIT}s for the access token to expire"
+    sleep "${WAIT}"
+    mcp_init_only expired "${ACCESS}"
+    node -e "
+      const fs=require('fs'); const r=(f)=>fs.readFileSync('${OUT}/'+f,'utf8');
+      const fail=(m)=>{ console.error('drive: '+m); process.exit(1); };
+      if (!r('allow.json').includes('${EXPECTED_CALLDATA}')) fail('allowed call missing calldata');
+      const n=JSON.parse(r('tool-call-log-count.json')); if (n.after!==n.before+1) fail('expected exactly one new Tool call log line, got '+JSON.stringify(n));
+      for (const f of ['forged','alg-none']) {
+        if (!/^HTTP\/1\.1 401/m.test(r(f+'.headers'))) fail(f+' not 401');
+        const e=JSON.parse(r(f+'.json')).error; if (e.code!==-32043 || e.data.error!=='invalid_token') fail(f+' wrong error '+JSON.stringify(e));
+      }
+      if (!/^HTTP\/1\.1 401/m.test(r('expired.headers'))) fail('expired not 401');
+      const ex=JSON.parse(r('expired.json')).error; if (ex.code!==-32041 || ex.message!=='token_expired: access token has expired') fail('expired wrong error '+JSON.stringify(ex));
+      const ts=JSON.parse(r('tool-scopes.json'));
+      if (Object.keys(ts.tool_scopes).length!==26 || ts.tool_scopes.encode_function_data!=='kaia:encode' || ts.tool_scopes.generate_wallet!=='kaia:wallet' || ts.tool_scopes.get_block_number!=='kaia:read') fail('tool-scopes map wrong');
+      console.log('drive jwt-access-tokens: JWT verifies offline via JWKS; allowed call logged once; forged + alg=none -> invalid_token; expired -> token_expired; tool-scopes map ok');
+    "
+    ;;
+
+  token-introspection)
+    ACCESS="$(device_token live kaia:read)"
+    introspect anon "${ACCESS}" none
+    introspect wrong-secret "${ACCESS}" wrong
+    introspect active "${ACCESS}" gateway
+    curl -sS -o "${OUT}/revoke.json" -X POST "${BASE}/oauth/revoke" \
+      -H "Content-Type: application/x-www-form-urlencoded" --data-urlencode "token=${ACCESS}"
+    introspect revoked "${ACCESS}" gateway
+    mcp_init_only revoked-mcp "${ACCESS}"
+    # Refresh rotation retires the previous access jti.
+    OLD_ACCESS="$(device_token rot kaia:read)"
+    REFRESH="$(node -e "process.stdout.write(JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')).refresh_token)" "${OUT}/rot.token.json")"
+    curl -sS -X POST "${BASE}/oauth/token" -H "Content-Type: application/x-www-form-urlencoded" \
+      --data-urlencode "grant_type=refresh_token" --data-urlencode "client_id=kaia-mcp-demo" \
+      --data-urlencode "refresh_token=${REFRESH}" | save rotated.token.json
+    NEW_ACCESS="$(node -e "process.stdout.write(JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')).access_token)" "${OUT}/rotated.token.json")"
+    introspect rotated-old "${OLD_ACCESS}" gateway
+    introspect rotated-new "${NEW_ACCESS}" gateway
+    node -e "
+      const fs=require('fs'); const r=(f)=>fs.readFileSync('${OUT}/'+f,'utf8');
+      const fail=(m)=>{ console.error('drive: '+m); process.exit(1); };
+      const jti=(t)=>JSON.parse(Buffer.from(t.split('.')[1],'base64url')).jti;
+      for (const f of ['anon','wrong-secret']) {
+        if (!/^HTTP\/1\.1 401/m.test(r(f+'.headers')) || JSON.parse(r(f+'.json')).error!=='invalid_client') fail(f+' introspection was not rejected');
+      }
+      if (!/www-authenticate: Basic/i.test(r('anon.headers'))) fail('missing WWW-Authenticate: Basic');
+      const a=JSON.parse(r('active.json'));
+      if (a.active!==true || a.scope!=='kaia:read' || a.aud!=='kaia-mcp' || a.jti!==jti('${ACCESS}')) fail('active introspection wrong '+JSON.stringify(a));
+      if (r('active.json').includes('${ACCESS}')) fail('introspection echoed the token');
+      if (JSON.stringify(JSON.parse(r('revoked.json')))!=='{\"active\":false}') fail('revoked token still active');
+      const m=JSON.parse(r('revoked-mcp.json')).error; if (m.code!==-32043) fail('revoked bearer reached MCP '+JSON.stringify(m));
+      if (JSON.parse(r('rotated-old.json')).active!==false) fail('old access token active after refresh rotation');
+      if (JSON.parse(r('rotated-new.json')).active!==true) fail('rotated access token inactive');
+      console.log('drive token-introspection: unauthenticated/wrong secret -> 401 invalid_client; active claims; revoke -> inactive + MCP invalid_token; refresh rotation retires old jti');
     "
     ;;
 

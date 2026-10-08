@@ -4,13 +4,13 @@
 
 import { generateKeyPairSync, sign as cryptoSign } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { Client } from "@modelcontextprotocol/sdk/client";
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { Client } from "@modelcontextprotocol/client";
+import { InMemoryTransport } from "@modelcontextprotocol/server";
 import {
   StreamableHTTPClientTransport,
-  StreamableHTTPError,
-} from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { McpError } from "@modelcontextprotocol/sdk/types.js";
+  InsufficientScopeError,
+} from "@modelcontextprotocol/client";
+import { ProtocolError } from "@modelcontextprotocol/server";
 import { createKaiaMcpServer, runKaiaMcpServerHttp, type KaiaHttpServerHandle } from "../server.js";
 import { callTool, listTools } from "../tools/index.js";
 import {
@@ -170,8 +170,8 @@ describe("partner-auth golden evals (in-process)", () => {
       await client.callTool({ name: "encode_function_data", arguments: ENCODE_ARGS });
       throw new Error("expected callTool to throw");
     } catch (err) {
-      expect(err).toBeInstanceOf(McpError);
-      const mcp = err as McpError;
+      expect(err).toBeInstanceOf(ProtocolError);
+      const mcp = err as ProtocolError;
       expect(mcp.code).toBe(MCP_ERROR_CODES.InsufficientScope);
       expect(mcp.message).toContain(
         "insufficient_scope: encode_function_data requires kaia:encode"
@@ -309,13 +309,12 @@ describe("partner-auth golden evals (HTTP + demo OIDC)", () => {
       await client.callTool({ name: "encode_function_data", arguments: ENCODE_ARGS });
       throw new Error("expected callTool to throw");
     } catch (err) {
-      // MCP 2026-07-28: insufficient scope is an HTTP 403 Bearer challenge. The v1 SDK
-      // client surfaces it as a transport error carrying the status and the JSON-RPC body.
-      expect(err).toBeInstanceOf(StreamableHTTPError);
-      const e = err as StreamableHTTPError;
-      expect(e.code).toBe(403);
-      expect(e.message).toContain('"code":-32042');
-      expect(e.message).toContain("insufficient_scope: encode_function_data requires kaia:encode");
+      // MCP 2026-07-28: insufficient scope is an HTTP 403 Bearer challenge. The v2 SDK
+      // client surfaces it as InsufficientScopeError (SEP-2350) with the challenged scope.
+      expect(err).toBeInstanceOf(InsufficientScopeError);
+      const e = err as InsufficientScopeError;
+      expect(e.requiredScope).toContain("kaia:encode");
+      expect(String(e.message).toLowerCase()).toMatch(/insufficient.?scope/);
     } finally {
       await client.close();
       await transport.close();

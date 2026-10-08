@@ -1,6 +1,6 @@
 ---
 name: verify-kaia-mcp
-description: Verify the kaia-mcp HTTP MCP connector (stateless MCP 2026-07-28 transport, Origin validation, OAuth PKCE, RFC 8707 resource/audience, RFC 9728 Bearer challenges incl. 403 insufficient_scope, RFC 9207 iss, scoped tools, fail-closed auth, gated generate_wallet, JWT access tokens + JWKS rotation, RFC 7662 introspection, revocation that survives restart, multi-instance with a shared key) by launching isolated local instances and driving them with curl. Use when proving partner auth, scope gates, token verification/revocation, stateless deployment, or private-key withholding.
+description: Verify the kaia-mcp HTTP MCP connector (stateless MCP 2026-07-28 transport, Origin validation, OAuth PKCE, RFC 8707 resource/audience, RFC 9728 Bearer challenges incl. 403 insufficient_scope, RFC 9207 iss, scoped tools, fail-closed auth, gated generate_wallet, JWT access tokens + JWKS rotation, RFC 7662 introspection, revocation that survives restart, multi-instance with a shared key, SDK v2 protocol 2026-07-28 discover/HeaderMismatch/cacheScope) by launching isolated local instances and driving them with curl. Use when proving partner auth, scope gates, token verification/revocation, stateless deployment, or private-key withholding.
 ---
 
 # Verify kaia-mcp
@@ -66,7 +66,7 @@ Read the matching file under `features/` and follow every entry point it lists. 
 
 ## Evidence
 
-Named location: `.cursor/skills/verify-kaia-mcp/evidence/<run-id>/`. Each feature writes a subdirectory (`oauth-pkce-scoped-tools/`, `fail-closed-auth/`, `generate-wallet-gated/`, `device-flow/`, `jwt-access-tokens/`, `token-introspection/`, `revocation-restart/`, `stateless-transport/`, `bearer-challenges/`, `resource-indicators/`, `stateless-multi-instance/`).
+Named location: `.cursor/skills/verify-kaia-mcp/evidence/<run-id>/`. Each feature writes a subdirectory (`oauth-pkce-scoped-tools/`, `fail-closed-auth/`, `generate-wallet-gated/`, `device-flow/`, `jwt-access-tokens/`, `token-introspection/`, `revocation-restart/`, `stateless-transport/`, `bearer-challenges/`, `resource-indicators/`, `stateless-multi-instance/`, `protocol-2026-07-28/`).
 
 Proof standards:
 

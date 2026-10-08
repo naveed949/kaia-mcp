@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 # Drive one mapped feature against the launched instance.
-# Usage: helpers/drive.sh <oauth-pkce-scoped-tools|fail-closed-auth|generate-wallet-gated|device-flow|jwt-access-tokens|token-introspection|revocation-restart|stateless-transport|bearer-challenges|resource-indicators|stateless-multi-instance>
+# Usage: helpers/drive.sh <oauth-pkce-scoped-tools|fail-closed-auth|generate-wallet-gated|device-flow|jwt-access-tokens|token-introspection|revocation-restart|stateless-transport|bearer-challenges|resource-indicators|stateless-multi-instance|protocol-2026-07-28>
 # Writes evidence under ${EVIDENCE_DIR}/<feature>/ and does not delete it.
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
 FEATURE="${1:-}"
 if [[ -z "${FEATURE}" ]]; then
-  echo "Usage: helpers/drive.sh <oauth-pkce-scoped-tools|fail-closed-auth|generate-wallet-gated|device-flow|jwt-access-tokens|token-introspection|revocation-restart|stateless-transport|bearer-challenges|resource-indicators|stateless-multi-instance>" >&2
+  echo "Usage: helpers/drive.sh <oauth-pkce-scoped-tools|fail-closed-auth|generate-wallet-gated|device-flow|jwt-access-tokens|token-introspection|revocation-restart|stateless-transport|bearer-challenges|resource-indicators|stateless-multi-instance|protocol-2026-07-28>" >&2
   exit 2
 fi
 
@@ -1022,6 +1022,57 @@ console.log("drive stateless-multi-instance: one denylist per process enforced (
 console.log("drive stateless-multi-instance: A and B share key + KAIA_PUBLIC_URL; token from A (iss = aud = public URL) works on B with no initialize and no session header; rotated C serves [new, previous] and accepts it; D (other public URL) rejects it; wrong-aud tokens with a valid signature (legacy-only, other URI, other port) -> 401 invalid_token, aud array with canonical accepted; legacy-audience E mints [canonical, kaia-mcp] and B accepts it; KAIA_ALLOWED_ORIGINS origin allowed on B, others 403; AS state + denylist per process (refresh from A invalid_grant on B; revoke on A not seen by B, as documented)");
 JS
     ;;
+
+  protocol-2026-07-28)
+    # SDK v2: modern discover, HeaderMismatch -32020, tools/list cacheScope private, legacy init.
+    ACCESS="$(device_token p2 kaia:encode)"
+    DISCOVER_BODY='{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"verify-kaia-mcp","version":"0"},"io.modelcontextprotocol/clientCapabilities":{}}}}'
+    LIST_BODY='{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"verify-kaia-mcp","version":"0"},"io.modelcontextprotocol/clientCapabilities":{}}}}'
+    curl -sS -D "${OUT}/discover.headers" -o "${OUT}/discover.json" -X POST "${BASE}/" \
+      -H "Authorization: Bearer ${ACCESS}" -H "Content-Type: application/json" \
+      -H "Accept: application/json, text/event-stream" \
+      -H "MCP-Protocol-Version: 2026-07-28" -H "Mcp-Method: server/discover" \
+      -d "${DISCOVER_BODY}"
+    if grep -qi '^mcp-session-id:' "${OUT}/discover.headers"; then
+      echo "drive: discover response carries Mcp-Session-Id" >&2; exit 1
+    fi
+    curl -sS -D "${OUT}/mismatch.headers" -o "${OUT}/mismatch.json" -X POST "${BASE}/" \
+      -H "Authorization: Bearer ${ACCESS}" -H "Content-Type: application/json" \
+      -H "Accept: application/json, text/event-stream" \
+      -H "MCP-Protocol-Version: 2026-07-28" -H "Mcp-Method: tools/list" \
+      -d "${DISCOVER_BODY}" || true
+    curl -sS -D "${OUT}/missing-method.headers" -o "${OUT}/missing-method.json" -X POST "${BASE}/" \
+      -H "Authorization: Bearer ${ACCESS}" -H "Content-Type: application/json" \
+      -H "Accept: application/json, text/event-stream" \
+      -H "MCP-Protocol-Version: 2026-07-28" \
+      -d "${DISCOVER_BODY}" || true
+    curl -sS -D "${OUT}/list.headers" -o "${OUT}/list.json" -X POST "${BASE}/" \
+      -H "Authorization: Bearer ${ACCESS}" -H "Content-Type: application/json" \
+      -H "Accept: application/json, text/event-stream" \
+      -H "MCP-Protocol-Version: 2026-07-28" -H "Mcp-Method: tools/list" \
+      -d "${LIST_BODY}"
+    mcp_call legacy-init "${ACCESS}" "${mcp_init}"
+    OUT="${OUT}" node - <<'JS'
+const fs = require("fs"); const r = (f) => fs.readFileSync(process.env.OUT + "/" + f, "utf8");
+const fail = (m) => { console.error("drive: " + m); process.exit(1); };
+const status = (f) => Number((r(f).match(/^HTTP\/1\.1 (\d{3})/m) || [])[1]);
+const body = (f) => { const t = r(f); if (t.trim().startsWith("event:")) { const d = t.split("\n").filter((l) => l.startsWith("data:")).map((l) => l.slice(5).trim()).filter(Boolean); return JSON.parse(d[d.length - 1]); } return JSON.parse(t); };
+if (status("discover.headers") !== 200) fail("discover not 200: " + status("discover.headers"));
+const disc = body("discover.json");
+if (!Array.isArray(disc.result?.supportedVersions) || !disc.result.supportedVersions.includes("2026-07-28")) fail("discover missing 2026-07-28: " + r("discover.json").slice(0, 300));
+if (status("mismatch.headers") !== 400 || body("mismatch.json").error?.code !== -32020) fail("method mismatch not 400 -32020: " + r("mismatch.json").slice(0, 300));
+if (status("missing-method.headers") !== 400 || body("missing-method.json").error?.code !== -32020) fail("missing Mcp-Method not 400 -32020: " + r("missing-method.json").slice(0, 300));
+if (status("list.headers") !== 200) fail("modern tools/list not 200");
+const list = body("list.json").result;
+if (list.cacheScope !== "private") fail("tools/list cacheScope must be private, got " + list.cacheScope);
+if (list.ttlMs !== 0) fail("tools/list ttlMs must be 0 by default, got " + list.ttlMs);
+const names = (list.tools || []).map((t) => t.name);
+if (JSON.stringify(names) !== '["encode_function_data"]') fail("encode-only token listed " + JSON.stringify(names));
+if (status("legacy-init.headers") !== 200 || !r("legacy-init.json").includes("serverInfo")) fail("legacy initialize failed");
+console.log("drive protocol-2026-07-28: discover accepts 2026-07-28; HeaderMismatch -32020 on bad/missing Mcp-Method; tools/list cacheScope=private ttlMs=0 (scope-filtered); legacy initialize still works");
+JS
+    ;;
+
 
   *)
     echo "drive: unknown feature ${FEATURE}" >&2

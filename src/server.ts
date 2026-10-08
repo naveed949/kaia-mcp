@@ -1,16 +1,14 @@
-import { Server } from "@modelcontextprotocol/sdk/server";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import {
-  ListToolsRequestSchema,
-  CallToolRequestSchema,
-  ListResourcesRequestSchema,
-  ReadResourceRequestSchema,
-  ListPromptsRequestSchema,
-  GetPromptRequestSchema,
-  ErrorCode,
-  McpError,
-} from "@modelcontextprotocol/sdk/types.js";
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import {
+  Server,
+  ProtocolError,
+  ProtocolErrorCode,
+  createMcpHandler,
+  type AuthInfo,
+} from "@modelcontextprotocol/server";
+import { serveStdio } from "@modelcontextprotocol/server/stdio";
+import { toNodeHandler } from "@modelcontextprotocol/node";
 import { getConfig } from "./config.js";
 import { AuthError, MCP_ERROR_CODES, toMcpError } from "./utils/errors.js";
 import { logger } from "./utils/logger.js";
@@ -19,6 +17,7 @@ import { authorizeToolCall, requiredScopeForTool, type ToolAuthOptions } from ".
 import { listResources, readResource } from "./resources/index.js";
 import { listPrompts, getPrompt } from "./prompts/index.js";
 import { createDemoOAuthProvider, type DemoOAuthProvider } from "./auth/provider.js";
+import { bearerFromHeader } from "./auth/provider.js";
 import { SigningKey } from "./auth/jwt.js";
 import {
   FileRevocationStore,
@@ -40,6 +39,9 @@ import type { AuthContext } from "./auth/types.js";
 
 const SERVER_NAME = "kaia-mcp";
 const SERVER_VERSION = "0.1.0";
+
+/** Per-request auth for the createMcpHandler factory (concurrent-safe). */
+const authStore = new AsyncLocalStorage<AuthContext | null>();
 
 export type CreateKaiaMcpServerOptions = {
   requireAuth?: boolean;
@@ -94,7 +96,8 @@ function wrapToolHandler<T, R>(
     try {
       return await Promise.resolve(handler(req));
     } catch (err) {
-      const mcp = err instanceof McpError ? { code: err.code, data: err.data } : toMcpError(err);
+      const mcp =
+        err instanceof ProtocolError ? { code: err.code, data: err.data } : toMcpError(err);
       // Code and category only: tool, resource and prompt error messages routinely echo
       // caller input (e.g. 'Function "X" not found on ABI', an unknown uri or name).
       logger.error("Tool error", {
@@ -102,16 +105,20 @@ function wrapToolHandler<T, R>(
         category: errorCategory(mcp.code),
         errorType: logSafeName(err instanceof Error ? err.name : typeof err),
       });
-      if (err instanceof McpError) throw err;
+      if (err instanceof ProtocolError) throw err;
       const shape = toMcpError(err);
-      throw new McpError(shape.code, shape.message, shape.data);
+      throw new ProtocolError(shape.code, shape.message, shape.data);
     }
   };
 }
 
 /**
  * Creates and returns the Kaia MCP server instance.
- * Registers account tools (get_kaia_balance, get_account_info, get_account_tokens, get_account_nfts) and tools/list + tools/call handlers with error mapping.
+ * Registers account tools and tools/list + tools/call handlers with error mapping.
+ *
+ * Cache hints (SEP-2549): tools/list is always cacheScope "private" because the list is
+ * filtered by the caller's token scopes — never advertise a shared/public cache for it.
+ * ttlMs defaults to 0 (immediately stale) until an operator chooses a non-zero private TTL.
  */
 export function createKaiaMcpServer(options: CreateKaiaMcpServerOptions = {}): Server {
   const requireAuth = Boolean(options.requireAuth);
@@ -126,6 +133,12 @@ export function createKaiaMcpServer(options: CreateKaiaMcpServerOptions = {}): S
         resources: {},
         prompts: {},
       },
+      cacheHints: {
+        "tools/list": { ttlMs: 0, cacheScope: "private" },
+        "prompts/list": { ttlMs: 0, cacheScope: "public" },
+        "resources/list": { ttlMs: 0, cacheScope: "public" },
+        "resources/templates/list": { ttlMs: 0, cacheScope: "public" },
+      },
     }
   );
 
@@ -135,12 +148,12 @@ export function createKaiaMcpServer(options: CreateKaiaMcpServerOptions = {}): S
   });
 
   server.setRequestHandler(
-    ListToolsRequestSchema,
+    "tools/list",
     wrapToolHandler(() => listTools(authOpts()))
   );
 
   server.setRequestHandler(
-    CallToolRequestSchema,
+    "tools/call",
     wrapToolHandler(async (request) => {
       const { name, arguments: args } = request.params;
       // One audit line per call, written after the authorization decision and carrying its
@@ -153,13 +166,13 @@ export function createKaiaMcpServer(options: CreateKaiaMcpServerOptions = {}): S
         authorizeToolCall(name, opts);
         // Fail closed: a name outside the scope map is never "allowed", with or without auth.
         if (requiredScopeForTool(name) === undefined) {
-          throw new McpError(ErrorCode.InvalidParams, `Unknown tool: ${name}`);
+          throw new ProtocolError(ProtocolErrorCode.InvalidParams, `Unknown tool: ${name}`);
         }
       } catch (err) {
         const denial =
           err instanceof AuthError
             ? { errorCode: err.code, reason: err.error }
-            : err instanceof McpError && err.code === ErrorCode.InvalidParams
+            : err instanceof ProtocolError && err.code === ProtocolErrorCode.InvalidParams
               ? { errorCode: err.code, reason: "unknown_tool" }
               : { errorCode: MCP_ERROR_CODES.InternalError, reason: "internal_error" };
         logger.info("Tool call", {
@@ -172,7 +185,10 @@ export function createKaiaMcpServer(options: CreateKaiaMcpServerOptions = {}): S
         });
         if (denial.reason === "internal_error") {
           // Do not hand internal exception text to the caller.
-          throw new McpError(ErrorCode.InternalError, "Internal error: authorization failed");
+          throw new ProtocolError(
+            ProtocolErrorCode.InternalError,
+            "Internal error: authorization failed"
+          );
         }
         throw err;
       }
@@ -186,12 +202,12 @@ export function createKaiaMcpServer(options: CreateKaiaMcpServerOptions = {}): S
   );
 
   server.setRequestHandler(
-    ListResourcesRequestSchema,
+    "resources/list",
     wrapToolHandler(() => listResources())
   );
 
   server.setRequestHandler(
-    ReadResourceRequestSchema,
+    "resources/read",
     wrapToolHandler(async (request) => {
       const uri = request.params?.uri ?? "";
       return readResource(uri);
@@ -199,12 +215,12 @@ export function createKaiaMcpServer(options: CreateKaiaMcpServerOptions = {}): S
   );
 
   server.setRequestHandler(
-    ListPromptsRequestSchema,
+    "prompts/list",
     wrapToolHandler(() => listPrompts())
   );
 
   server.setRequestHandler(
-    GetPromptRequestSchema,
+    "prompts/get",
     wrapToolHandler(async (request) => {
       const name = request.params?.name ?? "";
       const args = request.params?.arguments;
@@ -219,14 +235,15 @@ export function createKaiaMcpServer(options: CreateKaiaMcpServerOptions = {}): S
  * Runs the Kaia MCP server over stdio (for CLI use).
  * Validates config at startup (fail-fast on bad env).
  * Stdio is local-process only: OAuth is not applied. generate_wallet stays disabled unless the unsafe flag is set.
+ * Uses serveStdio so the connection can speak 2026-07-28 (server/discover) or fall back to
+ * the 2025 initialize handshake.
  */
 export async function runKaiaMcpServer(): Promise<void> {
   getConfig();
   logger.info("Starting Kaia MCP server (stdio)");
-  const server = createKaiaMcpServer({ requireAuth: false });
-  const transport = new StdioServerTransport();
-  server.onerror = (err) => logger.error("Server transport error", { error: err });
-  await server.connect(transport);
+  await serveStdio(() => createKaiaMcpServer({ requireAuth: false }), {
+    onerror: (err) => logger.error("Server transport error", { error: err }),
+  });
 }
 
 /**
@@ -290,13 +307,25 @@ function jsonRpcError(
   res.end(JSON.stringify({ jsonrpc: "2.0", error: { code, message }, id: null }));
 }
 
+type AuthedIncomingMessage = IncomingMessage & { auth?: AuthInfo };
+
+function toAuthInfo(token: string, context: AuthContext): AuthInfo {
+  return {
+    token,
+    clientId: context.clientId,
+    scopes: [...context.scopes],
+    expiresAt: Math.floor(context.expiresAtMs / 1000),
+  };
+}
+
 /**
- * Runs the Kaia MCP server over Streamable HTTP on the given port, stateless per MCP
- * 2026-07-28: there are no protocol-level sessions. Every POST gets a fresh server and
- * transport (`sessionIdGenerator: undefined`), so `Mcp-Session-Id` is never minted or
- * echoed (a legacy client's header is ignored) and any instance behind a load balancer
- * can answer any request. GET and DELETE on the MCP endpoint are 405. Validates config
- * at startup.
+ * Runs the Kaia MCP server over Streamable HTTP on the given port, via SDK v2
+ * `createMcpHandler` (protocol 2026-07-28, with `legacy: 'stateless'` for 2025-era
+ * clients). There are no protocol-level sessions: every POST gets a fresh server from
+ * the factory, so `Mcp-Session-Id` is never minted or echoed and any instance behind a
+ * load balancer can answer any request. GET and DELETE on the MCP endpoint are 405.
+ * HeaderMismatch (-32020) for Mcp-Method / Mcp-Name / MCP-Protocol-Version is enforced
+ * by the SDK on the modern path. Validates config at startup.
  *
  * Partner default (KAIA_AUTH_MODE=required): every MCP request must carry a Bearer
  * access token, and that request's token is the only authority for it. Token scopes are
@@ -305,8 +334,6 @@ function jsonRpcError(
  */
 export async function runKaiaMcpServerHttp(port: number): Promise<KaiaHttpServerHandle> {
   const { createServer } = await import("node:http");
-  const { StreamableHTTPServerTransport } =
-    await import("@modelcontextprotocol/sdk/server/streamableHttp.js");
 
   const config = getConfig();
   const authMode = config.authMode;
@@ -334,26 +361,20 @@ export async function runKaiaMcpServerHttp(port: number): Promise<KaiaHttpServer
   /** The public origin is appended once the port is bound (it may default to it). */
   const allowedOrigins: string[] = [...config.allowedOrigins];
 
-  /** One JSON-RPC POST: a fresh server+transport, torn down when the response ends. */
-  async function serveMcpPost(
-    req: IncomingMessage,
-    res: ServerResponse,
-    auth: AuthContext | null,
-    parsedBody: unknown
-  ): Promise<void> {
-    const server = createKaiaMcpServer({
-      requireAuth: authMode === "required",
-      getAuthContext: () => auth,
-    });
-    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-    server.onerror = (err) => logger.error("Server transport error", { error: err });
-    res.on("close", () => {
-      void transport.close();
-      void server.close();
-    });
-    await server.connect(transport);
-    await transport.handleRequest(req, res, parsedBody);
-  }
+  const mcpHandler = createMcpHandler(
+    () =>
+      createKaiaMcpServer({
+        requireAuth: authMode === "required",
+        getAuthContext: () => authStore.getStore() ?? null,
+      }),
+    {
+      // Default: serve 2026-07-28 and fall back to per-request 2025-era initialize.
+      legacy: "stateless",
+      maxRequestBodySize: MAX_MCP_BODY_BYTES,
+      onerror: (err) => logger.error("Server transport error", { error: err }),
+    }
+  );
+  const nodeHandler = toNodeHandler(mcpHandler, { maxRequestBodySize: MAX_MCP_BODY_BYTES });
 
   /**
    * HTTP-level scope check for tools/call (MCP 2026-07-28 runtime insufficient scope):
@@ -417,7 +438,7 @@ export async function runKaiaMcpServerHttp(port: number): Promise<KaiaHttpServer
       if (handled) return;
 
       // MCP 2026-07-28 Streamable HTTP is POST only: no standalone GET stream and no
-      // session to DELETE.
+      // session to DELETE. (createMcpHandler would also 405 these; we answer before auth.)
       if (req.method !== "POST") {
         jsonRpcError(res, 405, -32000, "Method not allowed: the MCP endpoint accepts POST only", {
           Allow: "POST",
@@ -428,13 +449,17 @@ export async function runKaiaMcpServerHttp(port: number): Promise<KaiaHttpServer
       normalizeAcceptHeader(req);
 
       let auth: AuthContext | null = null;
+      let authInfo: AuthInfo | undefined;
       if (authMode === "required") {
+        const header = req.headers.authorization;
         const result = authenticateRequest(req, runtime.provider!);
         if (!result.ok) {
           writeAuthFailure(res, result, runtime.provider!.resourceMetadataUrl);
           return;
         }
         auth = result.context;
+        const token = bearerFromHeader(Array.isArray(header) ? undefined : header);
+        if (token) authInfo = toAuthInfo(token, result.context);
         logger.debug("MCP request authenticated", {
           tokenFingerprint: result.context.tokenFingerprint,
           scopes: result.context.scopes.join(" "),
@@ -464,7 +489,10 @@ export async function runKaiaMcpServerHttp(port: number): Promise<KaiaHttpServer
 
       if (authMode === "required" && rejectInsufficientScope(res, parsedBody, auth)) return;
 
-      await serveMcpPost(req, res, auth, parsedBody);
+      const authedReq = req as AuthedIncomingMessage;
+      if (authInfo) authedReq.auth = authInfo;
+
+      await authStore.run(auth, () => nodeHandler(authedReq, res, parsedBody));
     } catch (err) {
       logger.error("HTTP request error", { error: err });
       if (!res.headersSent) {
@@ -522,6 +550,8 @@ export async function runKaiaMcpServerHttp(port: number): Promise<KaiaHttpServer
     previousKids: runtime.provider.previousSigningKeys.map((k) => k.kid).join(",") || "none",
     introspection: runtime.provider.introspectionEnabled,
     revocationStore: config.oauthRevocationFile ? "file" : "memory",
+    sdk: "v2-createMcpHandler",
+    protocol: "2026-07-28+legacy-stateless",
   });
 
   return {
@@ -532,13 +562,15 @@ export async function runKaiaMcpServerHttp(port: number): Promise<KaiaHttpServer
     oauth: runtime.provider!,
     close: () =>
       new Promise<void>((resolve, reject) => {
-        if (typeof httpServer.closeAllConnections === "function") {
-          httpServer.closeAllConnections();
-        }
-        httpServer.close((err) => {
-          revocationStore.close?.();
-          if (err) reject(err);
-          else resolve();
+        void mcpHandler.close().finally(() => {
+          if (typeof httpServer.closeAllConnections === "function") {
+            httpServer.closeAllConnections();
+          }
+          httpServer.close((err) => {
+            revocationStore.close?.();
+            if (err) reject(err);
+            else resolve();
+          });
         });
       }),
   };

@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { listPrompts, getPrompt } from "./index.js";
-import { McpError } from "@modelcontextprotocol/sdk/types.js";
+import { ProtocolError } from "@modelcontextprotocol/server";
 
 describe("listPrompts", () => {
   it("returns 6 prompts with expected names", () => {
@@ -59,15 +59,15 @@ describe("getPrompt", () => {
     expect(text).toContain("1");
   });
 
-  it("unknown prompt name throws McpError", async () => {
-    await expect(getPrompt("unknown")).rejects.toThrow(McpError);
+  it("unknown prompt name throws ProtocolError", async () => {
+    await expect(getPrompt("unknown")).rejects.toThrow(ProtocolError);
     await expect(getPrompt("unknown")).rejects.toThrow(/Unknown prompt/);
   });
 
-  it("missing required argument throws McpError with clear message", async () => {
-    await expect(getPrompt("analyze-wallet", {})).rejects.toThrow(McpError);
+  it("missing required argument throws ProtocolError with clear message", async () => {
+    await expect(getPrompt("analyze-wallet", {})).rejects.toThrow(ProtocolError);
     await expect(getPrompt("analyze-wallet", {})).rejects.toThrow(/Missing required argument/);
-    await expect(getPrompt("analyze-wallet", { address: "" })).rejects.toThrow(McpError);
+    await expect(getPrompt("analyze-wallet", { address: "" })).rejects.toThrow(ProtocolError);
   });
 
   it("optional network defaults to mainnet", async () => {

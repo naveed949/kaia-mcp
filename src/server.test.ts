@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { Client } from "@modelcontextprotocol/sdk/client";
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { CallToolResultSchema, type CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import { Client } from "@modelcontextprotocol/client";
+import { InMemoryTransport } from "@modelcontextprotocol/server";
+import { CallToolResultSchema } from "@modelcontextprotocol/core";
+import type { CallToolResult } from "@modelcontextprotocol/server";
 import { createKaiaMcpServer } from "./server.js";
 import { resetConfigCache } from "./config.js";
 import { createRpcClient } from "./clients/rpc.js";

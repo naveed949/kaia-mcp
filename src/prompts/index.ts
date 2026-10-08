@@ -2,8 +2,8 @@
  * MCP prompts (Phase 9): reusable prompt templates for Kaia wallet, transaction, token, NFT, gas, and contract workflows.
  */
 
-import type { ListPromptsResult, GetPromptResult } from "@modelcontextprotocol/sdk/types.js";
-import { McpError, ErrorCode } from "@modelcontextprotocol/sdk/types.js";
+import type { ListPromptsResult, GetPromptResult } from "@modelcontextprotocol/server";
+import { ProtocolError, ProtocolErrorCode } from "@modelcontextprotocol/server";
 
 const DEFAULT_NETWORK = "mainnet";
 
@@ -95,7 +95,7 @@ export function listPrompts(): ListPromptsResult {
 /**
  * Returns the templated prompt for MCP prompts/get.
  * Substitutes args into the template; uses default for optional args (network -> mainnet).
- * @throws McpError InvalidParams if prompt name is unknown or required arguments are missing.
+ * @throws ProtocolError InvalidParams if prompt name is unknown or required arguments are missing.
  */
 export async function getPrompt(
   name: string,
@@ -103,7 +103,7 @@ export async function getPrompt(
 ): Promise<GetPromptResult> {
   const def = PROMPTS.find((p) => p.name === name);
   if (!def) {
-    throw new McpError(ErrorCode.InvalidParams, `Unknown prompt: ${name}`);
+    throw new ProtocolError(ProtocolErrorCode.InvalidParams, `Unknown prompt: ${name}`);
   }
 
   const provided = args ?? {};
@@ -113,8 +113,8 @@ export async function getPrompt(
     const value = provided[arg.name];
     if (arg.required) {
       if (value === undefined || value === "") {
-        throw new McpError(
-          ErrorCode.InvalidParams,
+        throw new ProtocolError(
+          ProtocolErrorCode.InvalidParams,
           `Missing required argument for prompt "${name}": ${arg.name}`
         );
       }

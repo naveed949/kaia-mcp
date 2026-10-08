@@ -16,7 +16,7 @@ Stdio remains a local-process transport. It does not speak OAuth. `generate_wall
 
 The HTTP transport is stateless (see [Stateless HTTP](#stateless-http-mcp-2026-07-28)): each request's own access token is the only authority, and its scopes map onto the allowed-tool registry.
 
-`tools/list` stays filtered per token: it lists only the tools the token's scopes allow (and never `generate_wallet` unless the unsafe flag is set). This is deliberate: a client should not be shown tools it cannot call, and it leaks nothing a scope-holder may not already use. The result therefore depends on the caller's token. MCP 2026-07-28 lets servers mark list results with `cacheScope`; SDK 1.32 has no such field, so `cacheScope: "private"` waits for the SDK v2 migration. Until then, intermediaries must not share a cached `tools/list` across tokens.
+`tools/list` stays filtered per token: it lists only the tools the token's scopes allow (and never `generate_wallet` unless the unsafe flag is set). This is deliberate: a client should not be shown tools it cannot call, and it leaks nothing a scope-holder may not already use. The result therefore depends on the caller's token. On the 2026-07-28 path the server advertises `cacheScope: "private"` and `ttlMs: 0` on `tools/list` (SEP-2549): intermediaries must never share a cached list across tokens. A non-zero private TTL is an operator opt-in, not the default.
 
 | Scope         | Tools                                                                             |
 | ------------- | --------------------------------------------------------------------------------- |
@@ -134,6 +134,8 @@ token=<access_or_refresh_token>&token_type_hint=<access_token|refresh_token>
 The response never echoes the token.
 
 ## Stateless HTTP (MCP 2026-07-28)
+
+HTTP serving uses the MCP TypeScript SDK v2 (`@modelcontextprotocol/server` `createMcpHandler` with `legacy: 'stateless'`, mounted via `@modelcontextprotocol/node` `toNodeHandler`). The modern path speaks protocol **2026-07-28** (`server/discover`, per-request `_meta` envelope, `Mcp-Method`/`Mcp-Name`/`MCP-Protocol-Version` header validation with JSON-RPC `-32020` HeaderMismatch). 2025-era clients keep working via the stateless legacy fallback (per-request `initialize`, no sessions).
 
 The Streamable HTTP endpoint is `POST /` and has no protocol-level sessions:
 

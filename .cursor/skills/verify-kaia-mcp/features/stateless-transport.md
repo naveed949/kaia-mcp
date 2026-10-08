@@ -40,7 +40,7 @@ Preconditions:
 
 ## Gotchas
 
-- The SDK in this build negotiates protocol versions up to `2025-11-25`. Sending `MCP-Protocol-Version: 2026-07-28` gets an SDK `400` until the SDK v2 migration; the drive does not send that header.
+- Modern protocol checks (`MCP-Protocol-Version: 2026-07-28`, `server/discover`, HeaderMismatch, `cacheScope`) live in the `protocol-2026-07-28` feature. This drive stays on the 2025-era initialize path so it remains a pure transport/Origin/CORS/body-limit check.
 - `tools/list` depends on the token's scopes. Compare it against the token used, never across tokens.
 - curl sends `Expect: 100-continue` for large bodies, which puts an `HTTP/1.1 100 Continue` block first in the headers file; the drive sends `Expect:` (empty) so the first status line is the real one.
 - The oversized body is written to a temp file in the evidence directory and deleted right after the request.

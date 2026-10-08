@@ -2,13 +2,13 @@
  * MCP resources (Phase 8): read-only URIs for status, tokens, top accounts, and docs.
  */
 
-import type { ListResourcesResult, ReadResourceResult } from "@modelcontextprotocol/sdk/types.js";
+import type { ListResourcesResult, ReadResourceResult } from "@modelcontextprotocol/server";
 import { createRpcClient } from "../clients/rpc.js";
 import { createKaiaScanClient } from "../clients/kaiascan.js";
 import { getChain } from "../chains.js";
 import { formatKaia } from "../utils/format.js";
 import { toMcpError } from "../utils/errors.js";
-import { McpError, ErrorCode } from "@modelcontextprotocol/sdk/types.js";
+import { ProtocolError, ProtocolErrorCode } from "@modelcontextprotocol/server";
 import { getPopularMainnetTokens } from "./token-list.js";
 import { RPC_METHODS_DOCS } from "./rpc-methods-docs.js";
 
@@ -124,14 +124,14 @@ async function fetchTopAccounts(): Promise<string> {
 
 /**
  * Reads a resource by URI. Returns MCP ReadResourceResult with contents (text or blob).
- * On error, throws McpError so the server handler can return proper JSON-RPC error.
+ * On error, throws ProtocolError so the server handler can return proper JSON-RPC error.
  */
 export async function readResource(uri: string): Promise<ReadResourceResult> {
   try {
     const trimmed = (uri ?? "").trim();
     if (!trimmed || !trimmed.startsWith("kaia://")) {
-      throw new McpError(
-        ErrorCode.InvalidParams,
+      throw new ProtocolError(
+        ProtocolErrorCode.InvalidParams,
         `Invalid resource URI: ${uri}. Expected kaia://<path>.`
       );
     }
@@ -156,8 +156,8 @@ export async function readResource(uri: string): Promise<ReadResourceResult> {
       text = RPC_METHODS_DOCS;
       mimeType = "text/markdown";
     } else {
-      throw new McpError(
-        ErrorCode.InvalidParams,
+      throw new ProtocolError(
+        ProtocolErrorCode.InvalidParams,
         `Unknown resource URI: ${uri}. Use resources/list to see available URIs.`
       );
     }
@@ -167,8 +167,8 @@ export async function readResource(uri: string): Promise<ReadResourceResult> {
       _meta: {},
     };
   } catch (err) {
-    if (err instanceof McpError) throw err;
+    if (err instanceof ProtocolError) throw err;
     const mcp = toMcpError(err);
-    throw new McpError(mcp.code, mcp.message, mcp.data);
+    throw new ProtocolError(mcp.code, mcp.message, mcp.data);
   }
 }

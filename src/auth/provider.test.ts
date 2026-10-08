@@ -274,6 +274,8 @@ describe("DemoOAuthProvider", () => {
     expect(disc.response_types_supported).toEqual(["code"]);
     expect(disc.scopes_supported).not.toContain("openid");
     expect(JSON.stringify(disc)).not.toMatch(/id_token/);
+    // OIDC-only metadata is not advertised either (no ID tokens, so no subject types).
+    expect(disc).not.toHaveProperty("subject_types_supported");
     // Contract consumed by s1-tool-gate's claims-gate proxy.
     expect(disc).toMatchObject({ issuer, jwks_uri: `${issuer}/oauth/jwks` });
   });

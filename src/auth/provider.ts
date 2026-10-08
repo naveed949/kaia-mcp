@@ -94,7 +94,10 @@ export type IntrospectionResponse =
 
 type RefreshRecord = {
   accessJti: string;
-  /** `exp` of the access token minted with this refresh token (ms), so revoking via the refresh token denies that jti for its whole life. */
+  /**
+   * `exp` (epoch ms) of the access token minted alongside this refresh token. Rotating or
+   * revoking the refresh token denies `accessJti` until then, not just for the default TTL.
+   */
   accessExpMs: number;
   clientId: string;
   subject: string;
@@ -138,9 +141,10 @@ type DevicePending = {
  * In-process demo OIDC/OAuth 2.1 provider (PKCE + device flow + revoke + introspection).
  *
  * Access tokens are RS256 JWTs (RFC 9068 shape: iss, aud, sub, client_id, scope,
- * iat, nbf, exp, jti) verifiable offline against `jwks()`. Revocation is by `jti`
- * (kept in a `RevocationStore`) and is visible to gateways through `introspect()`. Refresh tokens stay opaque
- * and are stored hashed. No token is ever logged; logs carry a sha256 fingerprint.
+ * iat, nbf, exp, jti) verifiable offline against `jwks()`. Revocation is by `jti`, kept
+ * in a `RevocationStore`, and gateways see it through `introspect()`. Refresh tokens
+ * stay opaque and are stored hashed. No token is ever logged; logs carry a sha256
+ * fingerprint.
  */
 export class DemoOAuthProvider {
   readonly issuer: string;
@@ -183,6 +187,12 @@ export class DemoOAuthProvider {
     return Boolean(this.introspectionClient);
   }
 
+  /**
+   * RFC 8414 authorization-server metadata, also served at /.well-known/openid-configuration
+   * because gateways (s1-tool-gate) discover through that path. No ID token is ever issued,
+   * so nothing OIDC-specific is advertised: no id_token signing algs, no subject types, and
+   * no response type beyond "code".
+   */
   discovery(): Record<string, unknown> {
     return {
       issuer: this.issuer,
@@ -200,10 +210,6 @@ export class DemoOAuthProvider {
       code_challenge_methods_supported: ["S256"],
       token_endpoint_auth_methods_supported: ["none"],
       scopes_supported: [...ALL_SCOPES],
-      // No id_token is ever issued, so no id_token_signing_alg_values_supported and no
-      // response type beyond "code". The openid-configuration path stays as an alias of
-      // the RFC 8414 document because gateways (s1-tool-gate) discover through it.
-      subject_types_supported: ["public"],
       access_token_signing_alg_values_supported: ["RS256"],
       ...(this.introspectionEnabled
         ? {
@@ -485,7 +491,8 @@ export class DemoOAuthProvider {
   }
 
   /**
-   * Issue tokens for tests and the demo IdP. The JWT is returned once and not stored; refresh tokens are kept hashed.
+   * Mint tokens directly (tests and the demo IdP). The JWT is returned once and never
+   * stored; the refresh token is kept only as a hash.
    */
   issueAccessToken(params: IssueAccessTokenParams): IssuedTokens {
     return this.mintTokens({

@@ -54,7 +54,7 @@ describe("SDK v2 MCP 2026-07-28", () => {
     resetConfigCache();
   });
 
-  it("accepts MCP-Protocol-Version 2026-07-28 (SDK v1 used to 400)", async () => {
+  it("accepts MCP-Protocol-Version 2026-07-28 on server/discover", async () => {
     handle = await runKaiaMcpServerHttp(0);
     const token = handle.oauth.issueAccessToken({ scopes: [SCOPES.READ] }).access_token;
     const { res, body } = await mcpPost(

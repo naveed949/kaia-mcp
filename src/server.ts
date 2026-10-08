@@ -16,8 +16,11 @@ import { listTools, callTool } from "./tools/index.js";
 import { authorizeToolCall, requiredScopeForTool, type ToolAuthOptions } from "./auth/scopes.js";
 import { listResources, readResource } from "./resources/index.js";
 import { listPrompts, getPrompt } from "./prompts/index.js";
-import { createDemoOAuthProvider, type DemoOAuthProvider } from "./auth/provider.js";
-import { bearerFromHeader } from "./auth/provider.js";
+import {
+  bearerFromHeader,
+  createDemoOAuthProvider,
+  type DemoOAuthProvider,
+} from "./auth/provider.js";
 import { SigningKey } from "./auth/jwt.js";
 import {
   FileRevocationStore,
@@ -89,6 +92,138 @@ export function errorCategory(code: number): string {
   }
 }
 
+/** JSON-RPC codes the SDK uses for a request the client got wrong (not a server fault). */
+const CLIENT_PROTOCOL_CODES = new Set<number>([
+  ProtocolErrorCode.ParseError,
+  ProtocolErrorCode.InvalidRequest,
+  ProtocolErrorCode.MethodNotFound,
+  ProtocolErrorCode.InvalidParams,
+  -32020, // HeaderMismatch (SEP-2243)
+  ProtocolErrorCode.MissingRequiredClientCapability,
+  ProtocolErrorCode.UnsupportedProtocolVersion,
+]);
+
+/** "Rejected ... (<cell>): <message that may echo caller input>" from createMcpHandler. */
+const SDK_REJECTION =
+  /^Rejected (?:inbound request|2025-era request on a modern-only endpoint) \(([^)]{0,200})\):/;
+const SDK_CELL_SHAPE = /^[a-z0-9-]{1,64}$/;
+
+/**
+ * JSON-RPC code the SDK answers with for each rejection cell (its onerror text carries the
+ * cell but not the code). Pinned against the live SDK by server.sdk-error-log.test.ts; a
+ * cell missing here is still logged, just without `code`.
+ */
+const SDK_CELL_CODES: Readonly<Record<string, number>> = {
+  // SEP-2243 HeaderMismatch family
+  "version-header-missing": -32020,
+  "method-header-missing": -32020,
+  "name-header-missing": -32020,
+  "name-header-invalid-encoding": -32020,
+  "name-header-mismatch": -32020,
+  "header-body-version-mismatch": -32020,
+  "method-header-mismatch": -32020,
+  "initialize-with-modern-header": -32020,
+  "notification-header-body-version-mismatch": -32020,
+  "notification-method-header-mismatch": -32020,
+  "param-header-missing": -32020,
+  "param-header-invalid-encoding": -32020,
+  "param-header-mismatch": -32020,
+  // envelope / shape
+  "envelope-invalid": ProtocolErrorCode.InvalidParams,
+  "notification-envelope-invalid": ProtocolErrorCode.InvalidParams,
+  "modern-header-without-claim": ProtocolErrorCode.InvalidParams,
+  "empty-batch": ProtocolErrorCode.InvalidRequest,
+  "batch-with-modern-element": ProtocolErrorCode.InvalidRequest,
+  "batch-with-invalid-element": ProtocolErrorCode.InvalidRequest,
+  "invalid-json-rpc-body": ProtocolErrorCode.InvalidRequest,
+};
+
+/**
+ * Rejections from the SDK's legacy (2025) transport, matched on their fixed SDK prefix
+ * only; the rest of those messages can carry a header value, so it is never logged.
+ */
+const SDK_CLIENT_PREFIXES: ReadonlyArray<readonly [string, string]> = [
+  ["Bad Request: Unsupported protocol version", "unsupported-protocol-version"],
+  ["Not Acceptable:", "not-acceptable"],
+  ["Unsupported Media Type:", "unsupported-media-type"],
+  ["Payload Too Large:", "payload-too-large"],
+  ["Invalid Request:", "invalid-request"],
+  ["Bad Request:", "bad-request"],
+  ["Parse error", "parse-error"],
+  ["Method not allowed", "method-not-allowed"],
+  ["Invalid Host header", "invalid-host-or-origin"],
+  ["Invalid Origin header", "invalid-host-or-origin"],
+];
+
+export type SdkErrorLogEntry = {
+  level: "info" | "error";
+  message: string;
+  meta: { cell?: string; code?: number; errorType: string; detail?: string };
+};
+
+/**
+ * What to log for an error the MCP SDK hands to `onerror` (HTTP handler and stdio).
+ *
+ * SDK messages routinely echo caller input: the 2026-07-28 ladder puts `params.name`,
+ * `Mcp-Name`, `Mcp-Method`, `MCP-Protocol-Version` and the `_meta` version into its
+ * rejection text, and the legacy transport echoes header values. Logging that verbatim let
+ * a token holder forge audit fragments (`msg=Tool call tool=... outcome=allowed`) and write
+ * megabytes per request. So the raw message is never logged:
+ * - a client-caused rejection logs a fixed message, the SDK's rejection cell (only if it has
+ *   the SDK's own `[a-z0-9-]` shape) and the JSON-RPC code, at info;
+ * - anything else logs at error with the error type, code, and a `detail` passed through
+ *   logSafeName (percent-encoded, 128-byte cap), so it can never hold a space or `=`.
+ */
+export function sdkErrorLogEntry(err: unknown): SdkErrorLogEntry {
+  const message = err instanceof Error ? err.message : String(err);
+  const errorType = logSafeName(err instanceof Error ? err.name : typeof err);
+  const rawCode = (err as { code?: unknown } | null)?.code;
+  const code = typeof rawCode === "number" && Number.isInteger(rawCode) ? rawCode : undefined;
+  const withCode = <M extends SdkErrorLogEntry["meta"]>(meta: M): M =>
+    code === undefined ? meta : { code, ...meta };
+
+  const rejected = SDK_REJECTION.exec(message);
+  if (rejected) {
+    const cell = SDK_CELL_SHAPE.test(rejected[1]) ? rejected[1] : "unknown";
+    const cellCode = Object.hasOwn(SDK_CELL_CODES, cell) ? SDK_CELL_CODES[cell] : code;
+    const meta = cellCode === undefined ? { cell, errorType } : { code: cellCode, cell, errorType };
+    return { level: "info", message: "MCP request rejected", meta };
+  }
+  if (err instanceof ProtocolError && CLIENT_PROTOCOL_CODES.has(err.code)) {
+    return {
+      level: "info",
+      message: "MCP request rejected",
+      meta: { code: err.code, cell: "protocol-error", errorType },
+    };
+  }
+  for (const [prefix, cell] of SDK_CLIENT_PREFIXES) {
+    if (message.startsWith(prefix)) {
+      return {
+        level: "info",
+        message: "MCP request rejected",
+        meta: withCode({ cell, errorType }),
+      };
+    }
+  }
+  if (err instanceof SyntaxError || /ZodError$/.test(errorType)) {
+    const cell = err instanceof SyntaxError ? "parse-error" : "invalid-message";
+    return { level: "info", message: "MCP request rejected", meta: withCode({ cell, errorType }) };
+  }
+  return {
+    level: "error",
+    message: "MCP transport error",
+    meta: withCode({ errorType, detail: logSafeName(message) }),
+  };
+}
+
+/** onerror for the SDK handler and stdio transport: never logs raw SDK text. */
+function logSdkError(err: unknown): void {
+  const entry = sdkErrorLogEntry(err);
+  // Inside an HTTP request the auth context is in ALS: tie the rejection to the token.
+  const tokenFingerprint = authStore.getStore()?.tokenFingerprint;
+  logger[entry.level](entry.message, { ...entry.meta, tokenFingerprint });
+}
+
 function wrapToolHandler<T, R>(
   handler: (req: T) => R | Promise<R>
 ): (req: T, extra: unknown) => Promise<R> {
@@ -118,7 +253,8 @@ function wrapToolHandler<T, R>(
  *
  * Cache hints (SEP-2549): tools/list is always cacheScope "private" because the list is
  * filtered by the caller's token scopes — never advertise a shared/public cache for it.
- * ttlMs defaults to 0 (immediately stale) until an operator chooses a non-zero private TTL.
+ * ttlMs is fixed at 0 (immediately stale) for every list; there is no setting to change it.
+ * Only methods kaia serves get a hint (it registers no resource templates).
  */
 export function createKaiaMcpServer(options: CreateKaiaMcpServerOptions = {}): Server {
   const requireAuth = Boolean(options.requireAuth);
@@ -137,7 +273,6 @@ export function createKaiaMcpServer(options: CreateKaiaMcpServerOptions = {}): S
         "tools/list": { ttlMs: 0, cacheScope: "private" },
         "prompts/list": { ttlMs: 0, cacheScope: "public" },
         "resources/list": { ttlMs: 0, cacheScope: "public" },
-        "resources/templates/list": { ttlMs: 0, cacheScope: "public" },
       },
     }
   );
@@ -242,21 +377,20 @@ export async function runKaiaMcpServer(): Promise<void> {
   getConfig();
   logger.info("Starting Kaia MCP server (stdio)");
   await serveStdio(() => createKaiaMcpServer({ requireAuth: false }), {
-    onerror: (err) => logger.error("Server transport error", { error: err }),
+    onerror: logSdkError,
   });
 }
 
 /**
- * Ensure the incoming request carries the Accept types the MCP SDK
- * requires (text/event-stream for GET; both application/json and
- * text/event-stream for POST). Many MCP clients (Cursor, curl, etc.)
- * omit these, which causes the SDK to return 406.
+ * Ensure the incoming request carries the Accept types the MCP SDK requires (both
+ * application/json and text/event-stream on POST). Many MCP clients (Cursor, curl, etc.)
+ * omit these, and the SDK's 2025-era (legacy) transport answers 406 without them.
  *
- * The SDK's transport uses @hono/node-server which reads rawHeaders,
- * so we must patch both the parsed headers object and the raw array.
+ * toNodeHandler builds the web Request from `req.headers`, so patching that object is
+ * enough.
  */
 function normalizeAcceptHeader(req: IncomingMessage): void {
-  const current = (req.headers["accept"] as string | undefined) ?? "";
+  const current = req.headers["accept"] ?? "";
   const missing: string[] = [];
 
   if (!current.includes("application/json")) missing.push("application/json");
@@ -264,21 +398,7 @@ function normalizeAcceptHeader(req: IncomingMessage): void {
 
   if (missing.length === 0) return;
 
-  const patched = current ? `${current}, ${missing.join(", ")}` : missing.join(", ");
-
-  req.headers["accept"] = patched;
-
-  let found = false;
-  for (let i = 0; i < req.rawHeaders.length; i += 2) {
-    if (req.rawHeaders[i].toLowerCase() === "accept") {
-      req.rawHeaders[i + 1] = patched;
-      found = true;
-      break;
-    }
-  }
-  if (!found) {
-    req.rawHeaders.push("Accept", patched);
-  }
+  req.headers["accept"] = current ? `${current}, ${missing.join(", ")}` : missing.join(", ");
 }
 
 export type KaiaHttpServerHandle = {
@@ -371,7 +491,7 @@ export async function runKaiaMcpServerHttp(port: number): Promise<KaiaHttpServer
       // Default: serve 2026-07-28 and fall back to per-request 2025-era initialize.
       legacy: "stateless",
       maxRequestBodySize: MAX_MCP_BODY_BYTES,
-      onerror: (err) => logger.error("Server transport error", { error: err }),
+      onerror: logSdkError,
     }
   );
   const nodeHandler = toNodeHandler(mcpHandler, { maxRequestBodySize: MAX_MCP_BODY_BYTES });
@@ -429,6 +549,7 @@ export async function runKaiaMcpServerHttp(port: number): Promise<KaiaHttpServer
       return;
     }
 
+    let auth: AuthContext | null = null;
     try {
       const handled = await tryHandleAuxRequest(req, res, {
         provider: runtime.provider!,
@@ -448,7 +569,6 @@ export async function runKaiaMcpServerHttp(port: number): Promise<KaiaHttpServer
 
       normalizeAcceptHeader(req);
 
-      let auth: AuthContext | null = null;
       let authInfo: AuthInfo | undefined;
       if (authMode === "required") {
         const header = req.headers.authorization;
@@ -494,7 +614,12 @@ export async function runKaiaMcpServerHttp(port: number): Promise<KaiaHttpServer
 
       await authStore.run(auth, () => nodeHandler(authedReq, res, parsedBody));
     } catch (err) {
-      logger.error("HTTP request error", { error: err });
+      // The error may come from inside the SDK handler: same no-raw-text rule as onerror.
+      const entry = sdkErrorLogEntry(err);
+      logger.error("HTTP request error", {
+        ...entry.meta,
+        tokenFingerprint: auth?.tokenFingerprint,
+      });
       if (!res.headersSent) {
         jsonRpcError(res, 500, -32603, "Internal server error");
       }
@@ -560,18 +685,24 @@ export async function runKaiaMcpServerHttp(port: number): Promise<KaiaHttpServer
     mcpUrl: issuer,
     localUrl,
     oauth: runtime.provider!,
-    close: () =>
-      new Promise<void>((resolve, reject) => {
-        void mcpHandler.close().finally(() => {
-          if (typeof httpServer.closeAllConnections === "function") {
-            httpServer.closeAllConnections();
-          }
-          httpServer.close((err) => {
-            revocationStore.close?.();
-            if (err) reject(err);
-            else resolve();
-          });
+    close: async () => {
+      // A failed handler close is logged, not propagated: the HTTP server, its connections
+      // and the revocation store lock must still be released, with no unhandled rejection.
+      try {
+        await mcpHandler.close();
+      } catch (err) {
+        logger.warn("MCP handler close failed", sdkErrorLogEntry(err).meta);
+      }
+      if (typeof httpServer.closeAllConnections === "function") {
+        httpServer.closeAllConnections();
+      }
+      await new Promise<void>((resolve, reject) => {
+        httpServer.close((err) => {
+          revocationStore.close?.();
+          if (err) reject(err);
+          else resolve();
         });
-      }),
+      });
+    },
   };
 }

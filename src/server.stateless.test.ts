@@ -47,6 +47,21 @@ describe("stateless Streamable HTTP", () => {
     });
   });
 
+  it.each(["application/json", "*/*"])(
+    "a legacy client sending Accept: %s is not refused with 406",
+    async (accept) => {
+      handle = await runKaiaMcpServerHttp(0);
+      const token = handle.oauth.issueAccessToken({ scopes: [SCOPES.READ] }).access_token;
+      const { res, body } = await mcpPost(
+        handle.mcpUrl,
+        { jsonrpc: "2.0", id: 1, method: "initialize", params: INIT_PARAMS },
+        { token, headers: { Accept: accept } }
+      );
+      expect(res.status).toBe(200);
+      expect(body).toMatchObject({ id: 1, result: { serverInfo: { name: "kaia-mcp" } } });
+    }
+  );
+
   it("tools/call works as a standalone POST with no initialize and no session header", async () => {
     handle = await runKaiaMcpServerHttp(0);
     const token = handle.oauth.issueAccessToken({ scopes: [SCOPES.READ] }).access_token;

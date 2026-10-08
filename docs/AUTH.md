@@ -16,7 +16,7 @@ Stdio remains a local-process transport. It does not speak OAuth. `generate_wall
 
 The HTTP transport is stateless (see [Stateless HTTP](#stateless-http-mcp-2026-07-28)): each request's own access token is the only authority, and its scopes map onto the allowed-tool registry.
 
-`tools/list` stays filtered per token: it lists only the tools the token's scopes allow (and never `generate_wallet` unless the unsafe flag is set). This is deliberate: a client should not be shown tools it cannot call, and it leaks nothing a scope-holder may not already use. The result therefore depends on the caller's token. On the 2026-07-28 path the server advertises `cacheScope: "private"` and `ttlMs: 0` on `tools/list` (SEP-2549): intermediaries must never share a cached list across tokens. A non-zero private TTL is an operator opt-in, not the default.
+`tools/list` stays filtered per token: it lists only the tools the token's scopes allow (and never `generate_wallet` unless the unsafe flag is set). This is deliberate: a client should not be shown tools it cannot call, and it leaks nothing a scope-holder may not already use. The result therefore depends on the caller's token. On the 2026-07-28 path the server advertises `cacheScope: "private"` and `ttlMs: 0` on `tools/list` (SEP-2549): intermediaries must never share a cached list across tokens. `ttlMs` is fixed at `0` for every list: there is no setting for a non-zero TTL, and changing it is a code change.
 
 | Scope         | Tools                                                                             |
 | ------------- | --------------------------------------------------------------------------------- |
@@ -63,6 +63,7 @@ Every `tools/call` that reaches kaia-mcp logs one `Tool call` info line, written
 - `<name>` is caller input. Names made only of `[A-Za-z0-9_.-]` (every real tool) are logged unchanged; anything else is percent-encoded (UTF-8 bytes, capped at 128), so a crafted name cannot add fields or lines.
 - The logger escapes CR, LF and every other control character in all messages and values: one entry is always one line.
 - Tool, resource and prompt failures log `msg=Tool error code=<code> category=<auth|rpc_provider|kaiascan_api|rate_limit|invalid_params|internal|...> errorType=<Error name>`, never the error message, which often echoes caller input.
+- Requests the MCP SDK rejects before any handler runs (header/body mismatch, bad envelope or protocol version, malformed batch, wrong Accept or Content-Type) log one info line: `msg=MCP request rejected code=<JSON-RPC code> cell=<SDK rejection cell> errorType=<Error name> [tokenFingerprint=<fp>]`. The SDK's own message is never logged, because on the 2026-07-28 path it echoes `params.name`, `Mcp-Name`, `Mcp-Method` and protocol-version values. Any other SDK error logs `level=error msg=MCP transport error` with the error type, code and a `detail` that is percent-encoded and capped at 128 bytes like a tool name.
 
 ## Access tokens (JWT) and JWKS
 
@@ -156,7 +157,7 @@ The Streamable HTTP endpoint is `POST /` and has no protocol-level sessions:
   KAIA_PUBLIC_URL=https://kaia.example.com kaia-mcp --transport http --port 3101
   ```
 
-- SDK 1.32 negotiates protocol versions up to `2025-11-25`; a request with `MCP-Protocol-Version: 2026-07-28` is refused by the SDK with 400 until the SDK v2 migration.
+- Protocol versions: a request carrying the 2026-07-28 `_meta` envelope is served on the modern path, which accepts only `2026-07-28` (another envelope version is 400 `-32022` with `supported: ["2026-07-28"]`). A request with no envelope takes the 2025-era stateless fallback (`2025-11-25`, `2025-06-18`, `2025-03-26`, `2024-11-05`), except that an `MCP-Protocol-Version: 2026-07-28` header without the envelope is refused with 400 `-32602`.
 
 ## Public URL and resource indicators (RFC 8707)
 

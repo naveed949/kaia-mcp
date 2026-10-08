@@ -99,7 +99,7 @@ interface AccountTransactionsResponse {
 // --- Handlers ---
 
 export async function handleGetTransaction(args: {
-  txHash: unknown;
+  txHash?: unknown;
   network?: unknown;
 }): Promise<{ content: Array<{ type: "text"; text: string }> }> {
   const hash = validateTxHash(args.txHash);
@@ -136,7 +136,7 @@ export async function handleGetTransaction(args: {
 }
 
 export async function handleGetTransactionReceipt(args: {
-  txHash: unknown;
+  txHash?: unknown;
   network?: unknown;
 }): Promise<{ content: Array<{ type: "text"; text: string }> }> {
   const hash = validateTxHash(args.txHash);
@@ -174,7 +174,7 @@ export async function handleGetTransactionReceipt(args: {
  * Query params: page, size (size used as limit, max 2000).
  */
 export async function handleGetAccountTransactions(args: {
-  address: unknown;
+  address?: unknown;
   network?: unknown;
   page?: unknown;
   limit?: unknown;
@@ -229,7 +229,7 @@ function parseValue(value: unknown): bigint | undefined {
 }
 
 export async function handleEstimateGas(args: {
-  from: unknown;
+  from?: unknown;
   to?: unknown;
   value?: unknown;
   data?: unknown;

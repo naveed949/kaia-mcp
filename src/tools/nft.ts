@@ -125,7 +125,7 @@ interface NftTransfersResponse {
  * Get Non Fungible Token: GET /api/v1/nfts/:tokenAddress
  */
 export async function handleGetNftInfo(args: {
-  contractAddress: unknown;
+  contractAddress?: unknown;
   network?: unknown;
 }): Promise<{ content: Array<{ type: "text"; text: string }> }> {
   const contractAddress = validateAddress(args.contractAddress);
@@ -167,8 +167,8 @@ export async function handleGetNftInfo(args: {
  * tokenId can be string or number (normalized to string for path).
  */
 export async function handleGetNftItem(args: {
-  contractAddress: unknown;
-  tokenId: unknown;
+  contractAddress?: unknown;
+  tokenId?: unknown;
   network?: unknown;
 }): Promise<{ content: Array<{ type: "text"; text: string }> }> {
   const contractAddress = validateAddress(args.contractAddress);
@@ -235,7 +235,7 @@ export async function handleGetNftItem(args: {
  * Query: page, size (optional tokenId to filter).
  */
 export async function handleGetNftTransfers(args: {
-  contractAddress: unknown;
+  contractAddress?: unknown;
   network?: unknown;
   page?: unknown;
   size?: unknown;

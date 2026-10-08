@@ -107,9 +107,9 @@ type GetContractsResponse = ContractListItem[];
 // --- Handlers ---
 
 export async function handleReadContract(args: {
-  contractAddress: unknown;
-  functionName: unknown;
-  abi: unknown;
+  contractAddress?: unknown;
+  functionName?: unknown;
+  abi?: unknown;
   args?: unknown;
   network?: unknown;
 }): Promise<{ content: Array<{ type: "text"; text: string }> }> {
@@ -151,7 +151,7 @@ export async function handleReadContract(args: {
 }
 
 export async function handleGetContractAbi(args: {
-  contractAddress: unknown;
+  contractAddress?: unknown;
   network?: unknown;
 }): Promise<{ content: Array<{ type: "text"; text: string }> }> {
   const contractAddress = validateAddress(args.contractAddress);
@@ -181,7 +181,7 @@ export async function handleGetContractAbi(args: {
 }
 
 export async function handleGetContractSource(args: {
-  contractAddress: unknown;
+  contractAddress?: unknown;
   network?: unknown;
 }): Promise<{ content: Array<{ type: "text"; text: string }> }> {
   const contractAddress = validateAddress(args.contractAddress);

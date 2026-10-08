@@ -91,7 +91,7 @@ export async function handleGetBlockNumber(args: {
 }
 
 export async function handleGetBlock(args: {
-  blockNumberOrHash: unknown;
+  blockNumberOrHash?: unknown;
   network?: unknown;
   includeTransactions?: unknown;
 }): Promise<{ content: Array<{ type: "text"; text: string }> }> {
@@ -152,7 +152,7 @@ export async function handleGetBlock(args: {
  * - GET /api/v1/blocks/:blockNumber/burns (accumulate_burnt_fees, etc.)
  */
 export async function handleGetBlockRewards(args: {
-  blockNumber: unknown;
+  blockNumber?: unknown;
   network?: unknown;
 }): Promise<{ content: Array<{ type: "text"; text: string }> }> {
   let blockNumber: number;

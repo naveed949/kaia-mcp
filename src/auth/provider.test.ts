@@ -2,7 +2,7 @@ import { generateKeyPairSync, sign as cryptoSign } from "node:crypto";
 import { mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, it, expect } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
 import { SigningKey } from "./jwt.js";
 import { createDemoOAuthProvider } from "./provider.js";
 import { generatePkcePair } from "./pkce.js";
@@ -300,5 +300,55 @@ describe("DemoOAuthProvider", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("revocation via a refresh token denies the access token until its real exp", () => {
+  const issuer = "http://127.0.0.1:3999";
+  // Default access TTL is 900 s; this token lives an hour.
+  const LONG = 3600;
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function setup() {
+    vi.useFakeTimers({ now: new Date("2026-10-08T12:00:00Z"), toFake: ["Date"] });
+    const provider = createDemoOAuthProvider({ issuer });
+    const t = provider.issueAccessToken({ scopes: [SCOPES.READ], expiresInSeconds: LONG });
+    return { provider, t };
+  }
+
+  function pastDefaultTtl(provider: ReturnType<typeof createDemoOAuthProvider>): void {
+    vi.setSystemTime(Date.now() + (provider.accessTokenTtlSeconds + 60) * 1000);
+  }
+
+  it("revoke(refresh_token)", () => {
+    const { provider, t } = setup();
+    provider.revoke(t.refresh_token);
+    pastDefaultTtl(provider);
+    expect(provider.verifyAccessToken(t.access_token)).toEqual({
+      ok: false,
+      status: 401,
+      ...AUTH_ERRORS.INVALID_TOKEN,
+    });
+    expect(provider.introspect(t.access_token)).toEqual({ active: false });
+  });
+
+  it("refresh rotation", () => {
+    const { provider, t } = setup();
+    provider.exchangeRefreshToken({ clientId: DEMO_CLIENT_ID, refreshToken: t.refresh_token });
+    pastDefaultTtl(provider);
+    expect(provider.verifyAccessToken(t.access_token)).toEqual({
+      ok: false,
+      status: 401,
+      ...AUTH_ERRORS.INVALID_TOKEN,
+    });
+  });
+
+  it("control: the same token unrevoked is still valid at that time", () => {
+    const { provider, t } = setup();
+    pastDefaultTtl(provider);
+    expect(provider.verifyAccessToken(t.access_token).ok).toBe(true);
   });
 });

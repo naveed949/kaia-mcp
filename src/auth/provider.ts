@@ -94,6 +94,8 @@ export type IntrospectionResponse =
 
 type RefreshRecord = {
   accessJti: string;
+  /** `exp` of the access token minted with this refresh token (ms), so revoking via the refresh token denies that jti for its whole life. */
+  accessExpMs: number;
   clientId: string;
   subject: string;
   scopes: string[];
@@ -471,7 +473,7 @@ export class DemoOAuthProvider {
       throw Object.assign(new Error("invalid_grant"), { oauthError: "invalid_grant" });
     }
     record.revoked = true;
-    this.revokeJti(record.accessJti, Date.now() + this.accessTokenTtlSeconds * 1000);
+    this.revokeJti(record.accessJti, record.accessExpMs);
     return this.mintTokens({
       subject: record.subject,
       clientId: record.clientId,
@@ -507,7 +509,7 @@ export class DemoOAuthProvider {
     const refresh = this.refresh.get(sha256Hex(token));
     if (refresh) {
       refresh.revoked = true;
-      this.revokeJti(refresh.accessJti, Date.now() + this.accessTokenTtlSeconds * 1000);
+      this.revokeJti(refresh.accessJti, refresh.accessExpMs);
       logger.info("oauth refresh token revoked", { tokenFingerprint: fingerprint(token) });
     }
   }
@@ -640,6 +642,7 @@ export class DemoOAuthProvider {
     const ttl = params.expiresInSeconds ?? this.accessTokenTtlSeconds;
     const nowSeconds = Math.floor(Date.now() / 1000);
     const expiresAtMs = params.expiresAtMs ?? (nowSeconds + ttl) * 1000;
+    const expSeconds = Math.floor(expiresAtMs / 1000);
     const jti = randomUUID();
     const accessToken = this.signingKey.sign({
       iss: this.issuer,
@@ -649,12 +652,13 @@ export class DemoOAuthProvider {
       scope: params.scopes.join(" "),
       iat: nowSeconds,
       nbf: nowSeconds,
-      exp: Math.floor(expiresAtMs / 1000),
+      exp: expSeconds,
       jti,
     });
     const refreshToken = randomToken();
     this.refresh.set(sha256Hex(refreshToken), {
       accessJti: jti,
+      accessExpMs: expSeconds * 1000,
       clientId: params.clientId,
       subject: params.subject,
       scopes: params.scopes,

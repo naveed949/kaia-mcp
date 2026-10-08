@@ -16,7 +16,9 @@
  */
 import {
   closeSync,
+  constants as fsConstants,
   fstatSync,
+  lstatSync,
   fsyncSync,
   mkdirSync,
   openSync,
@@ -27,6 +29,7 @@ import {
 } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { dirname } from "node:path";
+import { logger } from "../utils/logger.js";
 
 export interface RevocationStore {
   /**
@@ -126,10 +129,35 @@ export class FileRevocationStore extends MemoryRevocationStore {
     const store = new FileRevocationStore(path);
     let raw: string;
     let fd: number;
+    // Never follow a link at the denylist path: a planted or dangling symlink must not
+    // redirect (or empty) the denylist. lstat gives the clear error; O_NOFOLLOW closes the
+    // race where it exists. O_NONBLOCK keeps a FIFO from blocking startup forever; fstat
+    // below then refuses it as not a regular file.
     try {
-      fd = openSync(path, "r");
+      if (lstatSync(path).isSymbolicLink()) {
+        throw new RevocationStoreError(
+          `revocation store ${path} is unreadable: refusing to follow a symlink`
+        );
+      }
     } catch (err) {
+      if (err instanceof RevocationStoreError) throw err;
       if ((err as NodeJS.ErrnoException).code === "ENOENT") return store;
+      throw new RevocationStoreError(`revocation store ${path} is unreadable`, { cause: err });
+    }
+    try {
+      fd = openSync(
+        path,
+        fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0) | (fsConstants.O_NONBLOCK ?? 0)
+      );
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") return store;
+      if (code === "ELOOP") {
+        throw new RevocationStoreError(
+          `revocation store ${path} is unreadable: refusing to follow a symlink`,
+          { cause: err }
+        );
+      }
       throw new RevocationStoreError(`revocation store ${path} is unreadable`, { cause: err });
     }
     try {
@@ -243,19 +271,39 @@ const DIR_FSYNC_UNSUPPORTED = new Set([
   "EACCES",
 ]);
 
+/** Of those, the ones that mean "not allowed here" (a sandbox or ACL), worth telling the operator. */
+const DIR_FSYNC_DENIED = new Set(["EPERM", "EACCES"]);
+
+let warnedDirFsyncDenied = false;
+
+/** Skipped directory fsync: silent where unsupported, one warning per process when denied. */
+function dirFsyncSkipped(dir: string, err: unknown): void {
+  const code = (err as NodeJS.ErrnoException).code ?? "";
+  if (!DIR_FSYNC_DENIED.has(code) || warnedDirFsyncDenied) return;
+  warnedDirFsyncDenied = true;
+  logger.warn(
+    "revocation store directory fsync not permitted; a crash right after a revoke may lose it",
+    { dir, errno: code }
+  );
+}
+
 /** Persist the directory entry created by a rename. Best effort where unsupported (Windows). */
 function fsyncDirectory(dir: string): void {
   let fd: number;
   try {
     fd = openSync(dir, "r");
   } catch (err) {
-    if (DIR_FSYNC_UNSUPPORTED.has((err as NodeJS.ErrnoException).code ?? "")) return;
+    if (DIR_FSYNC_UNSUPPORTED.has((err as NodeJS.ErrnoException).code ?? "")) {
+      dirFsyncSkipped(dir, err);
+      return;
+    }
     throw err;
   }
   try {
     fsyncSync(fd);
   } catch (err) {
     if (!DIR_FSYNC_UNSUPPORTED.has((err as NodeJS.ErrnoException).code ?? "")) throw err;
+    dirFsyncSkipped(dir, err);
   } finally {
     closeSync(fd);
   }

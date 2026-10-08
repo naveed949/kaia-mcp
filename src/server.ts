@@ -11,9 +11,10 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import type { IncomingMessage } from "node:http";
 import { getConfig } from "./config.js";
-import { toMcpError } from "./utils/errors.js";
+import { AuthError, toMcpError } from "./utils/errors.js";
 import { logger } from "./utils/logger.js";
 import { listTools, callTool } from "./tools/index.js";
+import { authorizeToolCall } from "./auth/scopes.js";
 import { listResources, readResource } from "./resources/index.js";
 import { listPrompts, getPrompt } from "./prompts/index.js";
 import { createDemoOAuthProvider, type DemoOAuthProvider } from "./auth/provider.js";
@@ -82,12 +83,28 @@ export function createKaiaMcpServer(options: CreateKaiaMcpServerOptions = {}): S
     CallToolRequestSchema,
     wrapToolHandler(async (request) => {
       const { name, arguments: args } = request.params;
-      // One line per call that reaches kaia-mcp. Never logs arguments or the token itself.
-      logger.info("Tool call", {
-        tool: name,
-        tokenFingerprint: options.getAuthContext?.()?.tokenFingerprint,
-      });
-      return callTool(name, (args ?? {}) as Record<string, unknown>, authOpts());
+      const opts = authOpts();
+      // One audit line per call, written after the authorization decision and carrying its
+      // outcome. Never logs arguments or token material (only the sha256 fingerprint).
+      const tokenFingerprint = opts.auth?.tokenFingerprint;
+      try {
+        authorizeToolCall(name, opts);
+      } catch (err) {
+        if (err instanceof AuthError) {
+          logger.info("Tool call", {
+            tool: name,
+            outcome: "denied",
+            // Not `code`: the logger hoists `code` ahead of `tool`, and gateways (s1-tool-gate's
+            // live e2e) match the stable prefix "msg=Tool call tool=<name> " for every call.
+            errorCode: err.code,
+            reason: err.error,
+            tokenFingerprint,
+          });
+        }
+        throw err;
+      }
+      logger.info("Tool call", { tool: name, outcome: "allowed", tokenFingerprint });
+      return callTool(name, (args ?? {}) as Record<string, unknown>, opts);
     })
   );
 

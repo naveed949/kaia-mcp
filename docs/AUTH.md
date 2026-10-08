@@ -38,7 +38,7 @@ The matching tool handler is never invoked on these paths.
 
 Access tokens are not stored (they are self-contained JWTs); refresh tokens are stored hashed. Logs emit a 12-character sha256 fingerprint and the `jti`, never the raw token. `Authorization`, `access_token`, `refresh_token`, `client_secret`, `code_verifier`, and `device_code` fields, `Bearer …` values, and bare compact JWTs are redacted if they reach the logger.
 
-Every `tools/call` that reaches kaia-mcp logs one `Tool call` info line with the tool name and token fingerprint (no arguments). A gateway in front of kaia-mcp can use this to prove a denied call never arrived.
+Every `tools/call` that reaches kaia-mcp logs one `Tool call` info line, written after the authorization decision: `msg=Tool call tool=<name> outcome=allowed tokenFingerprint=<fp>`, or `msg=Tool call tool=<name> outcome=denied errorCode=<-3204x> reason=<error> [tokenFingerprint=<fp>]`. It never includes arguments or token material. Allowed and denied calls share the `msg=Tool call tool=<name> ` prefix, so a gateway in front of kaia-mcp can count those lines to prove a call it denied never arrived.
 
 ## Access tokens (JWT) and JWKS
 

@@ -169,7 +169,7 @@ case "${FEATURE}" in
       const fail=(m)=>{ console.error('drive: '+m); process.exit(1); };
       const disc=JSON.parse(r('discovery.json'));
       if (JSON.stringify(disc.code_challenge_methods_supported)!=='[\"S256\"]' || !disc.authorization_endpoint) fail('discovery missing S256/authorization_endpoint');
-      if (JSON.stringify(disc.response_types_supported)!=='[\"code\"]' || JSON.stringify(disc).includes('id_token')) fail('discovery advertises id_token support or a response type other than code');
+      if (JSON.stringify(disc.response_types_supported)!=='[\"code\"]' || JSON.stringify(disc).includes('id_token') || 'subject_types_supported' in disc) fail('discovery advertises id_token/OIDC subject types or a response type other than code');
       const html=r('consent.html');
       if (!html.includes('Authorize kaia-mcp') || !html.includes('kaia:encode')) fail('consent page missing title or scope');
       if (!/state=verify1/.test(r('consent.headers'))) fail('consent redirect missing state');
@@ -240,6 +240,36 @@ case "${FEATURE}" in
       const line=fs.readFileSync('${OUT}/deny-scope.tool-call-line.txt','utf8');
       if (!/errorCode=-32042/.test(line) || !/reason=insufficient_scope/.test(line) || line.includes('balanceOf')) { console.error('drive: denied Tool call line wrong', line); process.exit(1); }
       console.log('drive fail-closed-auth: deny-by-scope ok (one outcome=denied errorCode=-32042 Tool call line)');
+    "
+    # Unknown and crafted tool names: denied (-32602) with one outcome=denied
+    # reason=unknown_tool line each, never outcome=allowed, and no forged log line.
+    LOG_FILE_PATH="$(inst logFile)"
+    ALLOWED_TOTAL_BEFORE="$({ grep -c "outcome=allowed" "${LOG_FILE_PATH}" || true; } | tr -d '\n')"
+    UNKNOWN_BEFORE="$(tool_call_outcome_count no_such_tool denied)"
+    mcp_call unknown-tool "${ACCESS}" '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"no_such_tool","arguments":{}}}'
+    FORGED_NAME='get_chain_info outcome=allowed\nlevel=info msg=Tool call tool=get_chain_info outcome=allowed\r'
+    mcp_call forged-tool "${ACCESS}" "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"${FORGED_NAME}\",\"arguments\":{}}}"
+    UNKNOWN_AFTER="$(tool_call_outcome_count no_such_tool denied)"
+    ALLOWED_TOTAL_AFTER="$({ grep -c "outcome=allowed" "${LOG_FILE_PATH}" || true; } | tr -d '\n')"
+    { grep "reason=unknown_tool" "${LOG_FILE_PATH}" || true; } | tail -n 2 | save unknown-tool.tool-call-lines.txt
+    { grep "msg=Tool error" "${LOG_FILE_PATH}" || true; } | save tool-error-lines.txt
+    echo "{\"unknownBefore\":${UNKNOWN_BEFORE},\"unknownAfter\":${UNKNOWN_AFTER},\"allowedBefore\":${ALLOWED_TOTAL_BEFORE},\"allowedAfter\":${ALLOWED_TOTAL_AFTER}}" | save unknown-tool.log-count.json
+    node -e "
+      const fs=require('fs'); const r=(f)=>fs.readFileSync('${OUT}/'+f,'utf8');
+      const fail=(m)=>{ console.error('drive: '+m); process.exit(1); };
+      for (const f of ['unknown-tool.json','forged-tool.json']) {
+        if (!r(f).includes('-32602')) fail(f+' expected -32602 Unknown tool: '+r(f).slice(0,300));
+      }
+      const n=JSON.parse(r('unknown-tool.log-count.json'));
+      if (n.unknownAfter!==n.unknownBefore+1) fail('expected one outcome=denied line for no_such_tool '+JSON.stringify(n));
+      if (n.allowedAfter!==n.allowedBefore) fail('unknown/forged tool produced an outcome=allowed line '+JSON.stringify(n));
+      const lines=r('unknown-tool.tool-call-lines.txt').trim().split('\\n');
+      if (lines.length!==2 || !lines.every(l=>/outcome=denied errorCode=-32602 reason=unknown_tool/.test(l))) fail('unknown_tool lines wrong '+lines.join(' | '));
+      if (!/msg=Tool call tool=get_chain_info%20outcome%3Dallowed%0Alevel%3Dinfo/.test(lines[1])) fail('forged name not percent-encoded: '+lines[1]);
+      const te=r('tool-error-lines.txt');
+      if (/balanceOf|no_such_tool|get_chain_info outcome/.test(te)) fail('Tool error line echoes caller input');
+      if (!/msg=Tool error code=-32602 category=invalid_params/.test(te)) fail('Tool error line lacks code/category');
+      console.log('drive fail-closed-auth: unknown + forged tool names denied (-32602, reason=unknown_tool), no outcome=allowed, name percent-encoded, Tool error lines carry code/category only');
     "
     curl -sS -X POST "${BASE}/oauth/revoke" \
       -H "Content-Type: application/x-www-form-urlencoded" \
@@ -471,6 +501,51 @@ case "${FEATURE}" in
       --data-urlencode "grant_type=refresh_token" --data-urlencode "client_id=kaia-mcp-demo" \
       --data-urlencode "refresh_token=${REFRESH}" | save refresh-after.json
 
+    # A refresh rotation whose revocation cannot be persisted: 503 with no path, the refresh
+    # token is not consumed, and the retry succeeds once the store is writable again.
+    # (root ignores directory permissions, so this phase records itself as skipped there.)
+    ROT_ACCESS="$(device_token rotate kaia:read)"
+    ROT_REFRESH="$(node -e "process.stdout.write(JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')).refresh_token)" "${OUT}/rotate.token.json")"
+    if [[ "$(id -u)" != "0" ]]; then
+      chmod 500 "${STATE_DIR}"
+      curl -sS -D "${OUT}/rotate-broken.headers" -o "${OUT}/rotate-broken.json" -X POST "${BASE}/oauth/token" \
+        -H "Content-Type: application/x-www-form-urlencoded" \
+        --data-urlencode "grant_type=refresh_token" --data-urlencode "client_id=kaia-mcp-demo" \
+        --data-urlencode "refresh_token=${ROT_REFRESH}" || true
+      mcp_init_only rotate-old-access-denied "${ROT_ACCESS}"
+      chmod 700 "${STATE_DIR}"
+      curl -sS -D "${OUT}/rotate-retry.headers" -o "${OUT}/rotate-retry.json" -X POST "${BASE}/oauth/token" \
+        -H "Content-Type: application/x-www-form-urlencoded" \
+        --data-urlencode "grant_type=refresh_token" --data-urlencode "client_id=kaia-mcp-demo" \
+        --data-urlencode "refresh_token=${ROT_REFRESH}" || true
+      echo '{"skipped":false}' | save rotate-phase.json
+    else
+      echo '{"skipped":true,"reason":"running as root"}' | save rotate-phase.json
+    fi
+
+    # A denylist writable by group/others must stop startup too.
+    INSECURE_DIR="$(dirname "$(inst logFile)")/insecure"
+    mkdir -p "${INSECURE_DIR}"
+    cp "${STATE_DIR}/signing-key.pem" "${INSECURE_DIR}/signing-key.pem"
+    printf '{"version":1,"entries":[]}' > "${INSECURE_DIR}/revoked-jti.json"
+    chmod 666 "${INSECURE_DIR}/revoked-jti.json"
+    IPORT="$(node -e 'const n=require("net");const s=n.createServer();s.listen(0,"127.0.0.1",()=>{console.log(s.address().port);s.close()});')"
+    set +e
+    (
+      set -a
+      # shellcheck disable=SC1091
+      source "$(dirname "$(inst logFile)")/server.env"
+      set +a
+      export KAIA_OAUTH_SIGNING_KEY_FILE="${INSECURE_DIR}/signing-key.pem" LOG_LEVEL=info
+      cd "${REPO_ROOT}"
+      timeout 20 node dist/bin/kaia-mcp.js --transport http --port "${IPORT}"
+    ) >"${OUT}/insecure-start.log" 2>&1
+    INSECURE_EXIT=$?
+    set -e
+    INSECURE_LISTENING=false
+    if curl -s -o /dev/null "http://127.0.0.1:${IPORT}/health"; then INSECURE_LISTENING=true; fi
+    echo "{\"exit\":${INSECURE_EXIT},\"listening\":${INSECURE_LISTENING}}" | save insecure-start.json
+
     # A corrupt denylist next to a persisted key must stop startup, not start empty.
     CORRUPT_DIR="$(dirname "$(inst logFile)")/corrupt"
     mkdir -p "${CORRUPT_DIR}"
@@ -528,11 +603,21 @@ case "${FEATURE}" in
       const c=JSON.parse(r('corrupt-start.json'));
       if (c.exit===0 || c.exit===124 || c.listening) fail('corrupt denylist did not refuse startup '+JSON.stringify(c));
       if (!/revocation store .* is corrupt/.test(r('corrupt-start.log'))) fail('corrupt start log missing reason');
+      if (!JSON.parse(r('rotate-phase.json')).skipped) {
+        if (!/^HTTP\/1\.1 503/m.test(r('rotate-broken.headers'))) fail('rotation with unwritable store not 503');
+        if (JSON.stringify(JSON.parse(r('rotate-broken.json')))!==JSON.stringify({error:'server_error',error_description:'revocation could not be persisted'})) fail('rotation 503 body '+r('rotate-broken.json'));
+        if (r('rotate-broken.json').includes('/')) fail('rotation error leaks a path');
+        if (JSON.parse(r('rotate-old-access-denied.json')).error.code!==-32043) fail('old access token not denied in-process after failed rotation');
+        if (!/^HTTP\/1\.1 200/m.test(r('rotate-retry.headers')) || !JSON.parse(r('rotate-retry.json')).access_token) fail('rotation retry did not succeed '+r('rotate-retry.json'));
+      }
+      const ins=JSON.parse(r('insecure-start.json'));
+      if (ins.exit===0 || ins.exit===124 || ins.listening) fail('insecure denylist did not refuse startup '+JSON.stringify(ins));
+      if (!/revocation store .* is insecure: writable by group or others/.test(r('insecure-start.log'))) fail('insecure start log missing reason');
       if (kid('jwks-c.json')===kid('jwks-b.json')) fail('memory-mode restart kept the kid');
       for (const f of ['kept-after-memory','revoked-after-memory']) {
         if (!/^HTTP\/1\.1 401/m.test(r(f+'.headers')) || JSON.parse(r(f+'.json')).error.code!==-32043) fail(f+' should be invalid_token after memory restart');
       }
-      console.log('drive revocation-restart: file key -> revoked access + refresh-linked jti stay invalid_token after restart, unrevoked token still allowed, introspection inactive, refresh token invalid_grant; corrupt denylist refuses startup; memory key -> restart invalidates every token');
+      console.log('drive revocation-restart: file key -> revoked access + refresh-linked jti stay invalid_token after restart, unrevoked token still allowed, introspection inactive, refresh token invalid_grant; unwritable store -> rotation 503 (no path), refresh not consumed, retry 200; corrupt and group/world-writable denylists refuse startup; memory key -> restart invalidates every token');
     "
     ;;
 

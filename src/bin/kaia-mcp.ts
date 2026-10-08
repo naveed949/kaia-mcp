@@ -20,8 +20,10 @@ Options:
   --port <number>           HTTP port when --transport http (default: 3100)
 
 HTTP partner mode (default KAIA_AUTH_MODE=required) mounts a demo OIDC/OAuth
-provider on the same port (PKCE + device flow). MCP requests must send
-Authorization: Bearer <access_token>. Set KAIA_AUTH_MODE=off only for local
+provider on the same port (PKCE + device flow). The MCP endpoint is POST /,
+stateless per MCP 2026-07-28 (no sessions). Every request must send
+Authorization: Bearer <access_token>. Set KAIA_PUBLIC_URL to the public origin
+behind a proxy or load balancer. Set KAIA_AUTH_MODE=off only for local
 unauthenticated HTTP. generate_wallet is disabled unless KAIA_ALLOW_UNSAFE_WALLET=1.
 See docs/AUTH.md.
 `;

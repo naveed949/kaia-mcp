@@ -137,7 +137,7 @@ describe("DemoOAuthProvider", () => {
 
     const otherAud = createDemoOAuthProvider({
       issuer,
-      audience: "other-api",
+      resource: "other-api",
       signingKey: provider.signingKey,
     });
     expect(
@@ -179,7 +179,7 @@ describe("DemoOAuthProvider", () => {
       active: true,
       sub: "alice",
       scope: "kaia:read kaia:encode",
-      aud: "kaia-mcp",
+      aud: issuer,
       iss: issuer,
       jti: decode(live.access_token).jti,
     });

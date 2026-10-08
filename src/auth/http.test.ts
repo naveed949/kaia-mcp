@@ -84,7 +84,7 @@ describe("demo OAuth HTTP", () => {
     expect(header).toMatchObject({ alg: "RS256", typ: "at+jwt" });
     expect(claims).toMatchObject({
       iss: base,
-      aud: "kaia-mcp",
+      aud: base,
       sub: "demo-user",
       scope: SCOPES.ENCODE,
     });
@@ -171,7 +171,7 @@ describe("demo OAuth HTTP", () => {
     expect(body).toMatchObject({
       active: true,
       scope: SCOPES.READ,
-      aud: "kaia-mcp",
+      aud: base,
       iss: base,
       token_type: "Bearer",
     });

@@ -29,6 +29,44 @@ const boolish = z
     return n === "1" || n === "true" || n === "yes";
   });
 
+/**
+ * KAIA_PUBLIC_URL: the externally reachable origin of this server. It is the OAuth issuer
+ * and the canonical resource URI (RFC 8707 / RFC 9728), so it must be an absolute http(s)
+ * origin with no path, query, fragment or userinfo. Normalized to lowercase
+ * scheme://host[:port] with no trailing slash (default ports elided).
+ */
+const publicUrlSchema = z
+  .string()
+  .optional()
+  .transform((v, ctx) => {
+    const raw = (v ?? "").trim();
+    if (!raw) return undefined;
+    let u: URL;
+    try {
+      u = new URL(raw);
+    } catch {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "must be an absolute http(s) URL" });
+      return z.NEVER;
+    }
+    const problem =
+      u.protocol !== "http:" && u.protocol !== "https:"
+        ? "scheme must be http or https"
+        : u.username || u.password
+          ? "must not contain userinfo"
+          : u.pathname !== "/"
+            ? "must be an origin with no path (the MCP endpoint is served at /)"
+            : u.search || raw.includes("?")
+              ? "must not contain a query"
+              : u.hash || raw.includes("#")
+                ? "must not contain a fragment"
+                : undefined;
+    if (problem) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: problem });
+      return z.NEVER;
+    }
+    return u.origin;
+  });
+
 const envSchema = z.object({
   KAIA_RPC_URL: urlOrDefault(DEFAULT_KAIA_RPC_URL),
   KAIA_KAIROS_RPC_URL: urlOrDefault(DEFAULT_KAIA_KAIROS_RPC_URL),
@@ -43,7 +81,10 @@ const envSchema = z.object({
   KAIA_ALLOW_UNSAFE_WALLET: boolish,
   KAIA_OAUTH_CLIENT_ID: z.string().optional().default("kaia-mcp-demo"),
   KAIA_ACCESS_TOKEN_TTL_SECONDS: z.coerce.number().int().positive().optional().default(900),
-  KAIA_OAUTH_AUDIENCE: z.string().min(1).optional().default("kaia-mcp"),
+  KAIA_PUBLIC_URL: publicUrlSchema,
+  KAIA_OAUTH_LEGACY_AUDIENCE: z.string().min(1).optional(),
+  KAIA_OAUTH_AUDIENCE: z.string().min(1).optional(),
+  KAIA_OAUTH_REQUIRE_RESOURCE: boolish,
   KAIA_OAUTH_SIGNING_KEY_FILE: z.string().optional(),
   KAIA_OAUTH_REVOCATION_FILE: z.string().optional(),
   KAIA_INTROSPECTION_CLIENT_ID: z.string().min(1).optional().default("kaia-mcp-gateway"),
@@ -69,8 +110,20 @@ export type Config = {
   allowUnsafeWallet: boolean;
   oauthClientId: string;
   accessTokenTtlSeconds: number;
-  /** `aud` of issued access tokens; kaia-mcp only accepts tokens with this audience. */
-  oauthAudience: string;
+  /**
+   * KAIA_PUBLIC_URL, normalized: issuer and canonical resource URI. Unset: the HTTP server
+   * uses http://127.0.0.1:<bound port> (local dev).
+   */
+  publicUrl?: string;
+  /**
+   * Optional extra `aud` value minted alongside the canonical resource URI, for gateways
+   * that still pin a non-URI audience (e.g. "kaia-mcp"). Never accepted on its own: the
+   * resource server always requires the canonical URI in `aud`. KAIA_OAUTH_LEGACY_AUDIENCE,
+   * or the deprecated alias KAIA_OAUTH_AUDIENCE.
+   */
+  oauthLegacyAudience?: string;
+  /** KAIA_OAUTH_REQUIRE_RESOURCE: reject authorize/device/token requests without `resource`. */
+  oauthRequireResource: boolean;
   /** Optional gitignored PEM path for a dev signing key that survives restarts. Unset: in-memory key. */
   oauthSigningKeyFile?: string;
   /**
@@ -99,7 +152,10 @@ function parseEnv(): Config {
     KAIA_ALLOW_UNSAFE_WALLET: process.env.KAIA_ALLOW_UNSAFE_WALLET,
     KAIA_OAUTH_CLIENT_ID: process.env.KAIA_OAUTH_CLIENT_ID,
     KAIA_ACCESS_TOKEN_TTL_SECONDS: process.env.KAIA_ACCESS_TOKEN_TTL_SECONDS,
+    KAIA_PUBLIC_URL: process.env.KAIA_PUBLIC_URL || undefined,
+    KAIA_OAUTH_LEGACY_AUDIENCE: process.env.KAIA_OAUTH_LEGACY_AUDIENCE || undefined,
     KAIA_OAUTH_AUDIENCE: process.env.KAIA_OAUTH_AUDIENCE || undefined,
+    KAIA_OAUTH_REQUIRE_RESOURCE: process.env.KAIA_OAUTH_REQUIRE_RESOURCE,
     KAIA_OAUTH_SIGNING_KEY_FILE: process.env.KAIA_OAUTH_SIGNING_KEY_FILE || undefined,
     KAIA_OAUTH_REVOCATION_FILE: process.env.KAIA_OAUTH_REVOCATION_FILE || undefined,
     KAIA_INTROSPECTION_CLIENT_ID: process.env.KAIA_INTROSPECTION_CLIENT_ID || undefined,
@@ -130,7 +186,9 @@ function parseEnv(): Config {
     allowUnsafeWallet: d.KAIA_ALLOW_UNSAFE_WALLET,
     oauthClientId: d.KAIA_OAUTH_CLIENT_ID,
     accessTokenTtlSeconds: d.KAIA_ACCESS_TOKEN_TTL_SECONDS,
-    oauthAudience: d.KAIA_OAUTH_AUDIENCE,
+    publicUrl: d.KAIA_PUBLIC_URL,
+    oauthLegacyAudience: d.KAIA_OAUTH_LEGACY_AUDIENCE ?? d.KAIA_OAUTH_AUDIENCE,
+    oauthRequireResource: d.KAIA_OAUTH_REQUIRE_RESOURCE,
     oauthSigningKeyFile: d.KAIA_OAUTH_SIGNING_KEY_FILE,
     oauthRevocationFile:
       d.KAIA_OAUTH_REVOCATION_FILE ??

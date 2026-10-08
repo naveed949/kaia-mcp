@@ -3,12 +3,12 @@ import { logger } from "../utils/logger.js";
 import { verifyPkce } from "./pkce.js";
 import { checkAccessTokenClaims, SigningKey } from "./jwt.js";
 import { MemoryRevocationStore, type RevocationStore } from "./revocation-store.js";
+import { canonicalResource, invalidTarget } from "./resource.js";
 import {
   ALL_SCOPES,
   AUTH_CODE_TTL_SECONDS,
   AUTH_ERRORS,
   DEFAULT_ACCESS_TOKEN_TTL_SECONDS,
-  DEFAULT_AUDIENCE,
   DEFAULT_REFRESH_TOKEN_TTL_SECONDS,
   DEMO_CLIENT_ID,
   DEMO_REDIRECT_URIS,
@@ -54,8 +54,15 @@ export type DemoOAuthProviderOptions = {
   redirectUris?: readonly string[];
   accessTokenTtlSeconds?: number;
   refreshTokenTtlSeconds?: number;
-  /** `aud` claim for access tokens. Default "kaia-mcp". */
-  audience?: string;
+  /**
+   * Canonical resource URI this AS issues tokens for (RFC 8707). Access tokens carry it as
+   * `aud` and `verifyAccessToken` requires it. Default: the issuer.
+   */
+  resource?: string;
+  /** Extra `aud` value minted next to `resource` for legacy gateways. Never sufficient alone. */
+  legacyAudience?: string;
+  /** Reject authorize/device/token requests that omit `resource`. Default false. */
+  requireResource?: boolean;
   /** RS256 signing key. Default: a fresh in-memory key per process. */
   signingKey?: SigningKey;
   /**
@@ -75,7 +82,7 @@ export type IntrospectionResponse =
       scope: string;
       client_id: string;
       sub: string;
-      aud: string;
+      aud: string | string[];
       iss: string;
       exp: number;
       iat: number;
@@ -152,7 +159,10 @@ export class DemoOAuthProvider {
   readonly redirectUris: readonly string[];
   readonly accessTokenTtlSeconds: number;
   readonly refreshTokenTtlSeconds: number;
-  readonly audience: string;
+  /** Canonical resource URI: required in every accepted token's `aud`. */
+  readonly resource: string;
+  readonly legacyAudience?: string;
+  readonly requireResource: boolean;
   readonly signingKey: SigningKey;
   private readonly introspectionClient?: { clientId: string; clientSecret: string };
 
@@ -171,11 +181,41 @@ export class DemoOAuthProvider {
     this.accessTokenTtlSeconds = options.accessTokenTtlSeconds ?? DEFAULT_ACCESS_TOKEN_TTL_SECONDS;
     this.refreshTokenTtlSeconds =
       options.refreshTokenTtlSeconds ?? DEFAULT_REFRESH_TOKEN_TTL_SECONDS;
-    this.audience = options.audience ?? DEFAULT_AUDIENCE;
+    const resource = options.resource ?? this.issuer;
+    // A URI resource is compared in canonical form; a non-URI value (tests minting a
+    // foreign-audience token) is kept verbatim.
+    this.resource = canonicalResource(resource) ?? resource;
+    if (options.legacyAudience && options.legacyAudience !== this.resource) {
+      this.legacyAudience = options.legacyAudience;
+    }
+    this.requireResource = Boolean(options.requireResource);
     this.signingKey = options.signingKey ?? SigningKey.generate();
     this.revocations = options.revocationStore ?? new MemoryRevocationStore();
     if (options.introspectionClient?.clientSecret) {
       this.introspectionClient = options.introspectionClient;
+    }
+  }
+
+  /** `aud` claim of minted access tokens. */
+  get audience(): string | string[] {
+    return this.legacyAudience ? [this.resource, this.legacyAudience] : this.resource;
+  }
+
+  /**
+   * RFC 8707 check of the `resource` values on an authorize, device or token request.
+   * Exactly one value naming this server's canonical URI is accepted. An omitted resource
+   * means this server (the only resource this AS serves) unless `requireResource` is set.
+   * Anything else is invalid_target.
+   */
+  checkResource(values: string | readonly string[] | undefined): void {
+    const list = values === undefined ? [] : typeof values === "string" ? [values] : values;
+    if (list.length === 0) {
+      if (this.requireResource) throw invalidTarget("resource is required");
+      return;
+    }
+    if (list.length > 1) throw invalidTarget("exactly one resource is supported");
+    if (canonicalResource(list[0]) !== this.resource) {
+      throw invalidTarget("resource is not served by this authorization server");
     }
   }
 
@@ -227,7 +267,6 @@ export class DemoOAuthProvider {
       scopes_supported: [...ALL_SCOPES],
       bearer_methods_supported: ["header"],
       resource_name: "kaia-mcp",
-      token_audience: this.audience,
     };
   }
 
@@ -246,6 +285,7 @@ export class DemoOAuthProvider {
     scope?: string;
     codeChallenge: string;
     codeChallengeMethod: string;
+    resource?: string | readonly string[];
   }): { requestId: string; scopes: string[] } {
     if (!this.isRegisteredClient(params.clientId)) {
       throw Object.assign(new Error("invalid_client"), { oauthError: "invalid_client" });
@@ -261,6 +301,7 @@ export class DemoOAuthProvider {
       });
     }
     const scopes = parseScopes(params.scope);
+    this.checkResource(params.resource);
     const requestId = randomToken();
     this.authzRequests.set(requestId, {
       clientId: params.clientId,
@@ -323,10 +364,12 @@ export class DemoOAuthProvider {
     code: string;
     codeVerifier: string;
     redirectUri: string;
+    resource?: string | readonly string[];
   }): IssuedTokens {
     if (!this.isRegisteredClient(params.clientId)) {
       throw Object.assign(new Error("invalid_client"), { oauthError: "invalid_client" });
     }
+    this.checkResource(params.resource);
     const record = this.authzCodes.get(sha256Hex(params.code));
     if (!record || record.consumed) {
       throw Object.assign(new Error("invalid_grant: authorization code is invalid"), {
@@ -358,7 +401,11 @@ export class DemoOAuthProvider {
     });
   }
 
-  startDeviceAuthorization(params: { clientId: string; scope?: string }): {
+  startDeviceAuthorization(params: {
+    clientId: string;
+    scope?: string;
+    resource?: string | readonly string[];
+  }): {
     device_code: string;
     user_code: string;
     verification_uri: string;
@@ -370,6 +417,7 @@ export class DemoOAuthProvider {
       throw Object.assign(new Error("invalid_client"), { oauthError: "invalid_client" });
     }
     const scopes = parseScopes(params.scope);
+    this.checkResource(params.resource);
     const deviceCode = randomToken();
     const code = userCode();
     this.devices.set(sha256Hex(deviceCode), {
@@ -434,10 +482,15 @@ export class DemoOAuthProvider {
     });
   }
 
-  exchangeDeviceCode(params: { clientId: string; deviceCode: string }): IssuedTokens {
+  exchangeDeviceCode(params: {
+    clientId: string;
+    deviceCode: string;
+    resource?: string | readonly string[];
+  }): IssuedTokens {
     if (!this.isRegisteredClient(params.clientId)) {
       throw Object.assign(new Error("invalid_client"), { oauthError: "invalid_client" });
     }
+    this.checkResource(params.resource);
     const pending = this.devices.get(sha256Hex(params.deviceCode));
     if (!pending) {
       throw Object.assign(new Error("invalid_grant"), { oauthError: "invalid_grant" });
@@ -465,10 +518,15 @@ export class DemoOAuthProvider {
     return tokens;
   }
 
-  exchangeRefreshToken(params: { clientId: string; refreshToken: string }): IssuedTokens {
+  exchangeRefreshToken(params: {
+    clientId: string;
+    refreshToken: string;
+    resource?: string | readonly string[];
+  }): IssuedTokens {
     if (!this.isRegisteredClient(params.clientId)) {
       throw Object.assign(new Error("invalid_client"), { oauthError: "invalid_client" });
     }
+    this.checkResource(params.resource);
     const record = this.refresh.get(sha256Hex(params.refreshToken));
     if (!record || record.revoked || record.expiresAtMs <= Date.now()) {
       throw Object.assign(new Error("invalid_grant: refresh token is invalid or expired"), {
@@ -540,7 +598,7 @@ export class DemoOAuthProvider {
     }
     const checked = checkAccessTokenClaims(payload, {
       issuer: this.issuer,
-      audience: this.audience,
+      audience: this.resource,
       nowSeconds: Date.now() / 1000,
     });
     if (!checked.ok) {
@@ -603,7 +661,7 @@ export class DemoOAuthProvider {
     if (!payload) return { active: false };
     const checked = checkAccessTokenClaims(payload, {
       issuer: this.issuer,
-      audience: this.audience,
+      audience: this.resource,
       nowSeconds: Date.now() / 1000,
     });
     if (!checked.ok || this.isRevoked(checked.claims.jti)) return { active: false };

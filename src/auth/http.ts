@@ -38,24 +38,37 @@ export async function readBody(req: IncomingMessage, maxBytes = 1_000_000): Prom
   return Buffer.concat(chunks).toString("utf8");
 }
 
-function parseForm(body: string, contentType: string | undefined): Record<string, string> {
+type ParsedForm = {
+  /** Last value of each field. */
+  fields: Record<string, string>;
+  /** Every value of `key`, in order (RFC 8707 `resource` may repeat). */
+  all: (key: string) => string[] | undefined;
+};
+
+function parseFormAll(body: string, contentType: string | undefined): ParsedForm {
+  const multi = new Map<string, string[]>();
+  const push = (k: string, v: string) => multi.set(k, [...(multi.get(k) ?? []), v]);
   if ((contentType ?? "").includes("application/json")) {
     try {
       const obj = JSON.parse(body) as Record<string, unknown>;
-      const out: Record<string, string> = {};
       for (const [k, v] of Object.entries(obj)) {
         if (v == null) continue;
-        out[k] = String(v);
+        if (Array.isArray(v)) v.forEach((item) => push(k, String(item)));
+        else push(k, String(v));
       }
-      return out;
     } catch {
-      return {};
+      // empty form
     }
+  } else {
+    for (const [k, v] of new URLSearchParams(body).entries()) push(k, v);
   }
-  const params = new URLSearchParams(body);
-  const out: Record<string, string> = {};
-  for (const [k, v] of params.entries()) out[k] = v;
-  return out;
+  const fields: Record<string, string> = {};
+  for (const [k, v] of multi) fields[k] = v[v.length - 1];
+  return { fields, all: (key) => multi.get(key) };
+}
+
+function parseForm(body: string, contentType: string | undefined): Record<string, string> {
+  return parseFormAll(body, contentType).fields;
 }
 
 function json(
@@ -201,6 +214,9 @@ export type AuxRequestContext = {
  */
 export const TOOL_SCOPES_PATH = "/.well-known/kaia-mcp/tool-scopes";
 
+/** Error codes passed through verbatim on an /oauth/authorize error redirect. */
+const AUTHORIZE_REDIRECT_ERRORS = new Set(["server_error", "invalid_scope", "invalid_target"]);
+
 export async function tryHandleAuxRequest(
   req: IncomingMessage,
   res: ServerResponse,
@@ -291,6 +307,9 @@ export async function tryHandleAuxRequest(
         scope: url.searchParams.get("scope") ?? undefined,
         codeChallenge: url.searchParams.get("code_challenge") ?? "",
         codeChallengeMethod: url.searchParams.get("code_challenge_method") ?? "",
+        resource: url.searchParams.has("resource")
+          ? url.searchParams.getAll("resource")
+          : undefined,
       });
       html(
         res,
@@ -315,7 +334,7 @@ export async function tryHandleAuxRequest(
         const loc = new URL(redirectUri);
         loc.searchParams.set(
           "error",
-          e.error === "server_error" ? "server_error" : "invalid_request"
+          AUTHORIZE_REDIRECT_ERRORS.has(e.error) ? e.error : "invalid_request"
         );
         loc.searchParams.set("error_description", msg);
         if (state) loc.searchParams.set("state", state);
@@ -343,7 +362,8 @@ export async function tryHandleAuxRequest(
 
   if (req.method === "POST" && path === "/oauth/token") {
     try {
-      const fields = parseForm(await readBody(req), req.headers["content-type"]);
+      const { fields, all } = parseFormAll(await readBody(req), req.headers["content-type"]);
+      const resource = all("resource");
       const grant = fields.grant_type;
       if (grant === "authorization_code") {
         json(
@@ -354,6 +374,7 @@ export async function tryHandleAuxRequest(
             code: fields.code ?? "",
             codeVerifier: fields.code_verifier ?? "",
             redirectUri: fields.redirect_uri ?? "",
+            resource,
           })
         );
       } else if (grant === "refresh_token") {
@@ -363,6 +384,7 @@ export async function tryHandleAuxRequest(
           ctx.provider.exchangeRefreshToken({
             clientId: fields.client_id ?? "",
             refreshToken: fields.refresh_token ?? "",
+            resource,
           })
         );
       } else if (grant === "urn:ietf:params:oauth:grant-type:device_code") {
@@ -372,6 +394,7 @@ export async function tryHandleAuxRequest(
           ctx.provider.exchangeDeviceCode({
             clientId: fields.client_id ?? "",
             deviceCode: fields.device_code ?? "",
+            resource,
           })
         );
       } else {
@@ -385,13 +408,14 @@ export async function tryHandleAuxRequest(
 
   if (req.method === "POST" && path === "/oauth/device") {
     try {
-      const fields = parseForm(await readBody(req), req.headers["content-type"]);
+      const { fields, all } = parseFormAll(await readBody(req), req.headers["content-type"]);
       json(
         res,
         200,
         ctx.provider.startDeviceAuthorization({
           clientId: fields.client_id ?? "",
           scope: fields.scope,
+          resource: all("resource"),
         })
       );
     } catch (err) {

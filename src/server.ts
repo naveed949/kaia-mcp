@@ -262,8 +262,12 @@ function normalizeAcceptHeader(req: IncomingMessage): void {
 
 export type KaiaHttpServerHandle = {
   port: number;
+  /** OAuth issuer and canonical resource URI: KAIA_PUBLIC_URL, or http://127.0.0.1:<port>. */
   issuer: string;
+  /** Public MCP endpoint URL (same as `issuer`; the MCP endpoint is served at /). */
   mcpUrl: string;
+  /** Where this process actually listens: http://127.0.0.1:<port>. */
+  localUrl: string;
   close: () => Promise<void>;
   oauth: DemoOAuthProvider;
 };
@@ -412,12 +416,15 @@ export async function runKaiaMcpServerHttp(port: number): Promise<KaiaHttpServer
     });
   });
 
-  const issuer = `http://127.0.0.1:${actualPort}`;
+  const localUrl = `http://127.0.0.1:${actualPort}`;
+  const issuer = config.publicUrl ?? localUrl;
   runtime.provider = createDemoOAuthProvider({
     issuer,
     clientId: config.oauthClientId,
     accessTokenTtlSeconds: config.accessTokenTtlSeconds,
-    audience: config.oauthAudience,
+    resource: issuer,
+    legacyAudience: config.oauthLegacyAudience,
+    requireResource: config.oauthRequireResource,
     signingKey,
     revocationStore,
     introspectionClient: config.introspectionClientSecret
@@ -429,7 +436,9 @@ export async function runKaiaMcpServerHttp(port: number): Promise<KaiaHttpServer
     port: actualPort,
     issuer,
     authMode,
-    audience: runtime.provider.audience,
+    resource: runtime.provider.resource,
+    legacyAudience: runtime.provider.legacyAudience ?? "none",
+    requireResource: runtime.provider.requireResource,
     kid: runtime.provider.signingKey.kid,
     introspection: runtime.provider.introspectionEnabled,
     revocationStore: config.oauthRevocationFile ? "file" : "memory",
@@ -439,6 +448,7 @@ export async function runKaiaMcpServerHttp(port: number): Promise<KaiaHttpServer
     port: actualPort,
     issuer,
     mcpUrl: issuer,
+    localUrl,
     oauth: runtime.provider!,
     close: () =>
       new Promise<void>((resolve, reject) => {

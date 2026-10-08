@@ -377,7 +377,7 @@ describe("partner-auth golden evals (HTTP + demo OIDC)", () => {
     ]);
     expect(claims).toMatchObject({
       iss: http.issuer,
-      aud: "kaia-mcp",
+      aud: http.issuer,
       sub: "eval-user",
       scope: "kaia:read",
     });
@@ -402,7 +402,7 @@ describe("partner-auth golden evals (HTTP + demo OIDC)", () => {
     const http = await start();
     const other = createDemoOAuthProvider({
       issuer: http.issuer,
-      audience: "other-api",
+      resource: "other-api",
       signingKey: http.oauth.signingKey,
     });
     const res = await initializeWith(
@@ -463,7 +463,7 @@ describe("partner-auth golden evals (HTTP + demo OIDC)", () => {
       scope: "kaia:read",
       client_id: DEMO_CLIENT_ID,
       sub: "eval-user",
-      aud: "kaia-mcp",
+      aud: http.issuer,
       iss: http.issuer,
       exp: claims.exp,
       iat: claims.iat,

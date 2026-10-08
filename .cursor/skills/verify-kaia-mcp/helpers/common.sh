@@ -92,9 +92,40 @@ KAIA_OAUTH_SIGNING_KEY_FILE=${keyfile}
 KAIA_OAUTH_REVOCATION_FILE=
 KAIA_INTROSPECTION_CLIENT_ID=${iid}
 KAIA_INTROSPECTION_CLIENT_SECRET=${isecret}
+KAIA_PUBLIC_URL=
+KAIA_ALLOWED_ORIGINS=
+KAIA_OAUTH_LEGACY_AUDIENCE=
+KAIA_OAUTH_AUDIENCE=
+KAIA_OAUTH_REQUIRE_RESOURCE=
+KAIA_OAUTH_PREVIOUS_SIGNING_KEY_FILES=
 LOG_LEVEL=debug
 ENV
   )
+}
+
+# Start an extra kaia-mcp process for a multi-instance drive: server.env plus
+# KEY=VALUE overrides, same server.log, pid appended to ${INSTANCE_DIR}/extra-pids so
+# cleanup.sh stops it even if the drive dies. Prints the pid.
+# Usage: start_extra_kaia <port> [KEY=VALUE ...]
+start_extra_kaia() {
+  local port="$1"
+  shift
+  (
+    set -a
+    # shellcheck disable=SC1091
+    source "${INSTANCE_DIR}/server.env"
+    set +a
+    for kv in "$@"; do export "${kv?}"; done
+    cd "${REPO_ROOT}"
+    exec node dist/bin/kaia-mcp.js --transport http --port "${port}" >>"${INSTANCE_DIR}/server.log" 2>&1
+  ) &
+  echo $! >>"${INSTANCE_DIR}/extra-pids"
+  echo $!
+}
+
+# Pick a free local port. Usage: free_port
+free_port() {
+  node -e 'const n=require("net");const s=n.createServer();s.listen(0,"127.0.0.1",()=>{console.log(s.address().port);s.close()});'
 }
 
 # Read one field of instance.json. Usage: inst <field>

@@ -23,11 +23,11 @@ Access tokens from the demo IdP are RS256 JWTs that anyone can verify offline wi
 
 Preconditions:
 
-- kaia-mcp is healthy at `http://127.0.0.1:<port>` from `instance.json`, and `doctor.sh` passes (it checks `jwks_uri` and one RS256 JWKS key).
+- kaia-mcp is healthy at `http://127.0.0.1:<port>` from `instance.json`, and `doctor.sh` passes (it checks `jwks_uri`, at least one RS256 JWKS key, and PRM `resource` = issuer).
 - `launch.sh` set `KAIA_ACCESS_TOKEN_TTL_SECONDS` to `tokenTtlSeconds` in `instance.json` (default 20, override with `KAIA_VERIFY_TOKEN_TTL`).
 
 - **Run.** `.cursor/skills/verify-kaia-mcp/helpers/drive.sh jwt-access-tokens`. It sleeps until the token expires, so it takes about `tokenTtlSeconds` seconds.
-- **Shape and JWKS.** `decoded.json` shows `header.alg="RS256"`, `header.typ="at+jwt"`, a `kid` present in `jwks.json`, `claims.iss` equal to the instance issuer, `claims.aud="kaia-mcp"`, `claims.scope="kaia:encode"`, and `exp - iat = tokenTtlSeconds`. The drive verifies the signature with Node `crypto` and the JWKS only.
+- **Shape and JWKS.** `decoded.json` shows `header.alg="RS256"`, `header.typ="at+jwt"`, a `kid` present in `jwks.json`, `claims.iss` equal to the instance issuer, `claims.aud` equal to the instance issuer (the canonical resource URI), `claims.scope="kaia:encode"`, and `exp - iat = tokenTtlSeconds`. The drive verifies the signature with Node `crypto` and the JWKS only.
 - **Allowed call and log.** `allow.json` contains `0x70a082310000000000000000000000001234567890123456789012345678901234567890`. `tool-call-log-count.json` shows `after = before + 1` for `msg=Tool call tool=encode_function_data ` and `allowedAfter = allowedBefore + 1` for `msg=Tool call tool=encode_function_data outcome=allowed `.
 - **Forged and alg=none.** `forged.headers` and `alg-none.headers` are `HTTP/1.1 401`. Their bodies have `error.code=-32043` and `data.error="invalid_token"`.
 - **Expired.** `expired.headers` is `HTTP/1.1 401`. The body is `{"jsonrpc":"2.0","error":{"code":-32041,"message":"token_expired: access token has expired","data":{"error":"token_expired"}},"id":null}`.

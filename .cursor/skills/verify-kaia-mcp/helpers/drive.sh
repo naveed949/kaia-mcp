@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 # Drive one mapped feature against the launched instance.
-# Usage: helpers/drive.sh <oauth-pkce-scoped-tools|fail-closed-auth|generate-wallet-gated|device-flow|jwt-access-tokens|token-introspection|revocation-restart>
+# Usage: helpers/drive.sh <oauth-pkce-scoped-tools|fail-closed-auth|generate-wallet-gated|device-flow|jwt-access-tokens|token-introspection|revocation-restart|stateless-transport|bearer-challenges|resource-indicators|stateless-multi-instance>
 # Writes evidence under ${EVIDENCE_DIR}/<feature>/ and does not delete it.
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
 FEATURE="${1:-}"
 if [[ -z "${FEATURE}" ]]; then
-  echo "Usage: helpers/drive.sh <oauth-pkce-scoped-tools|fail-closed-auth|generate-wallet-gated|device-flow|jwt-access-tokens|token-introspection|revocation-restart>" >&2
+  echo "Usage: helpers/drive.sh <oauth-pkce-scoped-tools|fail-closed-auth|generate-wallet-gated|device-flow|jwt-access-tokens|token-introspection|revocation-restart|stateless-transport|bearer-challenges|resource-indicators|stateless-multi-instance>" >&2
   exit 2
 fi
 
@@ -35,39 +35,29 @@ pkce_json() {
 ENCODE_BODY='{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"encode_function_data","arguments":{"abi":"[{\"type\":\"function\",\"name\":\"balanceOf\",\"inputs\":[{\"name\":\"account\",\"type\":\"address\"}],\"outputs\":[{\"type\":\"uint256\"}],\"stateMutability\":\"view\"}]","functionName":"balanceOf","args":["0x1234567890123456789012345678901234567890"]}}}'
 EXPECTED_CALLDATA="0x70a082310000000000000000000000001234567890123456789012345678901234567890"
 
-mcp_init='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"verify-kaia-mcp","version":"0"}}}'
-MCP_INITIALIZED='{"jsonrpc":"2.0","method":"notifications/initialized"}'
+mcp_init='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"verify-kaia-mcp","version":"0"}}}'
 
-# Real MCP client handshake, then one request on that session.
-# Usage: mcp_call <evidence-prefix> <access-token> <json-body>
-# Writes <prefix>.init.headers, <prefix>.init.json, <prefix>.headers, <prefix>.json.
-# The server rejects tools/* without a prior initialize ("Server not initialized").
+# One stateless MCP request (MCP 2026-07-28 Streamable HTTP): a single POST with the
+# bearer, no initialize and no session. Fails the drive if the server mints a session.
+# Usage: mcp_call <evidence-prefix> <access-token> <json-body> [base-url]
+# Writes <prefix>.headers and <prefix>.json.
 mcp_call() {
-  local prefix="$1" access="$2" body="$3" sid
-  curl -sS -D "${OUT}/${prefix}.init.headers" -o "${OUT}/${prefix}.init.json" -X POST "${BASE}/" \
+  local prefix="$1" access="$2" body="$3" base="${4:-${BASE}}"
+  curl -sS -D "${OUT}/${prefix}.headers" -o "${OUT}/${prefix}.json" -X POST "${base}/" \
     -H "Authorization: Bearer ${access}" \
-    -H "Content-Type: application/json" \
-    -H "Accept: application/json, text/event-stream" \
-    -d "${mcp_init}"
-  sid="$(node -e "const t=require('fs').readFileSync(process.argv[1],'utf8'); const m=t.match(/^mcp-session-id:\\s*(\\S+)/im); if(!m){console.error('drive: initialize returned no Mcp-Session-Id'); process.exit(1);} process.stdout.write(m[1]);" "${OUT}/${prefix}.init.headers")"
-  curl -sS -o /dev/null -X POST "${BASE}/" \
-    -H "Authorization: Bearer ${access}" \
-    -H "Mcp-Session-Id: ${sid}" \
-    -H "Content-Type: application/json" \
-    -H "Accept: application/json, text/event-stream" \
-    -d "${MCP_INITIALIZED}"
-  curl -sS -D "${OUT}/${prefix}.headers" -o "${OUT}/${prefix}.json" -X POST "${BASE}/" \
-    -H "Authorization: Bearer ${access}" \
-    -H "Mcp-Session-Id: ${sid}" \
     -H "Content-Type: application/json" \
     -H "Accept: application/json, text/event-stream" \
     -d "${body}"
+  if grep -qi '^mcp-session-id:' "${OUT}/${prefix}.headers"; then
+    echo "drive: ${prefix} response carries Mcp-Session-Id; the transport must be stateless" >&2
+    exit 1
+  fi
 }
 
 # Device grant end to end (start, approve, exchange). Writes <prefix>.device.json and
-# <prefix>.token.json; prints the access token. Usage: device_token <prefix> <scope>
+# <prefix>.token.json; prints the access token. Usage: device_token <prefix> <scope> [base-url]
 device_token() {
-  local prefix="$1" scope="$2" user_code device_code
+  local prefix="$1" scope="$2" BASE="${3:-${BASE}}" user_code device_code
   curl -sS -X POST "${BASE}/oauth/device" \
     -H "Content-Type: application/x-www-form-urlencoded" \
     --data-urlencode "client_id=kaia-mcp-demo" --data-urlencode "scope=${scope}" > "${OUT}/${prefix}.device.json"
@@ -235,11 +225,13 @@ case "${FEATURE}" in
         process.exit(1);
       }
       if (body.includes('0x70a08231')) { console.error('drive: denied call leaked calldata'); process.exit(1); }
+      const hd=fs.readFileSync('${OUT}/deny-scope.headers','utf8');
+      if (!/^HTTP\/1\.1 403/m.test(hd) || !/^www-authenticate: Bearer .*error=\"insufficient_scope\".*scope=\"kaia:encode\"/im.test(hd)) { console.error('drive: insufficient scope must be HTTP 403 with a Bearer insufficient_scope challenge', hd); process.exit(1); }
       const n=JSON.parse(fs.readFileSync('${OUT}/deny-scope.tool-call-log-count.json','utf8'));
       if (n.after!==n.before+1) { console.error('drive: expected one outcome=denied Tool call line', n); process.exit(1); }
       const line=fs.readFileSync('${OUT}/deny-scope.tool-call-line.txt','utf8');
       if (!/errorCode=-32042/.test(line) || !/reason=insufficient_scope/.test(line) || line.includes('balanceOf')) { console.error('drive: denied Tool call line wrong', line); process.exit(1); }
-      console.log('drive fail-closed-auth: deny-by-scope ok (one outcome=denied errorCode=-32042 Tool call line)');
+      console.log('drive fail-closed-auth: deny-by-scope ok (HTTP 403 insufficient_scope challenge, -32042 body, one outcome=denied errorCode=-32042 Tool call line)');
     "
     # Unknown and crafted tool names: denied (-32602) with one outcome=denied
     # reason=unknown_tool line each, never outcome=allowed, and no forged log line.
@@ -379,7 +371,7 @@ case "${FEATURE}" in
       if (header.alg!=='RS256' || header.typ!=='at+jwt' || !key) fail('header/kid mismatch '+JSON.stringify(header));
       if (!c.verify('sha256', Buffer.from(h+'.'+p), c.createPublicKey({key, format:'jwk'}), Buffer.from(sig,'base64url'))) fail('signature does not verify against JWKS');
       for (const k of ['iss','aud','sub','scope','exp','nbf','iat','jti','client_id']) if (!(k in claims)) fail('missing claim '+k);
-      if (claims.iss!==issuer || claims.aud!=='kaia-mcp' || claims.scope!=='kaia:encode') fail('claims wrong '+JSON.stringify({iss:claims.iss,aud:claims.aud,scope:claims.scope}));
+      if (claims.iss!==issuer || claims.aud!==issuer || claims.scope!=='kaia:encode') fail('claims wrong '+JSON.stringify({iss:claims.iss,aud:claims.aud,scope:claims.scope}));
       if (claims.exp-claims.iat!==Number(ttl)) fail('exp-iat '+(claims.exp-claims.iat)+' != ttl '+ttl);
       fs.writeFileSync(outFile, JSON.stringify({header, claims}, null, 2));
     " "${OUT}/jwt.token.json" "${OUT}/jwks.json" "${BASE}" "$(node -e "process.stdout.write(String(require(process.argv[1]).tokenTtlSeconds))" "${INSTANCE_FILE}")" "${OUT}/decoded.json"
@@ -456,7 +448,7 @@ case "${FEATURE}" in
       }
       if (!/www-authenticate: Basic/i.test(r('anon.headers'))) fail('missing WWW-Authenticate: Basic');
       const a=JSON.parse(r('active.json'));
-      if (a.active!==true || a.scope!=='kaia:read' || a.aud!=='kaia-mcp' || a.jti!==jti('${ACCESS}')) fail('active introspection wrong '+JSON.stringify(a));
+      if (a.active!==true || a.scope!=='kaia:read' || a.aud!=='${BASE}' || a.jti!==jti('${ACCESS}')) fail('active introspection wrong '+JSON.stringify(a));
       if (r('active.json').includes('${ACCESS}')) fail('introspection echoed the token');
       if (JSON.stringify(JSON.parse(r('revoked.json')))!=='{\"active\":false}') fail('revoked token still active');
       const m=JSON.parse(r('revoked-mcp.json')).error; if (m.code!==-32043) fail('revoked bearer reached MCP '+JSON.stringify(m));
@@ -546,6 +538,36 @@ case "${FEATURE}" in
     if curl -s -o /dev/null "http://127.0.0.1:${IPORT}/health"; then INSECURE_LISTENING=true; fi
     echo "{\"exit\":${INSECURE_EXIT},\"listening\":${INSECURE_LISTENING}}" | save insecure-start.json
 
+    # A symlinked or FIFO denylist must stop startup (no hang, no following the link).
+    for kind in symlink fifo; do
+      SDIR="$(dirname "$(inst logFile)")/${kind}"
+      mkdir -p "${SDIR}"
+      cp "${STATE_DIR}/signing-key.pem" "${SDIR}/signing-key.pem"
+      if [[ "${kind}" == "symlink" ]]; then
+        printf '{"version":1,"entries":[]}' > "${SDIR}/real.json"
+        chmod 600 "${SDIR}/real.json"
+        ln -s "${SDIR}/real.json" "${SDIR}/revoked-jti.json"
+      else
+        mkfifo -m 600 "${SDIR}/revoked-jti.json"
+      fi
+      SPORT="$(free_port)"
+      set +e
+      (
+        set -a
+        # shellcheck disable=SC1091
+        source "$(dirname "$(inst logFile)")/server.env"
+        set +a
+        export KAIA_OAUTH_SIGNING_KEY_FILE="${SDIR}/signing-key.pem" LOG_LEVEL=info
+        cd "${REPO_ROOT}"
+        timeout 20 node dist/bin/kaia-mcp.js --transport http --port "${SPORT}"
+      ) >"${OUT}/${kind}-start.log" 2>&1
+      SEXIT=$?
+      set -e
+      SLISTEN=false
+      if curl -s -o /dev/null "http://127.0.0.1:${SPORT}/health"; then SLISTEN=true; fi
+      echo "{\"exit\":${SEXIT},\"listening\":${SLISTEN}}" | save "${kind}-start.json"
+    done
+
     # A corrupt denylist next to a persisted key must stop startup, not start empty.
     CORRUPT_DIR="$(dirname "$(inst logFile)")/corrupt"
     mkdir -p "${CORRUPT_DIR}"
@@ -613,12 +635,284 @@ case "${FEATURE}" in
       const ins=JSON.parse(r('insecure-start.json'));
       if (ins.exit===0 || ins.exit===124 || ins.listening) fail('insecure denylist did not refuse startup '+JSON.stringify(ins));
       if (!/revocation store .* is insecure: writable by group or others/.test(r('insecure-start.log'))) fail('insecure start log missing reason');
+      for (const [k, re] of [['symlink', /refusing to follow a symlink/], ['fifo', /not a regular file/]]) {
+        const s=JSON.parse(r(k+'-start.json'));
+        if (s.exit===0 || s.exit===124 || s.listening) fail(k+' denylist did not refuse startup (124 = hung) '+JSON.stringify(s));
+        if (!re.test(r(k+'-start.log'))) fail(k+' start log missing reason');
+      }
       if (kid('jwks-c.json')===kid('jwks-b.json')) fail('memory-mode restart kept the kid');
       for (const f of ['kept-after-memory','revoked-after-memory']) {
         if (!/^HTTP\/1\.1 401/m.test(r(f+'.headers')) || JSON.parse(r(f+'.json')).error.code!==-32043) fail(f+' should be invalid_token after memory restart');
       }
-      console.log('drive revocation-restart: file key -> revoked access + refresh-linked jti stay invalid_token after restart, unrevoked token still allowed, introspection inactive, refresh token invalid_grant; unwritable store -> rotation 503 (no path), refresh not consumed, retry 200; corrupt and group/world-writable denylists refuse startup; memory key -> restart invalidates every token');
+      console.log('drive revocation-restart: file key -> revoked access + refresh-linked jti stay invalid_token after restart, unrevoked token still allowed, introspection inactive, refresh token invalid_grant; unwritable store -> rotation 503 (no path), refresh not consumed, retry 200; corrupt, group/world-writable, symlinked and FIFO denylists refuse startup (no hang); memory key -> restart invalidates every token');
     "
+    ;;
+
+  stateless-transport)
+    # MCP 2026-07-28 Streamable HTTP: POST only, no sessions, Origin validated (403).
+    ACCESS="$(device_token st kaia:read)"
+    LIST_BODY='{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
+    for m in GET DELETE; do
+      curl -sS -D "${OUT}/${m,,}.headers" -o "${OUT}/${m,,}.json" -X "${m}" "${BASE}/" \
+        -H "Authorization: Bearer ${ACCESS}" -H "Accept: application/json, text/event-stream" || true
+    done
+    # No initialize: tools/list is answered on its own. Then initialize, which mints no session.
+    mcp_call list-no-init "${ACCESS}" "${LIST_BODY}"
+    mcp_call init "${ACCESS}" "${mcp_init}"
+    # A legacy client's stale session header is ignored, not 404.
+    curl -sS -D "${OUT}/stale-session.headers" -o "${OUT}/stale-session.json" -X POST "${BASE}/" \
+      -H "Authorization: Bearer ${ACCESS}" -H "Mcp-Session-Id: not-a-session" \
+      -H "Content-Type: application/json" -H "Accept: application/json, text/event-stream" -d "${LIST_BODY}"
+    # Origin: foreign -> 403 before auth and handlers; own origin -> echoed CORS; none -> allowed.
+    CALLS_BEFORE="$(tool_call_count get_block_number)"
+    curl -sS -D "${OUT}/origin-evil.headers" -o "${OUT}/origin-evil.json" -X POST "${BASE}/" \
+      -H "Origin: https://evil.example" -H "Authorization: Bearer ${ACCESS}" \
+      -H "Content-Type: application/json" -H "Accept: application/json, text/event-stream" \
+      -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_block_number","arguments":{}}}' || true
+    curl -sS -D "${OUT}/origin-evil-token.headers" -o "${OUT}/origin-evil-token.json" -X POST "${BASE}/oauth/token" \
+      -H "Origin: https://evil.example" -H "Content-Type: application/x-www-form-urlencoded" \
+      --data-urlencode "grant_type=refresh_token" --data-urlencode "client_id=kaia-mcp-demo" --data-urlencode "refresh_token=x" || true
+    curl -sS -D "${OUT}/origin-self.headers" -o "${OUT}/origin-self.json" -X POST "${BASE}/" \
+      -H "Origin: ${BASE}" -H "Authorization: Bearer ${ACCESS}" \
+      -H "Content-Type: application/json" -H "Accept: application/json, text/event-stream" -d "${LIST_BODY}"
+    curl -sS -D "${OUT}/preflight.headers" -o /dev/null -X OPTIONS "${BASE}/" \
+      -H "Origin: ${BASE}" -H "Access-Control-Request-Method: POST" \
+      -H "Access-Control-Request-Headers: authorization, content-type, mcp-protocol-version, mcp-method, mcp-name" || true
+    curl -sS -D "${OUT}/jwks-evil-origin.headers" -o "${OUT}/jwks-evil-origin.json" -H "Origin: https://evil.example" "${BASE}/oauth/jwks"
+    echo "{\"before\":${CALLS_BEFORE},\"after\":$(tool_call_count get_block_number)}" | save tool-call-count.json
+    OUT="${OUT}" BASE="${BASE}" node - <<'JS'
+const fs = require("fs"); const r = (f) => fs.readFileSync(process.env.OUT + "/" + f, "utf8");
+const fail = (m) => { console.error("drive: " + m); process.exit(1); };
+const status = (f) => Number((r(f).match(/^HTTP\/1\.1 (\d{3})/m) || [])[1]);
+const header = (f, h) => ((r(f).match(new RegExp("^" + h + ":\\s*(.*)$", "im")) || [])[1] || "").trim();
+for (const m of ["get", "delete"]) {
+  if (status(m + ".headers") !== 405 || header(m + ".headers", "allow") !== "POST") fail(m + " must be 405 with Allow: POST, got " + status(m + ".headers"));
+  if (JSON.parse(r(m + ".json")).error.code !== -32000) fail(m + " body is not a JSON-RPC -32000 error");
+}
+if (status("list-no-init.headers") !== 200 || !r("list-no-init.json").includes("get_block_number")) fail("tools/list without initialize did not answer");
+if (r("list-no-init.json").includes("encode_function_data")) fail("tools/list for a kaia:read token lists encode_function_data (must stay scope-filtered)");
+if (status("init.headers") !== 200 || !r("init.json").includes("serverInfo")) fail("initialize failed");
+if (status("stale-session.headers") !== 200 || /^mcp-session-id:/im.test(r("stale-session.headers"))) fail("a stale Mcp-Session-Id was not ignored");
+if (status("origin-evil.headers") !== 403) fail("foreign Origin not 403: " + status("origin-evil.headers"));
+if (r("origin-evil.json").trim() !== '{"jsonrpc":"2.0","error":{"code":-32000,"message":"Forbidden: Origin not allowed"}}') fail("foreign Origin body " + r("origin-evil.json"));
+if (header("origin-evil.headers", "access-control-allow-origin")) fail("foreign Origin got an ACAO header");
+if (status("origin-evil-token.headers") !== 403) fail("foreign Origin on /oauth/token not 403");
+const tc = JSON.parse(r("tool-call-count.json")); if (tc.after !== tc.before) fail("the foreign-Origin tools/call reached the tool");
+if (status("origin-self.headers") !== 200 || header("origin-self.headers", "access-control-allow-origin") !== process.env.BASE || !/origin/i.test(header("origin-self.headers", "vary"))) fail("own Origin not echoed with Vary: Origin");
+const ah = header("preflight.headers", "access-control-allow-headers");
+for (const h of ["Authorization", "Content-Type", "MCP-Protocol-Version", "Mcp-Method", "Mcp-Name"]) if (!ah.includes(h)) fail("preflight Allow-Headers missing " + h + ": " + ah);
+if (/mcp-session-id/i.test(r("preflight.headers"))) fail("preflight still mentions Mcp-Session-Id");
+if (header("preflight.headers", "access-control-allow-origin") === "*") fail("MCP endpoint CORS is *");
+if (status("jwks-evil-origin.headers") !== 200 || header("jwks-evil-origin.headers", "access-control-allow-origin") !== "*") fail("public JWKS not readable cross-origin");
+console.log("drive stateless-transport: GET/DELETE -> 405 Allow: POST; tools/list without initialize ok (scope-filtered); no Mcp-Session-Id minted, stale one ignored; foreign Origin -> 403 (MCP + OAuth, tool never ran); own Origin echoed + Vary; preflight allows MCP-Protocol-Version/Mcp-Method/Mcp-Name; public JWKS ACAO *");
+JS
+    ;;
+
+  bearer-challenges)
+    # RFC 6750 / RFC 9728 challenges: 401 names the PRM and a scope; 403 for insufficient scope.
+    curl -sS -D "${OUT}/no-token.headers" -o "${OUT}/no-token.json" -X POST "${BASE}/" \
+      -H "Content-Type: application/json" -H "Accept: application/json, text/event-stream" -d "${mcp_init}" || true
+    curl -sS -D "${OUT}/bad-token.headers" -o "${OUT}/bad-token.json" -X POST "${BASE}/" \
+      -H "Authorization: Bearer not-a-jwt" \
+      -H "Content-Type: application/json" -H "Accept: application/json, text/event-stream" -d "${mcp_init}" || true
+    ACCESS="$(device_token read kaia:read)"
+    DENIED_BEFORE="$(tool_call_outcome_count encode_function_data denied)"
+    mcp_call insufficient "${ACCESS}" "${ENCODE_BODY/\"id\":1/\"id\":7}"
+    DENIED_AFTER="$(tool_call_outcome_count encode_function_data denied)"
+    echo "{\"before\":${DENIED_BEFORE},\"after\":${DENIED_AFTER}}" | save insufficient.tool-call-log-count.json
+    mcp_call allowed-list "${ACCESS}" '{"jsonrpc":"2.0","id":8,"method":"tools/list","params":{}}'
+    PRM_URL="$(OUT="${OUT}" node -e "const t=require('fs').readFileSync(process.env.OUT+'/no-token.headers','utf8'); const m=t.match(/resource_metadata=\"([^\"]+)\"/); process.stdout.write(m?m[1]:'')")"
+    if [[ -n "${PRM_URL}" ]]; then curl -sS "${PRM_URL}" | save prm.json; else echo '{}' | save prm.json; fi
+    OUT="${OUT}" BASE="${BASE}" EXPECTED_CALLDATA="${EXPECTED_CALLDATA}" node - <<'JS'
+const fs = require("fs"); const r = (f) => fs.readFileSync(process.env.OUT + "/" + f, "utf8");
+const fail = (m) => { console.error("drive: " + m); process.exit(1); };
+const B = process.env.BASE, PRM = B + "/.well-known/oauth-protected-resource";
+const status = (f) => Number((r(f).match(/^HTTP\/1\.1 (\d{3})/m) || [])[1]);
+const www = (f) => ((r(f).match(/^www-authenticate:\s*(.*)$/im) || [])[1] || "").trim();
+const n = www("no-token.headers");
+if (status("no-token.headers") !== 401 || !n.startsWith("Bearer ") || !n.includes('resource_metadata="' + PRM + '"') || !n.includes('scope="kaia:read"') || /error=/.test(n)) fail("no-credential 401 challenge wrong: " + n);
+if (JSON.parse(r("no-token.json")).error.code !== -32040) fail("no-credential body not -32040");
+const b = www("bad-token.headers");
+if (status("bad-token.headers") !== 401 || !b.includes('error="invalid_token"') || !b.includes('resource_metadata="' + PRM + '"')) fail("bad-token 401 challenge wrong: " + b);
+if (JSON.parse(r("bad-token.json")).error.code !== -32043) fail("bad-token body not -32043");
+const i = www("insufficient.headers");
+if (status("insufficient.headers") !== 403) fail("insufficient scope not HTTP 403: " + status("insufficient.headers"));
+for (const p of ['error="insufficient_scope"', 'scope="kaia:encode"', 'resource_metadata="' + PRM + '"']) if (!i.includes(p)) fail("403 challenge missing " + p + ": " + i);
+const body = JSON.parse(r("insufficient.json"));
+if (body.id !== 7 || body.error.code !== -32042 || body.error.data.error !== "insufficient_scope") fail("403 body is not the JSON-RPC -32042 error for id 7: " + r("insufficient.json"));
+if (r("insufficient.json").includes(process.env.EXPECTED_CALLDATA)) fail("denied call returned calldata");
+const c = JSON.parse(r("insufficient.tool-call-log-count.json")); if (c.after !== c.before + 1) fail("expected one outcome=denied Tool call line " + JSON.stringify(c));
+if (status("allowed-list.headers") !== 200) fail("same token could not list tools");
+const prm = JSON.parse(r("prm.json")); if (prm.resource !== B) fail("resource_metadata URL does not serve PRM with resource=" + B + ": " + r("prm.json"));
+console.log("drive bearer-challenges: 401 no-credential challenge (resource_metadata + scope, no error); 401 invalid_token challenge; insufficient scope -> 403 Bearer error=insufficient_scope scope=kaia:encode resource_metadata, body JSON-RPC -32042 with id, one denied log line, no calldata; resource_metadata URL serves PRM");
+JS
+    ;;
+
+  resource-indicators)
+    # RFC 8707 resource, RFC 9207 iss, RFC 9728 PRM on the launched instance.
+    curl -sS "${BASE}/.well-known/oauth-authorization-server" | save as-metadata.json
+    curl -sS "${BASE}/.well-known/oauth-protected-resource" | save prm.json
+    PKCE="$(pkce_json)"
+    echo "${PKCE}" | save pkce.json
+    CHALLENGE="$(node -e "process.stdout.write(JSON.parse(process.argv[1]).challenge)" "${PKCE}")"
+    VERIFIER="$(node -e "process.stdout.write(JSON.parse(process.argv[1]).verifier)" "${PKCE}")"
+    RES_ENC="$(node -e "process.stdout.write(encodeURIComponent(process.argv[1]+'/'))" "${BASE}")"
+    AUTH_Q="client_id=kaia-mcp-demo&redirect_uri=http://127.0.0.1/callback&response_type=code&scope=kaia%3Aencode&code_challenge=${CHALLENGE}&code_challenge_method=S256"
+    curl -sS "${BASE}/oauth/authorize?${AUTH_Q}&state=ri1&resource=${RES_ENC}" | save consent.html
+    REQUEST_ID="$(node -e "const h=require('fs').readFileSync(process.argv[1],'utf8'); const m=h.match(/name=\"request_id\" value=\"([^\"]+)\"/); if(!m) process.exit(1); process.stdout.write(m[1]);" "${OUT}/consent.html")"
+    curl -sS -D "${OUT}/consent.headers" -o /dev/null -X POST "${BASE}/oauth/consent" \
+      -H "Content-Type: application/x-www-form-urlencoded" \
+      --data-urlencode "request_id=${REQUEST_ID}" --data-urlencode "decision=approve" --max-redirs 0 || true
+    CODE="$(node -e "const t=require('fs').readFileSync(process.argv[1],'utf8'); const m=t.match(/location:\\s*(.+)/i); process.stdout.write(new URL(m[1].trim()).searchParams.get('code')||'')" "${OUT}/consent.headers")"
+    echo "${CODE}" | save authorization.code.txt
+    # Wrong resource at the token endpoint: invalid_target, and the code survives for the right one.
+    curl -sS -D "${OUT}/token-wrong-resource.headers" -o "${OUT}/token-wrong-resource.json" -X POST "${BASE}/oauth/token" \
+      -H "Content-Type: application/x-www-form-urlencoded" \
+      --data-urlencode "grant_type=authorization_code" --data-urlencode "client_id=kaia-mcp-demo" \
+      --data-urlencode "code=${CODE}" --data-urlencode "code_verifier=${VERIFIER}" \
+      --data-urlencode "redirect_uri=http://127.0.0.1/callback" --data-urlencode "resource=https://other.example" || true
+    curl -sS -X POST "${BASE}/oauth/token" -H "Content-Type: application/x-www-form-urlencoded" \
+      --data-urlencode "grant_type=authorization_code" --data-urlencode "client_id=kaia-mcp-demo" \
+      --data-urlencode "code=${CODE}" --data-urlencode "code_verifier=${VERIFIER}" \
+      --data-urlencode "redirect_uri=http://127.0.0.1/callback" --data-urlencode "resource=${BASE}" | save token.json
+    ACCESS="$(node -e "process.stdout.write(JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')).access_token||'')" "${OUT}/token.json")"
+    mcp_call allow "${ACCESS}" "${ENCODE_BODY}"
+    # Wrong resource at authorize: redirect with invalid_target (+ iss), no consent page.
+    curl -sS -D "${OUT}/authorize-wrong-resource.headers" -o "${OUT}/authorize-wrong-resource.body" --max-redirs 0 \
+      "${BASE}/oauth/authorize?${AUTH_Q}&state=ri2&resource=https%3A%2F%2Fother.example" || true
+    # Deny also carries iss.
+    curl -sS "${BASE}/oauth/authorize?${AUTH_Q}&state=ri3" | save deny-consent.html
+    DENY_ID="$(node -e "const h=require('fs').readFileSync(process.argv[1],'utf8'); const m=h.match(/name=\"request_id\" value=\"([^\"]+)\"/); process.stdout.write(m?m[1]:'')" "${OUT}/deny-consent.html")"
+    curl -sS -D "${OUT}/deny.headers" -o /dev/null -X POST "${BASE}/oauth/consent" \
+      -H "Content-Type: application/x-www-form-urlencoded" \
+      --data-urlencode "request_id=${DENY_ID}" --data-urlencode "decision=deny" --max-redirs 0 || true
+    # Device flow: wrong resource refused; no resource defaults to this server.
+    curl -sS -D "${OUT}/device-wrong-resource.headers" -o "${OUT}/device-wrong-resource.json" -X POST "${BASE}/oauth/device" \
+      -H "Content-Type: application/x-www-form-urlencoded" \
+      --data-urlencode "client_id=kaia-mcp-demo" --data-urlencode "scope=kaia:read" --data-urlencode "resource=https://other.example" || true
+    DEFAULT_ACCESS="$(device_token default-resource kaia:read)"
+    node -e "const t=process.argv[1]; require('fs').writeFileSync(process.argv[2], JSON.stringify(JSON.parse(Buffer.from(t.split('.')[1],'base64url')),null,2))" "${DEFAULT_ACCESS}" "${OUT}/default-resource.claims.json"
+    OUT="${OUT}" BASE="${BASE}" EXPECTED_CALLDATA="${EXPECTED_CALLDATA}" node - <<'JS'
+const fs = require("fs"); const r = (f) => fs.readFileSync(process.env.OUT + "/" + f, "utf8");
+const fail = (m) => { console.error("drive: " + m); process.exit(1); };
+const B = process.env.BASE;
+const status = (f) => Number((r(f).match(/^HTTP\/1\.1 (\d{3})/m) || [])[1]);
+const loc = (f) => { const m = r(f).match(/^location:\s*(.+)$/im); if (!m) fail(f + " has no Location"); return new URL(m[1].trim()); };
+const as = JSON.parse(r("as-metadata.json"));
+if (as.issuer !== B || as.authorization_response_iss_parameter_supported !== true) fail("AS metadata issuer/iss support wrong " + JSON.stringify(as));
+const prm = JSON.parse(r("prm.json"));
+if (prm.resource !== B || JSON.stringify(prm.authorization_servers) !== JSON.stringify([B]) || "token_audience" in prm) fail("PRM wrong " + r("prm.json"));
+const ok = loc("consent.headers");
+if (!ok.searchParams.get("code") || ok.searchParams.get("iss") !== B || ok.searchParams.get("state") !== "ri1") fail("approve redirect lacks code/iss/state: " + ok);
+if (status("token-wrong-resource.headers") !== 400 || JSON.parse(r("token-wrong-resource.json")).error !== "invalid_target") fail("token with foreign resource not 400 invalid_target: " + r("token-wrong-resource.json"));
+const tok = JSON.parse(r("token.json")); if (!tok.access_token) fail("code did not survive the invalid_target attempt: " + r("token.json"));
+const claims = JSON.parse(Buffer.from(tok.access_token.split(".")[1], "base64url"));
+if (claims.aud !== B || claims.iss !== B) fail("aud/iss not the canonical URI: " + JSON.stringify({ aud: claims.aud, iss: claims.iss }));
+if (!r("allow.json").includes(process.env.EXPECTED_CALLDATA)) fail("resource-bound token could not call encode_function_data");
+const bad = loc("authorize-wrong-resource.headers");
+if (bad.searchParams.get("error") !== "invalid_target" || bad.searchParams.get("iss") !== B || bad.searchParams.get("code")) fail("authorize with foreign resource: " + bad);
+if (/Authorize kaia-mcp/.test(r("authorize-wrong-resource.body"))) fail("consent page shown for a foreign resource");
+const deny = loc("deny.headers");
+if (deny.searchParams.get("error") !== "access_denied" || deny.searchParams.get("iss") !== B) fail("deny redirect lacks iss: " + deny);
+if (status("device-wrong-resource.headers") !== 400 || JSON.parse(r("device-wrong-resource.json")).error !== "invalid_target") fail("device with foreign resource not invalid_target");
+if (JSON.parse(r("default-resource.claims.json")).aud !== B) fail("missing resource did not default to the canonical URI");
+console.log("drive resource-indicators: AS metadata advertises iss parameter; PRM resource = issuer; resource (trailing slash) accepted, aud = iss = canonical URI; foreign resource -> invalid_target at token (code not burned), authorize (redirect + iss) and device; approve/deny redirects carry iss; missing resource defaults to canonical");
+JS
+    ;;
+
+  stateless-multi-instance)
+    # Its own processes (not the launched one): A and B share a signing key and
+    # KAIA_PUBLIC_URL; C rotated to a new key with A's key as previous; D shares the key
+    # but has another public URL. All log into this run's server.log; cleanup.sh stops them.
+    MDIR="$(dirname "$(inst logFile)")/multi"
+    ( umask 077; mkdir -p "${MDIR}" )
+    PUB="http://kaia-lb.test"
+    PA="$(free_port)"
+    APID="$(start_extra_kaia "${PA}" "KAIA_PUBLIC_URL=${PUB}" "KAIA_OAUTH_SIGNING_KEY_FILE=${MDIR}/shared.pem" "KAIA_OAUTH_REVOCATION_FILE=${MDIR}/revoked-a.json")"
+    wait_ready "${PA}" "${APID}"
+    PB="$(free_port)"
+    BPID="$(start_extra_kaia "${PB}" "KAIA_PUBLIC_URL=${PUB}" "KAIA_OAUTH_SIGNING_KEY_FILE=${MDIR}/shared.pem" "KAIA_OAUTH_REVOCATION_FILE=${MDIR}/revoked-b.json")"
+    wait_ready "${PB}" "${BPID}"
+    PC="$(free_port)"
+    CPID="$(start_extra_kaia "${PC}" "KAIA_PUBLIC_URL=${PUB}" "KAIA_OAUTH_SIGNING_KEY_FILE=${MDIR}/rotated.pem" "KAIA_OAUTH_PREVIOUS_SIGNING_KEY_FILES=${MDIR}/shared.pem" "KAIA_OAUTH_REVOCATION_FILE=${MDIR}/revoked-c.json")"
+    wait_ready "${PC}" "${CPID}"
+    PD="$(free_port)"
+    DPID="$(start_extra_kaia "${PD}" "KAIA_PUBLIC_URL=http://kaia-other.test" "KAIA_OAUTH_SIGNING_KEY_FILE=${MDIR}/shared.pem" "KAIA_OAUTH_REVOCATION_FILE=${MDIR}/revoked-d.json")"
+    wait_ready "${PD}" "${DPID}"
+    echo "{\"a\":${PA},\"b\":${PB},\"c\":${PC},\"d\":${PD},\"publicUrl\":\"${PUB}\"}" | save ports.json
+    A="http://127.0.0.1:${PA}" B="http://127.0.0.1:${PB}" C="http://127.0.0.1:${PC}" D="http://127.0.0.1:${PD}"
+    curl -sS "${A}/oauth/jwks" | save jwks-a.json
+    curl -sS "${B}/oauth/jwks" | save jwks-b.json
+    curl -sS "${C}/oauth/jwks" | save jwks-c.json
+    curl -sS "${B}/health" | save health-b.json
+    TOKEN_A="$(device_token on-a kaia:encode "${A}")"
+    BEFORE="$(tool_call_outcome_count encode_function_data allowed)"
+    mcp_call b-encode "${TOKEN_A}" "${ENCODE_BODY}" "${B}"
+    mcp_call b-list "${TOKEN_A}" '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' "${B}"
+    mcp_call c-encode "${TOKEN_A}" "${ENCODE_BODY}" "${C}"
+    mcp_call d-encode "${TOKEN_A}" "${ENCODE_BODY}" "${D}"
+    AFTER="$(tool_call_outcome_count encode_function_data allowed)"
+    echo "{\"allowedBefore\":${BEFORE},\"allowedAfter\":${AFTER}}" | save tool-call-log-count.json
+    TOKEN_C="$(device_token on-c kaia:read "${C}")"
+    mcp_call b-token-from-c "${TOKEN_C}" '{"jsonrpc":"2.0","id":3,"method":"tools/list","params":{}}' "${B}"
+    # Audience rejection: tokens signed with the real shared key and the right iss, but an
+    # aud other than the canonical URI. The array that also holds the canonical URI is the
+    # positive control.
+    KID="$(node -e "process.stdout.write(JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')).keys[0].kid)" "${OUT}/jwks-b.json")"
+    for spec in 'legacy-only:"kaia-mcp"' 'other-uri:"https://other.example"' 'other-port:"http://kaia-lb.test:8443"' 'array-with-canonical:["http://kaia-lb.test","kaia-mcp"]'; do
+      name="${spec%%:*}"; aud="${spec#*:}"
+      node -e "
+        const c=require('crypto'), fs=require('fs');
+        const [pem, kid, src, aud, out]=process.argv.slice(1);
+        const claims=JSON.parse(Buffer.from(src.split('.')[1],'base64url'));
+        claims.aud=JSON.parse(aud); claims.jti=c.randomUUID();
+        const b=(o)=>Buffer.from(JSON.stringify(o)).toString('base64url');
+        const h=b({alg:'RS256',typ:'at+jwt',kid}), p=b(claims);
+        const t=h+'.'+p+'.'+c.sign('sha256',Buffer.from(h+'.'+p),fs.readFileSync(pem,'utf8')).toString('base64url');
+        fs.writeFileSync(out, JSON.stringify({access_token:t, aud:claims.aud}));
+      " "${MDIR}/shared.pem" "${KID}" "${TOKEN_A}" "${aud}" "${OUT}/aud-${name}.token.json"
+      T="$(node -e "process.stdout.write(JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')).access_token)" "${OUT}/aud-${name}.token.json")"
+      mcp_call "aud-${name}" "${T}" '{"jsonrpc":"2.0","id":4,"method":"tools/list","params":{}}' "${B}"
+    done
+    # Per-process AS state today (documented): a refresh token from A is unknown on B, and
+    # a revocation on A is not seen by B (each has its own denylist file).
+    REFRESH_A="$(node -e "process.stdout.write(JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')).refresh_token)" "${OUT}/on-a.token.json")"
+    curl -sS -X POST "${B}/oauth/token" -H "Content-Type: application/x-www-form-urlencoded" \
+      --data-urlencode "grant_type=refresh_token" --data-urlencode "client_id=kaia-mcp-demo" \
+      --data-urlencode "refresh_token=${REFRESH_A}" | save b-refresh-from-a.json
+    curl -sS -o "${OUT}/a-revoke.json" -X POST "${A}/oauth/revoke" -H "Content-Type: application/x-www-form-urlencoded" --data-urlencode "token=${TOKEN_A}"
+    mcp_call a-after-revoke "${TOKEN_A}" '{"jsonrpc":"2.0","id":5,"method":"tools/list","params":{}}' "${A}"
+    mcp_call b-after-revoke-on-a "${TOKEN_A}" '{"jsonrpc":"2.0","id":5,"method":"tools/list","params":{}}' "${B}"
+    for p in "${APID}" "${BPID}" "${CPID}" "${DPID}"; do stop_pid "${p}"; done
+    OUT="${OUT}" PUB="${PUB}" EXPECTED_CALLDATA="${EXPECTED_CALLDATA}" node - <<'JS'
+const fs = require("fs"); const r = (f) => fs.readFileSync(process.env.OUT + "/" + f, "utf8");
+const fail = (m) => { console.error("drive: " + m); process.exit(1); };
+const status = (f) => Number((r(f).match(/^HTTP\/1\.1 (\d{3})/m) || [])[1]);
+const PUB = process.env.PUB;
+const kids = (x) => JSON.parse(r("jwks-" + x + ".json")).keys.map((k) => k.kid);
+if (JSON.stringify(kids("a")) !== JSON.stringify(kids("b")) || kids("a").length !== 1) fail("A and B do not publish the same single key");
+if (kids("c").length !== 2 || kids("c")[1] !== kids("a")[0] || kids("c")[0] === kids("a")[0]) fail("rotated C must publish [new, previous=shared]: " + kids("c"));
+if (JSON.parse(r("health-b.json")).issuer !== PUB) fail("B issuer is not KAIA_PUBLIC_URL");
+const claims = JSON.parse(Buffer.from(JSON.parse(r("on-a.token.json")).access_token.split(".")[1], "base64url"));
+if (claims.iss !== PUB || claims.aud !== PUB) fail("token from A has iss/aud " + JSON.stringify({ iss: claims.iss, aud: claims.aud }));
+if (status("b-encode.headers") !== 200 || !r("b-encode.json").includes(process.env.EXPECTED_CALLDATA)) fail("token minted on A was not accepted on B");
+if (status("b-list.headers") !== 200 || !r("b-list.json").includes("encode_function_data")) fail("tools/list on B without initialize failed");
+if (!r("c-encode.json").includes(process.env.EXPECTED_CALLDATA)) fail("rotated C did not accept a token signed by its previous key");
+const n = JSON.parse(r("tool-call-log-count.json")); if (n.allowedAfter !== n.allowedBefore + 2) fail("expected two allowed encode calls (B and C) " + JSON.stringify(n));
+if (status("d-encode.headers") !== 401 || JSON.parse(r("d-encode.json")).error.code !== -32043) fail("D (other public URL, same key) accepted A's token");
+if (status("b-token-from-c.headers") !== 401) fail("B accepted a token signed by C's new key it does not know");
+for (const f of ["aud-legacy-only", "aud-other-uri", "aud-other-port"]) {
+  if (status(f + ".headers") !== 401 || JSON.parse(r(f + ".json")).error.code !== -32043) fail(f + " (wrong aud, valid signature) not rejected: " + r(f + ".json").slice(0, 200));
+  if (!/error="invalid_token"/.test(r(f + ".headers"))) fail(f + " lacks the invalid_token challenge");
+}
+if (status("aud-array-with-canonical.headers") !== 200) fail("aud array containing the canonical URI was rejected (control)");
+if (JSON.parse(r("b-refresh-from-a.json")).error !== "invalid_grant") fail("refresh token from A worked on B (state is documented as per-process)");
+if (JSON.parse(r("a-after-revoke.json")).error.code !== -32043) fail("revoked token still works on A");
+const bAfter = status("b-after-revoke-on-a.headers");
+fs.writeFileSync(process.env.OUT + "/per-process-observation.json", JSON.stringify({ refreshFromAOnB: "invalid_grant", revokedOnA_statusOnB: bAfter }, null, 2));
+if (bAfter !== 200) fail("B rejected a token revoked only on A; the docs say denylists are per process today, update them if this changed");
+console.log("drive stateless-multi-instance: A and B share key + KAIA_PUBLIC_URL; token from A (iss = aud = public URL) works on B with no initialize and no session header; rotated C serves [new, previous] and accepts it; D (other public URL) rejects it; wrong-aud tokens with a valid signature (legacy-only, other URI, other port) -> 401 invalid_token, aud array with canonical accepted; AS state + denylist per process (refresh from A invalid_grant on B; revoke on A not seen by B, as documented)");
+JS
     ;;
 
   *)

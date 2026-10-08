@@ -31,14 +31,15 @@ Preconditions:
 - **Open consent.** GET `/oauth/authorize` with PKCE S256 and `scope=kaia:encode`. HTML title contains `Authorize kaia-mcp` and lists `kaia:encode`.
 - **Approve.** POST `/oauth/consent` with `request_id` from the hidden field and `decision=approve` without following redirects. `Location` contains `code` and `state=verify1`.
 - **Exchange token.** POST `/oauth/token` with `grant_type=authorization_code`, `code_verifier`, and the same `redirect_uri`. Body includes `"token_type":"Bearer"` and `"scope":"kaia:encode"`.
-- **Call allowed tool.** Every MCP call runs `initialize` (bearer) first, reads `Mcp-Session-Id`, sends `notifications/initialized`, then sends the request with both headers. POST `/` JSON-RPC `tools/call` `encode_function_data` with ABI `balanceOf` and address `0x1234567890123456789012345678901234567890`. Body contains `0x70a082310000000000000000000000001234567890123456789012345678901234567890`.
+- **Call allowed tool.** Every MCP call is one stateless POST with the bearer (no `initialize`, no `Mcp-Session-Id`; the drive fails if a response mints one). POST `/` JSON-RPC `tools/call` `encode_function_data` with ABI `balanceOf` and address `0x1234567890123456789012345678901234567890`. Body contains `0x70a082310000000000000000000000001234567890123456789012345678901234567890`.
 - **Reject plain PKCE.** GET `/oauth/authorize` with `code_challenge_method=plain&state=verify-plain` without following redirects. `Location` contains `error=invalid_request` and `PKCE+S256+is+required`; no consent HTML.
 - **Deny.** Open a fresh S256 consent and POST `decision=deny`. `Location` contains `error=access_denied` and `state=verify-deny`, and no `code`.
-- **Proof.** Evidence files `discovery.json`, `consent.html`, `consent.headers`, `token.json`, `allow.init.headers`, `allow.json`, `plain-pkce.headers`, and `deny.headers` exist under `.cursor/skills/verify-kaia-mcp/evidence/<run-id>/oauth-pkce-scoped-tools/`.
+- **Proof.** Evidence files `discovery.json`, `consent.html`, `consent.headers`, `token.json`, `allow.json`, `plain-pkce.headers`, and `deny.headers` exist under `.cursor/skills/verify-kaia-mcp/evidence/<run-id>/oauth-pkce-scoped-tools/`.
 
 ## Gotchas
 
 - Following the consent redirect consumes nothing, but you will miss the `code` query if curl is allowed to follow `Location`.
 - `code_challenge_method=plain` is rejected with a redirect to `redirect_uri?error=invalid_request`; do not treat that as a successful consent page.
-- A `tools/call` without `initialize` returns `-32000 Bad Request: Server not initialized`. That is a harness mistake, not an auth outcome.
+- The transport is stateless: a `tools/call` needs no `initialize`. A `-32000 Bad Request: Server not initialized` or an `Mcp-Session-Id` response header means an old build is running.
+- The authorization response also carries `iss` and the `resource` parameter is optional here; both are proven in [resource-indicators](./resource-indicators.md).
 - A token with only `kaia:read` is a different feature (`fail-closed-auth`). Do not count it as this allow path.

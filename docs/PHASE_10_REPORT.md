@@ -29,12 +29,12 @@ Added token-bucket rate limiting for RPC and KaiaScan, request timeouts, and 429
 
 ## Config keys
 
-| Key                  | Default | Description                          |
-|----------------------|--------|--------------------------------------|
-| `RATE_LIMIT_RPC`     | 10     | Max RPC requests per second         |
-| `RATE_LIMIT_KAIASCAN`| 5      | Max KaiaScan API requests per second|
-| `RPC_TIMEOUT_MS`     | 30000  | RPC request timeout (ms)            |
-| `KAIASCAN_TIMEOUT_MS`| 15000  | KaiaScan request timeout (ms)       |
+| Key                   | Default | Description                          |
+| --------------------- | ------- | ------------------------------------ |
+| `RATE_LIMIT_RPC`      | 10      | Max RPC requests per second          |
+| `RATE_LIMIT_KAIASCAN` | 5       | Max KaiaScan API requests per second |
+| `RPC_TIMEOUT_MS`      | 30000   | RPC request timeout (ms)             |
+| `KAIASCAN_TIMEOUT_MS` | 15000   | KaiaScan request timeout (ms)        |
 
 ## Behavior
 

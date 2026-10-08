@@ -56,7 +56,12 @@ function parseForm(body: string, contentType: string | undefined): Record<string
   return out;
 }
 
-function json(res: ServerResponse, status: number, body: unknown, extraHeaders?: Record<string, string>): void {
+function json(
+  res: ServerResponse,
+  status: number,
+  body: unknown,
+  extraHeaders?: Record<string, string>
+): void {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     "Cache-Control": "no-store",
@@ -67,7 +72,10 @@ function json(res: ServerResponse, status: number, body: unknown, extraHeaders?:
 }
 
 function html(res: ServerResponse, status: number, body: string): void {
-  res.writeHead(status, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
+  res.writeHead(status, {
+    "Content-Type": "text/html; charset=utf-8",
+    "Cache-Control": "no-store",
+  });
   res.end(body);
 }
 
@@ -115,12 +123,23 @@ function consentPage(opts: {
 
 export function applyCors(res: ServerResponse): void {
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type, Mcp-Session-Id, Accept");
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    "Authorization, Content-Type, Mcp-Session-Id, Accept"
+  );
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
 }
 
-export function writeAuthFailure(res: ServerResponse, result: Extract<VerifyResult, { ok: false }>): void {
-  const wwwError = result.error === "unauthorized" ? "invalid_token" : result.error === "token_expired" ? "invalid_token" : result.error;
+export function writeAuthFailure(
+  res: ServerResponse,
+  result: Extract<VerifyResult, { ok: false }>
+): void {
+  const wwwError =
+    result.error === "unauthorized"
+      ? "invalid_token"
+      : result.error === "token_expired"
+        ? "invalid_token"
+        : result.error;
   const www = `Bearer realm="${WWW_AUTHENTICATE_REALM}", error="${wwwError}", error_description="${result.message}"`;
   json(
     res,
@@ -134,7 +153,10 @@ export function writeAuthFailure(res: ServerResponse, result: Extract<VerifyResu
   );
 }
 
-export function authenticateRequest(req: IncomingMessage, provider: DemoOAuthProvider): VerifyResult {
+export function authenticateRequest(
+  req: IncomingMessage,
+  provider: DemoOAuthProvider
+): VerifyResult {
   const header = req.headers.authorization;
   if (Array.isArray(header)) {
     return { ok: false, status: 401, ...AUTH_ERRORS.UNAUTHORIZED };
@@ -175,7 +197,11 @@ export async function tryHandleAuxRequest(
     return true;
   }
 
-  if (req.method === "GET" && (path === "/.well-known/openid-configuration" || path === "/.well-known/oauth-authorization-server")) {
+  if (
+    req.method === "GET" &&
+    (path === "/.well-known/openid-configuration" ||
+      path === "/.well-known/oauth-authorization-server")
+  ) {
     json(res, 200, ctx.provider.discovery());
     return true;
   }
@@ -195,7 +221,9 @@ export async function tryHandleAuxRequest(
     json(res, 200, {
       resource: "kaia-mcp",
       scopes: [...new Set(Object.values(TOOL_SCOPES))].sort(),
-      tool_scopes: Object.fromEntries(Object.entries(TOOL_SCOPES).sort(([a], [b]) => a.localeCompare(b))),
+      tool_scopes: Object.fromEntries(
+        Object.entries(TOOL_SCOPES).sort(([a], [b]) => a.localeCompare(b))
+      ),
     });
     return true;
   }
@@ -211,7 +239,10 @@ export async function tryHandleAuxRequest(
       json(
         res,
         401,
-        { error: "invalid_client", error_description: "introspection requires client authentication" },
+        {
+          error: "invalid_client",
+          error_description: "introspection requires client authentication",
+        },
         { "WWW-Authenticate": 'Basic realm="kaia-mcp-introspection"', "Cache-Control": "no-store" }
       );
       return true;
@@ -249,7 +280,11 @@ export async function tryHandleAuxRequest(
       const msg = err instanceof Error ? err.message : String(err);
       const redirectUri = url.searchParams.get("redirect_uri") ?? "";
       const state = url.searchParams.get("state");
-      if (redirectUri && ctx.provider.isAllowedRedirectUri(redirectUri) && msg !== "invalid_request: redirect_uri is not registered") {
+      if (
+        redirectUri &&
+        ctx.provider.isAllowedRedirectUri(redirectUri) &&
+        msg !== "invalid_request: redirect_uri is not registered"
+      ) {
         const loc = new URL(redirectUri);
         loc.searchParams.set("error", "invalid_request");
         loc.searchParams.set("error_description", msg);
@@ -321,7 +356,14 @@ export async function tryHandleAuxRequest(
   if (req.method === "POST" && path === "/oauth/device") {
     try {
       const fields = parseForm(await readBody(req), req.headers["content-type"]);
-      json(res, 200, ctx.provider.startDeviceAuthorization({ clientId: fields.client_id ?? "", scope: fields.scope }));
+      json(
+        res,
+        200,
+        ctx.provider.startDeviceAuthorization({
+          clientId: fields.client_id ?? "",
+          scope: fields.scope,
+        })
+      );
     } catch (err) {
       sendOAuthError(res, err);
     }

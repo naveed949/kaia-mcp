@@ -23,7 +23,9 @@ export function redactValue(key: string, value: unknown): unknown {
   return value;
 }
 
-export function redactMeta(meta: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
+export function redactMeta(
+  meta: Record<string, unknown> | undefined
+): Record<string, unknown> | undefined {
   if (!meta) return meta;
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(meta)) {

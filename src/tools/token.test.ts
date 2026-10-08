@@ -54,8 +54,12 @@ describe("handleGetTokenInfo", () => {
   });
 
   it("calls KaiaScan with path api/v1/tokens/:contractAddress", async () => {
-    const mockGet = vi.fn().mockResolvedValue({ name: "T", symbol: "T", decimal: 18, total_supply: 0 });
-    mockCreateKaiaScanClient.mockReturnValue({ get: mockGet } as unknown as ReturnType<typeof createKaiaScanClient>);
+    const mockGet = vi
+      .fn()
+      .mockResolvedValue({ name: "T", symbol: "T", decimal: 18, total_supply: 0 });
+    mockCreateKaiaScanClient.mockReturnValue({ get: mockGet } as unknown as ReturnType<
+      typeof createKaiaScanClient
+    >);
 
     await handleGetTokenInfo({ contractAddress: validContractAddress, network: "mainnet" });
     expect(mockGet).toHaveBeenCalledWith(`api/v1/tokens/${validContractAddress}`);
@@ -116,9 +120,9 @@ describe("handleGetTokenHolders", () => {
   });
 
   it("throws on invalid contract address", async () => {
-    await expect(
-      handleGetTokenHolders({ contractAddress: "0xshort" })
-    ).rejects.toThrow(/Invalid address/);
+    await expect(handleGetTokenHolders({ contractAddress: "0xshort" })).rejects.toThrow(
+      /Invalid address/
+    );
   });
 });
 
@@ -172,9 +176,9 @@ describe("handleGetTokenTransfers", () => {
   });
 
   it("throws on invalid contract address", async () => {
-    await expect(
-      handleGetTokenTransfers({ contractAddress: "invalid" })
-    ).rejects.toThrow(/Invalid address/);
+    await expect(handleGetTokenTransfers({ contractAddress: "invalid" })).rejects.toThrow(
+      /Invalid address/
+    );
   });
 });
 

@@ -90,12 +90,12 @@ Then run the leak check against the retained log:
 
 All helpers are executable. Invoke from the repo root. They honor `KAIA_VERIFY_RUN_ID` or the last id in `/tmp/kaia-mcp-verify-current`.
 
-| Script | Invocation |
-|---|---|
-| Launch | `.cursor/skills/verify-kaia-mcp/helpers/launch.sh` |
-| Doctor | `.cursor/skills/verify-kaia-mcp/helpers/doctor.sh` |
-| Drive | `.cursor/skills/verify-kaia-mcp/helpers/drive.sh <feature-id>` |
-| Cleanup | `.cursor/skills/verify-kaia-mcp/helpers/cleanup.sh` |
-| Leak check (after cleanup) | `.cursor/skills/verify-kaia-mcp/helpers/token-leak-check.sh` |
+| Script                     | Invocation                                                     |
+| -------------------------- | -------------------------------------------------------------- |
+| Launch                     | `.cursor/skills/verify-kaia-mcp/helpers/launch.sh`             |
+| Doctor                     | `.cursor/skills/verify-kaia-mcp/helpers/doctor.sh`             |
+| Drive                      | `.cursor/skills/verify-kaia-mcp/helpers/drive.sh <feature-id>` |
+| Cleanup                    | `.cursor/skills/verify-kaia-mcp/helpers/cleanup.sh`            |
+| Leak check (after cleanup) | `.cursor/skills/verify-kaia-mcp/helpers/token-leak-check.sh`   |
 
 `helpers/common.sh` is sourced by the others; do not run it directly.

@@ -14,10 +14,10 @@ Phase 4 implements four account tools for the Kaia MCP Server, wired through the
 
 ## KaiaScan API Paths Used
 
-| Tool                 | KaiaScan path (base: `https://api.kaiascan.io`) | Notes |
-|----------------------|--------------------------------------------------|--------|
-| **get_account_tokens** | `GET /api/v1/accounts/:accountAddress/token-balances` | Query params: `page`, `size`. Docs: [Get Account Fungible Token Balances](https://docs.kaiascan.io/api/Account/Token/get-account-fungible-token-balances). |
-| **get_account_nfts**  | `GET /api/v1/accounts/:accountAddress/nft-inventories` | Query params: `page`, `size`, optional `excludeIfTokenUriIsEmpty`. Docs: [Get Account Nft Inventories](https://docs.kaiascan.io/api/Account/get-account-nft-inventories). |
+| Tool                   | KaiaScan path (base: `https://api.kaiascan.io`)        | Notes                                                                                                                                                                     |
+| ---------------------- | ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **get_account_tokens** | `GET /api/v1/accounts/:accountAddress/token-balances`  | Query params: `page`, `size`. Docs: [Get Account Fungible Token Balances](https://docs.kaiascan.io/api/Account/Token/get-account-fungible-token-balances).                |
+| **get_account_nfts**   | `GET /api/v1/accounts/:accountAddress/nft-inventories` | Query params: `page`, `size`, optional `excludeIfTokenUriIsEmpty`. Docs: [Get Account Nft Inventories](https://docs.kaiascan.io/api/Account/get-account-nft-inventories). |
 
 ## Deviations / Notes
 

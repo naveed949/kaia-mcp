@@ -82,20 +82,32 @@ describe("demo OAuth HTTP", () => {
     const header = JSON.parse(Buffer.from(h, "base64url").toString()) as Record<string, string>;
     const claims = JSON.parse(Buffer.from(p, "base64url").toString()) as Record<string, unknown>;
     expect(header).toMatchObject({ alg: "RS256", typ: "at+jwt" });
-    expect(claims).toMatchObject({ iss: base, aud: "kaia-mcp", sub: "demo-user", scope: SCOPES.ENCODE });
+    expect(claims).toMatchObject({
+      iss: base,
+      aud: "kaia-mcp",
+      sub: "demo-user",
+      scope: SCOPES.ENCODE,
+    });
     for (const k of ["exp", "nbf", "iat"]) expect(typeof claims[k]).toBe("number");
     expect(typeof claims.jti).toBe("string");
 
     // A third party can verify the token with nothing but the published JWKS.
-    const jwks = (await (await fetch(disc.jwks_uri as string)).json()) as { keys: (JsonWebKey & { kid: string })[] };
+    const jwks = (await (await fetch(disc.jwks_uri as string)).json()) as {
+      keys: (JsonWebKey & { kid: string })[];
+    };
     expect(jwks.keys).toHaveLength(1);
     expect(jwks.keys[0].kid).toBe(header.kid);
     expect(jwks.keys[0]).not.toHaveProperty("d");
     const pub = createPublicKey({ key: jwks.keys[0], format: "jwk" });
-    expect(cryptoVerify("sha256", Buffer.from(`${h}.${p}`), pub, Buffer.from(sig, "base64url"))).toBe(true);
+    expect(
+      cryptoVerify("sha256", Buffer.from(`${h}.${p}`), pub, Buffer.from(sig, "base64url"))
+    ).toBe(true);
 
     const scopesRes = await fetch(`${base}/.well-known/kaia-mcp/tool-scopes`);
-    const scopeMap = (await scopesRes.json()) as { tool_scopes: Record<string, string>; scopes: string[] };
+    const scopeMap = (await scopesRes.json()) as {
+      tool_scopes: Record<string, string>;
+      scopes: string[];
+    };
     expect(scopeMap.tool_scopes.encode_function_data).toBe(SCOPES.ENCODE);
     expect(scopeMap.tool_scopes.generate_wallet).toBe(SCOPES.WALLET);
     expect(Object.keys(scopeMap.tool_scopes)).toHaveLength(26);
@@ -127,7 +139,10 @@ describe("demo OAuth HTTP", () => {
     resetConfigCache();
     handle = await runKaiaMcpServerHttp(0);
     const base = handle.issuer;
-    const disc = (await (await fetch(`${base}/.well-known/openid-configuration`)).json()) as Record<string, unknown>;
+    const disc = (await (await fetch(`${base}/.well-known/openid-configuration`)).json()) as Record<
+      string,
+      unknown
+    >;
     expect(disc.introspection_endpoint).toBe(`${base}/oauth/introspect`);
     expect(disc.introspection_endpoint_auth_methods_supported).toEqual(["client_secret_basic"]);
 
@@ -141,7 +156,8 @@ describe("demo OAuth HTTP", () => {
         },
         body: new URLSearchParams({ token: access_token }),
       });
-    const basic = (id: string, secret: string) => `Basic ${Buffer.from(`${id}:${secret}`).toString("base64")}`;
+    const basic = (id: string, secret: string) =>
+      `Basic ${Buffer.from(`${id}:${secret}`).toString("base64")}`;
 
     const anon = await introspect();
     expect(anon.status).toBe(401);
@@ -152,7 +168,13 @@ describe("demo OAuth HTTP", () => {
     const active = await introspect(basic("kaia-mcp-gateway", "test-only-introspection-secret"));
     expect(active.status).toBe(200);
     const body = (await active.json()) as Record<string, unknown>;
-    expect(body).toMatchObject({ active: true, scope: SCOPES.READ, aud: "kaia-mcp", iss: base, token_type: "Bearer" });
+    expect(body).toMatchObject({
+      active: true,
+      scope: SCOPES.READ,
+      aud: "kaia-mcp",
+      iss: base,
+      token_type: "Bearer",
+    });
     expect(JSON.stringify(body)).not.toContain(access_token);
 
     await fetch(`${base}/oauth/revoke`, {

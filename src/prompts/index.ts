@@ -27,7 +27,8 @@ const PROMPTS: PromptDef[] = [
   },
   {
     name: "investigate-transaction",
-    description: "Investigate a transaction: status, gas usage, token transfers, and internal transactions.",
+    description:
+      "Investigate a transaction: status, gas usage, token transfers, and internal transactions.",
     arguments: [{ name: "txHash", description: "Transaction hash (0x...)", required: true }],
     template: (args) =>
       `Investigate transaction ${args.txHash}. Show status, gas usage, token transfers, and internal transactions.`,
@@ -46,7 +47,11 @@ const PROMPTS: PromptDef[] = [
     name: "nft-lookup",
     description: "Look up an NFT: owner, metadata, and transfer history.",
     arguments: [
-      { name: "contractAddress", description: "NFT collection contract address (0x...)", required: true },
+      {
+        name: "contractAddress",
+        description: "NFT collection contract address (0x...)",
+        required: true,
+      },
       { name: "tokenId", description: "NFT token ID", required: true },
       { name: "network", description: "Network: mainnet or kairos", required: false },
     ],

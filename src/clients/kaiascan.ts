@@ -52,7 +52,11 @@ export function createKaiaScanClient(config?: Config): KaiaScanClient {
   const limiter = getKaiaScanLimiter(c.rateLimitKaiascan);
   const timeoutMs = c.kaiascanTimeoutMs ?? 15000;
 
-  async function doFetch<T>(path: string, params?: Record<string, string>, retry = false): Promise<T> {
+  async function doFetch<T>(
+    path: string,
+    params?: Record<string, string>,
+    retry = false
+  ): Promise<T> {
     await limiter.acquire();
     const url = buildUrl(path, params, c.kaiascanApiKey);
     const controller = new AbortController();
@@ -72,7 +76,9 @@ export function createKaiaScanClient(config?: Config): KaiaScanClient {
           await new Promise((r) => setTimeout(r, 1500));
           return doFetch<T>(path, params, true);
         }
-        throw new KaiaScanRateLimitError(`KaiaScan API rate limit: ${res.status} ${res.statusText}`);
+        throw new KaiaScanRateLimitError(
+          `KaiaScan API rate limit: ${res.status} ${res.statusText}`
+        );
       }
       if (!res.ok) {
         throw new Error(`KaiaScan API error: ${res.status} ${res.statusText}`);

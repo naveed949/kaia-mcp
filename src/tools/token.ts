@@ -317,10 +317,7 @@ export async function handleGetTokenAllowance(args: {
     throw new Error(`RPC error (allowance): ${msg}`);
   }
 
-  const human =
-    decimals >= 0 && decimals <= 42
-      ? Number(allowance) / 10 ** decimals
-      : null;
+  const human = decimals >= 0 && decimals <= 42 ? Number(allowance) / 10 ** decimals : null;
   const lines = [
     `Token: ${tokenAddress}`,
     `Owner: ${owner}`,

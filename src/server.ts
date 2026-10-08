@@ -73,19 +73,28 @@ export function createKaiaMcpServer(options: CreateKaiaMcpServerOptions = {}): S
     auth: options.getAuthContext?.() ?? null,
   });
 
-  server.setRequestHandler(ListToolsRequestSchema, wrapToolHandler(() => listTools(authOpts())));
+  server.setRequestHandler(
+    ListToolsRequestSchema,
+    wrapToolHandler(() => listTools(authOpts()))
+  );
 
   server.setRequestHandler(
     CallToolRequestSchema,
     wrapToolHandler(async (request) => {
       const { name, arguments: args } = request.params;
       // One line per call that reaches kaia-mcp. Never logs arguments or the token itself.
-      logger.info("Tool call", { tool: name, tokenFingerprint: options.getAuthContext?.()?.tokenFingerprint });
+      logger.info("Tool call", {
+        tool: name,
+        tokenFingerprint: options.getAuthContext?.()?.tokenFingerprint,
+      });
       return callTool(name, (args ?? {}) as Record<string, unknown>, authOpts());
     })
   );
 
-  server.setRequestHandler(ListResourcesRequestSchema, wrapToolHandler(() => listResources()));
+  server.setRequestHandler(
+    ListResourcesRequestSchema,
+    wrapToolHandler(() => listResources())
+  );
 
   server.setRequestHandler(
     ReadResourceRequestSchema,
@@ -95,7 +104,10 @@ export function createKaiaMcpServer(options: CreateKaiaMcpServerOptions = {}): S
     })
   );
 
-  server.setRequestHandler(ListPromptsRequestSchema, wrapToolHandler(() => listPrompts()));
+  server.setRequestHandler(
+    ListPromptsRequestSchema,
+    wrapToolHandler(() => listPrompts())
+  );
 
   server.setRequestHandler(
     GetPromptRequestSchema,
@@ -179,9 +191,8 @@ export type KaiaHttpServerHandle = {
 export async function runKaiaMcpServerHttp(port: number): Promise<KaiaHttpServerHandle> {
   const { randomUUID } = await import("node:crypto");
   const { createServer } = await import("node:http");
-  const { StreamableHTTPServerTransport } = await import(
-    "@modelcontextprotocol/sdk/server/streamableHttp.js"
-  );
+  const { StreamableHTTPServerTransport } =
+    await import("@modelcontextprotocol/sdk/server/streamableHttp.js");
 
   const config = getConfig();
   const authMode = config.authMode;
@@ -277,7 +288,11 @@ export async function runKaiaMcpServerHttp(port: number): Promise<KaiaHttpServer
       if (req.method === "GET" && sessionId && !sessions.has(sessionId)) {
         res.writeHead(404, { "Content-Type": "application/json" });
         res.end(
-          JSON.stringify({ jsonrpc: "2.0", error: { code: -32000, message: "Session not found" }, id: null })
+          JSON.stringify({
+            jsonrpc: "2.0",
+            error: { code: -32000, message: "Session not found" },
+            id: null,
+          })
         );
         return;
       }
@@ -288,13 +303,23 @@ export async function runKaiaMcpServerHttp(port: number): Promise<KaiaHttpServer
       }
 
       res.writeHead(400, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ jsonrpc: "2.0", error: { code: -32000, message: "Bad Request" }, id: null }));
+      res.end(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          error: { code: -32000, message: "Bad Request" },
+          id: null,
+        })
+      );
     } catch (err) {
       logger.error("HTTP request error", { error: err });
       if (!res.headersSent) {
         res.writeHead(500, { "Content-Type": "application/json" });
         res.end(
-          JSON.stringify({ jsonrpc: "2.0", error: { code: -32603, message: "Internal server error" }, id: null })
+          JSON.stringify({
+            jsonrpc: "2.0",
+            error: { code: -32603, message: "Internal server error" },
+            id: null,
+          })
         );
       }
     }

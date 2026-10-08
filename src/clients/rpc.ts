@@ -28,13 +28,9 @@ export type RpcClient = ReturnType<typeof createPublicClient>;
  * Uses getConfig() for RPC URL if config is not provided.
  * Each request is rate-limited and subject to RPC_TIMEOUT_MS (default 30s).
  */
-export function createRpcClient(
-  network: KaiaNetwork,
-  config?: Config
-): RpcClient {
+export function createRpcClient(network: KaiaNetwork, config?: Config): RpcClient {
   const c = config ?? getConfig();
-  const url =
-    network === "mainnet" ? c.kaiaRpcUrl : c.kaiaKairosRpcUrl;
+  const url = network === "mainnet" ? c.kaiaRpcUrl : c.kaiaKairosRpcUrl;
   const chain = getChain(network);
   const limiter = getRpcLimiter(c.rateLimitRpc);
   const timeoutMs = c.rpcTimeoutMs ?? 30000;

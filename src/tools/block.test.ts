@@ -1,9 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import {
-  handleGetBlockNumber,
-  handleGetBlock,
-  handleGetBlockRewards,
-} from "./block.js";
+import { handleGetBlockNumber, handleGetBlock, handleGetBlockRewards } from "./block.js";
 import { createRpcClient } from "../clients/rpc.js";
 import { createKaiaScanClient } from "../clients/kaiascan.js";
 import { resetConfigCache } from "../config.js";
@@ -92,9 +88,9 @@ describe("handleGetBlock", () => {
       handleGetBlock({ blockNumberOrHash: "not-valid", network: "mainnet" })
     ).rejects.toThrow(/Invalid block number or hash/);
 
-    await expect(
-      handleGetBlock({ blockNumberOrHash: -1, network: "mainnet" })
-    ).rejects.toThrow(/Invalid block number/);
+    await expect(handleGetBlock({ blockNumberOrHash: -1, network: "mainnet" })).rejects.toThrow(
+      /Invalid block number/
+    );
   });
 
   it("returns not found when getBlock returns null", async () => {
@@ -113,7 +109,8 @@ describe("handleGetBlockRewards", () => {
     resetConfigCache();
     vi.clearAllMocks();
     mockCreateKaiaScanClient.mockReturnValue({
-      get: vi.fn()
+      get: vi
+        .fn()
         .mockResolvedValueOnce({ minted: 9.6, total_fee: 0.5, burnt_fee: 0.25 })
         .mockResolvedValueOnce({
           nearest_block_number: 12345,
@@ -140,10 +137,13 @@ describe("handleGetBlockRewards", () => {
   });
 
   it("calls KaiaScan blocks/:blockNumber/rewards and blocks/:blockNumber/burns", async () => {
-    const mockGet = vi.fn()
+    const mockGet = vi
+      .fn()
       .mockResolvedValueOnce({ minted: 1, total_fee: 0, burnt_fee: 0 })
       .mockResolvedValueOnce({});
-    mockCreateKaiaScanClient.mockReturnValue({ get: mockGet } as unknown as ReturnType<typeof createKaiaScanClient>);
+    mockCreateKaiaScanClient.mockReturnValue({ get: mockGet } as unknown as ReturnType<
+      typeof createKaiaScanClient
+    >);
 
     await handleGetBlockRewards({ blockNumber: 100, network: "mainnet" });
     expect(mockGet).toHaveBeenNthCalledWith(1, "api/v1/blocks/100/rewards");
@@ -151,9 +151,9 @@ describe("handleGetBlockRewards", () => {
   });
 
   it("throws for invalid block number", async () => {
-    await expect(
-      handleGetBlockRewards({ blockNumber: -1, network: "mainnet" })
-    ).rejects.toThrow(/Invalid block number/);
+    await expect(handleGetBlockRewards({ blockNumber: -1, network: "mainnet" })).rejects.toThrow(
+      /Invalid block number/
+    );
   });
 
   it("throws when block hash is passed instead of number", async () => {

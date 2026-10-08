@@ -14,12 +14,12 @@
 
 **Config keys**
 
-| Key | Default | Description |
-|-----|---------|-------------|
-| RATE_LIMIT_RPC | 10 | Max RPC requests per second |
-| RATE_LIMIT_KAIASCAN | 5 | Max KaiaScan requests per second |
-| RPC_TIMEOUT_MS | 30000 | RPC request timeout (ms) |
-| KAIASCAN_TIMEOUT_MS | 15000 | KaiaScan request timeout (ms) |
+| Key                 | Default | Description                      |
+| ------------------- | ------- | -------------------------------- |
+| RATE_LIMIT_RPC      | 10      | Max RPC requests per second      |
+| RATE_LIMIT_KAIASCAN | 5       | Max KaiaScan requests per second |
+| RPC_TIMEOUT_MS      | 30000   | RPC request timeout (ms)         |
+| KAIASCAN_TIMEOUT_MS | 15000   | KaiaScan request timeout (ms)    |
 
 ---
 
@@ -52,17 +52,17 @@
 
 **Docs and files added**
 
-| Item | Description |
-|------|-------------|
-| **README.md** | Title, description; install (npm install -g / npx); quick start stdio + HTTP; tables for 25 tools, 5 resources (URIs), 6 prompts (name + args); config env vars; Cursor and Claude Desktop MCP config snippets; links to Kaia docs and KaiaScan; programmatic use (createKaiaMcpServer, runKaiaMcpServer, runKaiaMcpServerHttp); Docker one-liner. |
-| **CONTRIBUTING.md** | Clone, install, build, test, lint, format; step-by-step “add a new tool”; PR process; code style (Prettier/ESLint). |
-| **LICENSE** | MIT, 2025, kaia-mcp. |
-| **package.json** | `files`, `keywords`, `license`, `repository`, `prepublishOnly` added for npm publish. |
-| **Dockerfile** | Multi-stage node:20-alpine; build then prod stage; CMD HTTP on 3100. |
-| **.dockerignore** | node_modules, dist, .env, .git, coverage, *.test.ts, etc. |
-| **docs/PHASE_10_REPORT.md** | Rate limiting, timeouts, 429. |
-| **docs/PHASE_11_REPORT.md** | Test coverage, integration, live tests. |
-| **docs/PHASE_12_REPORT.md** | Docs and publish checklist. |
+| Item                        | Description                                                                                                                                                                                                                                                                                                                                        |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **README.md**               | Title, description; install (npm install -g / npx); quick start stdio + HTTP; tables for 25 tools, 5 resources (URIs), 6 prompts (name + args); config env vars; Cursor and Claude Desktop MCP config snippets; links to Kaia docs and KaiaScan; programmatic use (createKaiaMcpServer, runKaiaMcpServer, runKaiaMcpServerHttp); Docker one-liner. |
+| **CONTRIBUTING.md**         | Clone, install, build, test, lint, format; step-by-step “add a new tool”; PR process; code style (Prettier/ESLint).                                                                                                                                                                                                                                |
+| **LICENSE**                 | MIT, 2025, kaia-mcp.                                                                                                                                                                                                                                                                                                                               |
+| **package.json**            | `files`, `keywords`, `license`, `repository`, `prepublishOnly` added for npm publish.                                                                                                                                                                                                                                                              |
+| **Dockerfile**              | Multi-stage node:20-alpine; build then prod stage; CMD HTTP on 3100.                                                                                                                                                                                                                                                                               |
+| **.dockerignore**           | node_modules, dist, .env, .git, coverage, \*.test.ts, etc.                                                                                                                                                                                                                                                                                         |
+| **docs/PHASE_10_REPORT.md** | Rate limiting, timeouts, 429.                                                                                                                                                                                                                                                                                                                      |
+| **docs/PHASE_11_REPORT.md** | Test coverage, integration, live tests.                                                                                                                                                                                                                                                                                                            |
+| **docs/PHASE_12_REPORT.md** | Docs and publish checklist.                                                                                                                                                                                                                                                                                                                        |
 
 **Docker run one-liner**
 

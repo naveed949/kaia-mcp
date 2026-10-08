@@ -1,9 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import {
-  handleGetGasPrice,
-  handleGetKaiaPrice,
-  handleGetChainInfo,
-} from "./network.js";
+import { handleGetGasPrice, handleGetKaiaPrice, handleGetChainInfo } from "./network.js";
 import { createRpcClient } from "../clients/rpc.js";
 import { createKaiaScanClient } from "../clients/kaiascan.js";
 import { resetConfigCache } from "../config.js";
@@ -74,7 +70,9 @@ describe("handleGetKaiaPrice", () => {
         volume: 1_000_000,
       },
     });
-    mockCreateKaiaScanClient.mockReturnValue({ get: mockGet } as unknown as ReturnType<typeof createKaiaScanClient>);
+    mockCreateKaiaScanClient.mockReturnValue({ get: mockGet } as unknown as ReturnType<
+      typeof createKaiaScanClient
+    >);
     const result = await handleGetKaiaPrice({ network: "mainnet" });
     expect(result.content).toHaveLength(1);
     const text = (result.content[0] as { text: string }).text;

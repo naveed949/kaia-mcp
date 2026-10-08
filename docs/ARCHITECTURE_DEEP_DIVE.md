@@ -114,14 +114,14 @@ Handlers throw normal JavaScript errors (network, validation, API errors). The M
 // src/utils/errors.ts (excerpt)
 
 export const MCP_ERROR_CODES = {
-  Parse: -32700,           // JSON parse error
-  InvalidRequest: -32600,  // Invalid JSON-RPC request
-  MethodNotFound: -32601,  // Method not found
-  InvalidParams: -32602,   // Invalid parameters (e.g. bad address)
-  InternalError: -32603,   // Generic server error
-  RpcProviderError: -32001,  // RPC/network failure (ECONNREFUSED, ETIMEDOUT, etc.)
-  KaiaScanApiError: -32002,   // KaiaScan API failure
-  RateLimit: -32003,         // 429 / rate limit
+  Parse: -32700, // JSON parse error
+  InvalidRequest: -32600, // Invalid JSON-RPC request
+  MethodNotFound: -32601, // Method not found
+  InvalidParams: -32602, // Invalid parameters (e.g. bad address)
+  InternalError: -32603, // Generic server error
+  RpcProviderError: -32001, // RPC/network failure (ECONNREFUSED, ETIMEDOUT, etc.)
+  KaiaScanApiError: -32002, // KaiaScan API failure
+  RateLimit: -32003, // 429 / rate limit
 } as const;
 ```
 
@@ -133,8 +133,13 @@ The -32xxx range is reserved for application-specific errors. The server uses -3
 // src/utils/errors.ts (excerpt)
 
 const NETWORK_CODES = new Set([
-  "ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "ENOTFOUND",
-  "ENETUNREACH", "EAI_AGAIN", "EPIPE",
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "ETIMEDOUT",
+  "ENOTFOUND",
+  "ENETUNREACH",
+  "EAI_AGAIN",
+  "EPIPE",
 ]);
 
 function isNetworkLike(err: unknown): boolean {
@@ -238,12 +243,12 @@ export function createRateLimiter(requestsPerSecond: number): RateLimiter {
     throw new Error("requestsPerSecond must be positive");
   }
 
-  let tokens = requestsPerSecond;   // Start full
+  let tokens = requestsPerSecond; // Start full
   let lastRefill = Date.now();
 
   function refill(): void {
     const now = Date.now();
-    const elapsed = (now - lastRefill) / 1000;  // seconds
+    const elapsed = (now - lastRefill) / 1000; // seconds
     tokens = Math.min(requestsPerSecond, tokens + elapsed * requestsPerSecond);
     lastRefill = now;
   }
@@ -290,13 +295,13 @@ export function createRpcClient(network: KaiaNetwork, config?: Config): RpcClien
   const c = config ?? getConfig();
   const url = network === "mainnet" ? c.kaiaRpcUrl : c.kaiaKairosRpcUrl;
   const chain = getChain(network);
-  const limiter = getRpcLimiter(c.rateLimitRpc);   // One limiter per rate value (shared)
+  const limiter = getRpcLimiter(c.rateLimitRpc); // One limiter per rate value (shared)
   const timeoutMs = c.rpcTimeoutMs ?? 30000;
 
   const transport = http(url, {
     timeout: timeoutMs,
     fetchFn: async (input: RequestInfo | URL, init?: RequestInit) => {
-      await limiter.acquire();   // Wait for token before every RPC request
+      await limiter.acquire(); // Wait for token before every RPC request
       return fetch(input, init);
     },
   });
@@ -349,10 +354,10 @@ So: every KaiaScan request is rate-limited by `acquire()`, and has a timeout via
 
 ## 4. Summary
 
-| Pattern | Location | Purpose |
-|--------|----------|--------|
-| **Registry** | `src/tools/index.ts` | Single list of tools + single dispatch for tools/list and tools/call |
-| **Error mapping** | `src/utils/errors.ts` + `wrapToolHandler` in `src/server.ts` | Turn any throwable into MCP/JSON-RPC errors with stable codes |
-| **Rate limiting** | `src/utils/rate-limit.ts` + `src/clients/rpc.ts` + `src/clients/kaiascan.ts` | Token-bucket per client, timeout, and 429 retry for KaiaScan |
+| Pattern           | Location                                                                     | Purpose                                                              |
+| ----------------- | ---------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| **Registry**      | `src/tools/index.ts`                                                         | Single list of tools + single dispatch for tools/list and tools/call |
+| **Error mapping** | `src/utils/errors.ts` + `wrapToolHandler` in `src/server.ts`                 | Turn any throwable into MCP/JSON-RPC errors with stable codes        |
+| **Rate limiting** | `src/utils/rate-limit.ts` + `src/clients/rpc.ts` + `src/clients/kaiascan.ts` | Token-bucket per client, timeout, and 429 retry for KaiaScan         |
 
 Together, these make the server suitable for agent-driven load: discoverable tools, predictable errors, and bounded load on upstream RPC and APIs.

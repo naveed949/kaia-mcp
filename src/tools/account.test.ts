@@ -56,9 +56,9 @@ describe("handleGetKaiaBalance", () => {
       handleGetKaiaBalance({ address: "not-an-address", network: "mainnet" })
     ).rejects.toThrow(/Invalid address/);
 
-    await expect(
-      handleGetKaiaBalance({ address: "0xshort", network: "mainnet" })
-    ).rejects.toThrow(/Invalid address/);
+    await expect(handleGetKaiaBalance({ address: "0xshort", network: "mainnet" })).rejects.toThrow(
+      /Invalid address/
+    );
   });
 });
 
@@ -91,9 +91,9 @@ describe("handleGetAccountInfo", () => {
   });
 
   it("throws for invalid address", async () => {
-    await expect(
-      handleGetAccountInfo({ address: "0xbad", network: "mainnet" })
-    ).rejects.toThrow(/Invalid address/);
+    await expect(handleGetAccountInfo({ address: "0xbad", network: "mainnet" })).rejects.toThrow(
+      /Invalid address/
+    );
   });
 });
 
@@ -144,9 +144,7 @@ describe("handleGetAccountTokens", () => {
   });
 
   it("throws on invalid address", async () => {
-    await expect(
-      handleGetAccountTokens({ address: "invalid" })
-    ).rejects.toThrow(/Invalid address/);
+    await expect(handleGetAccountTokens({ address: "invalid" })).rejects.toThrow(/Invalid address/);
   });
 });
 
@@ -199,8 +197,6 @@ describe("handleGetAccountNfts", () => {
   });
 
   it("throws on invalid address", async () => {
-    await expect(
-      handleGetAccountNfts({ address: "0x" })
-    ).rejects.toThrow(/Invalid address/);
+    await expect(handleGetAccountNfts({ address: "0x" })).rejects.toThrow(/Invalid address/);
   });
 });

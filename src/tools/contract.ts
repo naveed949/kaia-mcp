@@ -200,7 +200,8 @@ export async function handleGetContractSource(args: {
   }
 
   const list = Array.isArray(data) ? data : [];
-  const contract = list.find((c) => (c?.address ?? "").toLowerCase() === contractAddress.toLowerCase()) ?? list[0];
+  const contract =
+    list.find((c) => (c?.address ?? "").toLowerCase() === contractAddress.toLowerCase()) ?? list[0];
 
   if (!contract) {
     return {

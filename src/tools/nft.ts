@@ -173,9 +173,7 @@ export async function handleGetNftItem(args: {
 }): Promise<{ content: Array<{ type: "text"; text: string }> }> {
   const contractAddress = validateAddress(args.contractAddress);
   const tokenId =
-    args.tokenId !== undefined && args.tokenId !== null
-      ? String(args.tokenId).trim()
-      : "";
+    args.tokenId !== undefined && args.tokenId !== null ? String(args.tokenId).trim() : "";
   if (!tokenId) {
     throw new Error("tokenId is required.");
   }

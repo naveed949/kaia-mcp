@@ -1,9 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import {
-  handleGetNftInfo,
-  handleGetNftItem,
-  handleGetNftTransfers,
-} from "./nft.js";
+import { handleGetNftInfo, handleGetNftItem, handleGetNftTransfers } from "./nft.js";
 import { createKaiaScanClient } from "../clients/kaiascan.js";
 import { resetConfigCache } from "../config.js";
 
@@ -47,7 +43,9 @@ describe("handleGetNftInfo", () => {
 
   it("calls KaiaScan with path api/v1/nfts/:contractAddress", async () => {
     const mockGet = vi.fn().mockResolvedValue({ name: "N", symbol: "N", total_supply: 0 });
-    mockCreateKaiaScanClient.mockReturnValue({ get: mockGet } as unknown as ReturnType<typeof createKaiaScanClient>);
+    mockCreateKaiaScanClient.mockReturnValue({ get: mockGet } as unknown as ReturnType<
+      typeof createKaiaScanClient
+    >);
 
     await handleGetNftInfo({ contractAddress: validContractAddress, network: "mainnet" });
     expect(mockGet).toHaveBeenCalledWith(`api/v1/nfts/${validContractAddress}`);
@@ -117,16 +115,16 @@ describe("handleGetNftItem", () => {
       info: { token_id: "42", token_uri: "x", contract_address: validContractAddress },
       holder: { address: "0xowner" },
     });
-    mockCreateKaiaScanClient.mockReturnValue({ get: mockGet } as unknown as ReturnType<typeof createKaiaScanClient>);
+    mockCreateKaiaScanClient.mockReturnValue({ get: mockGet } as unknown as ReturnType<
+      typeof createKaiaScanClient
+    >);
 
     await handleGetNftItem({
       contractAddress: validContractAddress,
       tokenId: "42",
       network: "mainnet",
     });
-    expect(mockGet).toHaveBeenCalledWith(
-      `api/v1/nfts/${validContractAddress}/tokenids/42`
-    );
+    expect(mockGet).toHaveBeenCalledWith(`api/v1/nfts/${validContractAddress}/tokenids/42`);
   });
 
   it("throws for invalid contract address", async () => {
@@ -204,8 +202,8 @@ describe("handleGetNftTransfers", () => {
   });
 
   it("throws on invalid contract address", async () => {
-    await expect(
-      handleGetNftTransfers({ contractAddress: "0x" })
-    ).rejects.toThrow(/Invalid address/);
+    await expect(handleGetNftTransfers({ contractAddress: "0x" })).rejects.toThrow(
+      /Invalid address/
+    );
   });
 });

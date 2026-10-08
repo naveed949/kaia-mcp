@@ -86,25 +86,26 @@ npx kaia-mcp --transport http --port 3100
 
 Environment variables (see `.env.example`):
 
-| Variable                           | Description                                                                    | Default                                 |
-| ---------------------------------- | ------------------------------------------------------------------------------ | --------------------------------------- |
-| `KAIA_RPC_URL`                     | Kaia mainnet RPC endpoint                                                      | `https://public-en.node.kaia.io`        |
-| `KAIA_KAIROS_RPC_URL`              | Kairos testnet RPC                                                             | `https://public-en-kairos.node.kaia.io` |
-| `KAIASCAN_API_KEY`                 | KaiaScan API key (optional)                                                    | —                                       |
-| `KAIA_DEFAULT_NETWORK`             | mainnet or kairos                                                              | mainnet                                 |
-| `LOG_LEVEL`                        | debug, info, warn, error                                                       | info                                    |
-| `RATE_LIMIT_RPC`                   | Max RPC requests per second                                                    | 10                                      |
-| `RATE_LIMIT_KAIASCAN`              | Max KaiaScan requests per second                                               | 5                                       |
-| `RPC_TIMEOUT_MS`                   | RPC request timeout (ms)                                                       | 30000                                   |
-| `KAIASCAN_TIMEOUT_MS`              | KaiaScan request timeout (ms)                                                  | 15000                                   |
-| `KAIA_AUTH_MODE`                   | HTTP auth: `required` or `off`                                                 | `required`                              |
-| `KAIA_OAUTH_CLIENT_ID`             | Demo public client id                                                          | `kaia-mcp-demo`                         |
-| `KAIA_ACCESS_TOKEN_TTL_SECONDS`    | Demo access-token TTL                                                          | 900                                     |
-| `KAIA_OAUTH_AUDIENCE`              | `aud` of issued JWT access tokens (and the only audience accepted)             | `kaia-mcp`                              |
-| `KAIA_OAUTH_SIGNING_KEY_FILE`      | Dev RS256 key path, created 0600 if missing; keep it gitignored (`.kaia-dev/`) | unset (in-memory key per process)       |
-| `KAIA_INTROSPECTION_CLIENT_ID`     | Gateway client id for `/oauth/introspect`                                      | `kaia-mcp-gateway`                      |
-| `KAIA_INTROSPECTION_CLIENT_SECRET` | Gateway secret (HTTP Basic). Unset: introspection is not offered               | unset                                   |
-| `KAIA_ALLOW_UNSAFE_WALLET`         | Enable `generate_wallet` private keys (local only)                             | off                                     |
+| Variable                           | Description                                                                                                         | Default                                                                            |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `KAIA_RPC_URL`                     | Kaia mainnet RPC endpoint                                                                                           | `https://public-en.node.kaia.io`                                                   |
+| `KAIA_KAIROS_RPC_URL`              | Kairos testnet RPC                                                                                                  | `https://public-en-kairos.node.kaia.io`                                            |
+| `KAIASCAN_API_KEY`                 | KaiaScan API key (optional)                                                                                         | —                                                                                  |
+| `KAIA_DEFAULT_NETWORK`             | mainnet or kairos                                                                                                   | mainnet                                                                            |
+| `LOG_LEVEL`                        | debug, info, warn, error                                                                                            | info                                                                               |
+| `RATE_LIMIT_RPC`                   | Max RPC requests per second                                                                                         | 10                                                                                 |
+| `RATE_LIMIT_KAIASCAN`              | Max KaiaScan requests per second                                                                                    | 5                                                                                  |
+| `RPC_TIMEOUT_MS`                   | RPC request timeout (ms)                                                                                            | 30000                                                                              |
+| `KAIASCAN_TIMEOUT_MS`              | KaiaScan request timeout (ms)                                                                                       | 15000                                                                              |
+| `KAIA_AUTH_MODE`                   | HTTP auth: `required` or `off`                                                                                      | `required`                                                                         |
+| `KAIA_OAUTH_CLIENT_ID`             | Demo public client id                                                                                               | `kaia-mcp-demo`                                                                    |
+| `KAIA_ACCESS_TOKEN_TTL_SECONDS`    | Demo access-token TTL                                                                                               | 900                                                                                |
+| `KAIA_OAUTH_AUDIENCE`              | `aud` of issued JWT access tokens (and the only audience accepted)                                                  | `kaia-mcp`                                                                         |
+| `KAIA_OAUTH_SIGNING_KEY_FILE`      | Dev RS256 key path, created 0600 if missing; keep it gitignored (`.kaia-dev/`)                                      | unset (in-memory key per process)                                                  |
+| `KAIA_OAUTH_REVOCATION_FILE`       | Where revoked access-token `jti`s are persisted (atomic writes, 0600). A corrupt or unreadable file refuses startup | `revoked-jti.json` next to the signing key file; in memory when no key file is set |
+| `KAIA_INTROSPECTION_CLIENT_ID`     | Gateway client id for `/oauth/introspect`                                                                           | `kaia-mcp-gateway`                                                                 |
+| `KAIA_INTROSPECTION_CLIENT_SECRET` | Gateway secret (HTTP Basic). Unset: introspection is not offered                                                    | unset                                                                              |
+| `KAIA_ALLOW_UNSAFE_WALLET`         | Enable `generate_wallet` private keys (local only)                                                                  | off                                                                                |
 
 ## MCP client setup
 

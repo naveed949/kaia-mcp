@@ -61,10 +61,11 @@ kaia-mcp verifies every request itself: `alg` must be exactly `RS256`, `kid` mus
 
 ### Signing key
 
-| Setting                              | Behavior                                                                                                                                             |
-| ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| default                              | A fresh RSA-2048 key is generated at startup and kept in memory. Restarting the server invalidates every outstanding token.                          |
-| `KAIA_OAUTH_SIGNING_KEY_FILE=<path>` | Dev persistence. The PKCS#8 PEM is loaded from `<path>`, or created there with mode `0600`. Use a gitignored path; `.kaia-dev/` is ignored for this. |
+| Setting                              | Behavior                                                                                                                                                 |
+| ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| default                              | A fresh RSA-2048 key is generated at startup and kept in memory. Restarting the server invalidates every outstanding token.                              |
+| `KAIA_OAUTH_SIGNING_KEY_FILE=<path>` | Dev persistence. The PKCS#8 PEM is loaded from `<path>`, or created there with mode `0600`. Use a gitignored path; `.kaia-dev/` is ignored for this.     |
+| `KAIA_OAUTH_REVOCATION_FILE=<path>`  | Where the revocation denylist is persisted. Defaults to `revoked-jti.json` in the signing key's directory whenever `KAIA_OAUTH_SIGNING_KEY_FILE` is set. |
 
 No signing key is committed. Production deployments use their own authorization server and never this provider.
 
@@ -72,9 +73,17 @@ No signing key is committed. Production deployments use their own authorization 
 
 `POST /oauth/revoke` (RFC 7009) with `token=<access_or_refresh>` always answers `200 {}`.
 
-- Access token: its `jti` is added to an in-memory revocation set until the token's `exp`.
+- Access token: its `jti` is added to the revocation denylist until the token's `exp`.
 - Refresh token: the refresh token is revoked and so is the `jti` of the access token it was issued with.
 - Refresh rotation (`grant_type=refresh_token`) revokes the previous access `jti`.
+
+Revocations and restarts:
+
+- **In-memory signing key (default).** The denylist is in memory too. A restart generates a new key, so every token from the previous process fails signature verification (`invalid_token`), revoked or not.
+- **Persisted signing key (`KAIA_OAUTH_SIGNING_KEY_FILE`).** Tokens outlive the process, so the denylist is persisted as well, to `KAIA_OAUTH_REVOCATION_FILE` (default `revoked-jti.json` next to the key). The format is `{"version":1,"entries":[{"id":"<jti>","expMs":<epoch ms>}]}`. It never contains tokens. Writes go to a temp file that is fsynced and renamed, with mode `0600`. Entries are dropped once the token would have expired. The file is loaded before the port is bound. A missing file means an empty list (first start). An unreadable or corrupt file stops startup with an error; the server never falls back to an empty list.
+- If a revocation cannot be written, `POST /oauth/revoke` answers `503 {"error":"server_error"}`. The token is still rejected by this process, but the client should retry.
+- Refresh tokens are kept only in memory, so a restart invalidates every refresh token (`invalid_grant`) whatever the key setting.
+- The denylist sits behind a `RevocationStore` interface (memory and file adapters today), so a shared store for multi-instance deployments can be added later.
 
 A revoked JWT still has a valid signature until `exp`. Anything that verifies tokens offline from the JWKS cannot see revocation on its own. For that, kaia-mcp offers **RFC 7662 introspection**:
 

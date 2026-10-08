@@ -3,6 +3,7 @@ import { AUTH_ERRORS, WWW_AUTHENTICATE_REALM } from "./constants.js";
 import type { DemoOAuthProvider } from "./provider.js";
 import { bearerFromHeader } from "./provider.js";
 import { TOOL_SCOPES } from "./scopes.js";
+import { logger } from "../utils/logger.js";
 import type { AuthContext, VerifyResult } from "./types.js";
 
 function escapeHtml(s: string): string {
@@ -410,7 +411,20 @@ export async function tryHandleAuxRequest(
   if (req.method === "POST" && path === "/oauth/revoke") {
     try {
       const fields = parseForm(await readBody(req), req.headers["content-type"]);
-      ctx.provider.revoke(fields.token ?? "");
+      try {
+        ctx.provider.revoke(fields.token ?? "");
+      } catch (err) {
+        // The token is denied in this process, but the denylist is not durable: say so
+        // (RFC 7009 2.2.1 server_error) so the client can retry instead of trusting a 200.
+        logger.error("oauth revocation not persisted", { error: err });
+        json(
+          res,
+          503,
+          { error: "server_error", error_description: "revocation could not be persisted" },
+          { "Cache-Control": "no-store" }
+        );
+        return true;
+      }
       res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
       res.end("{}");
     } catch (err) {

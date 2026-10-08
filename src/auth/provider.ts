@@ -2,6 +2,7 @@ import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypt
 import { logger } from "../utils/logger.js";
 import { verifyPkce } from "./pkce.js";
 import { checkAccessTokenClaims, SigningKey } from "./jwt.js";
+import { MemoryRevocationStore, type RevocationStore } from "./revocation-store.js";
 import {
   ALL_SCOPES,
   AUTH_CODE_TTL_SECONDS,
@@ -57,6 +58,11 @@ export type DemoOAuthProviderOptions = {
   audience?: string;
   /** RS256 signing key. Default: a fresh in-memory key per process. */
   signingKey?: SigningKey;
+  /**
+   * Denylist of revoked access-token `jti`s. Default: in memory. Use a persistent store
+   * whenever the signing key outlives the process, or revoked tokens revive on restart.
+   */
+  revocationStore?: RevocationStore;
   /** Resource-server credentials for RFC 7662 introspection. Introspection is disabled when unset. */
   introspectionClient?: { clientId: string; clientSecret: string };
 };
@@ -131,7 +137,7 @@ type DevicePending = {
  *
  * Access tokens are RS256 JWTs (RFC 9068 shape: iss, aud, sub, client_id, scope,
  * iat, nbf, exp, jti) verifiable offline against `jwks()`. Revocation is by `jti`
- * and is visible to gateways through `introspect()`. Refresh tokens stay opaque
+ * (kept in a `RevocationStore`) and is visible to gateways through `introspect()`. Refresh tokens stay opaque
  * and are stored hashed. No token is ever logged; logs carry a sha256 fingerprint.
  */
 export class DemoOAuthProvider {
@@ -144,8 +150,8 @@ export class DemoOAuthProvider {
   readonly signingKey: SigningKey;
   private readonly introspectionClient?: { clientId: string; clientSecret: string };
 
-  /** jti -> access token expiry (ms). Entries are pruned once the token would have expired anyway. */
-  private readonly revokedJti = new Map<string, number>();
+  /** Revoked access-token jtis, each kept until the token would have expired anyway. */
+  private readonly revocations: RevocationStore;
   private readonly refresh = new Map<string, RefreshRecord>();
   private readonly authzRequests = new Map<string, AuthzRequest>();
   private readonly authzCodes = new Map<string, AuthzCode>();
@@ -161,6 +167,7 @@ export class DemoOAuthProvider {
       options.refreshTokenTtlSeconds ?? DEFAULT_REFRESH_TOKEN_TTL_SECONDS;
     this.audience = options.audience ?? DEFAULT_AUDIENCE;
     this.signingKey = options.signingKey ?? SigningKey.generate();
+    this.revocations = options.revocationStore ?? new MemoryRevocationStore();
     if (options.introspectionClient?.clientSecret) {
       this.introspectionClient = options.introspectionClient;
     }
@@ -506,7 +513,7 @@ export class DemoOAuthProvider {
   }
 
   isRevoked(jti: string): boolean {
-    return this.revokedJti.has(jti);
+    return this.revocations.has(jti);
   }
 
   verifyAccessToken(token: string | undefined): VerifyResult {
@@ -618,12 +625,9 @@ export class DemoOAuthProvider {
     return id === client.clientId && timingSafeEqual(a, b);
   }
 
+  /** Throws if the store cannot make the entry durable; the jti is denied in-process regardless. */
   private revokeJti(jti: string, expMs: number): void {
-    const now = Date.now();
-    for (const [k, v] of this.revokedJti) {
-      if (v <= now) this.revokedJti.delete(k);
-    }
-    if (expMs > now) this.revokedJti.set(jti, expMs);
+    this.revocations.add(jti, expMs);
   }
 
   private mintTokens(params: {

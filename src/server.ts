@@ -20,6 +20,11 @@ import { listPrompts, getPrompt } from "./prompts/index.js";
 import { createDemoOAuthProvider, type DemoOAuthProvider } from "./auth/provider.js";
 import { SigningKey } from "./auth/jwt.js";
 import {
+  FileRevocationStore,
+  MemoryRevocationStore,
+  type RevocationStore,
+} from "./auth/revocation-store.js";
+import {
   applyCors,
   authenticateRequest,
   tryHandleAuxRequest,
@@ -215,6 +220,15 @@ export async function runKaiaMcpServerHttp(port: number): Promise<KaiaHttpServer
   const authMode = config.authMode;
   logger.info("Starting Kaia MCP server (HTTP)", { port, authMode });
 
+  // Load key material and the revocation denylist before binding the port, so an
+  // unreadable or corrupt store refuses startup instead of serving with an empty list.
+  const signingKey = config.oauthSigningKeyFile
+    ? SigningKey.fromFileOrCreate(config.oauthSigningKeyFile)
+    : SigningKey.generate();
+  const revocationStore: RevocationStore = config.oauthRevocationFile
+    ? FileRevocationStore.open(config.oauthRevocationFile)
+    : new MemoryRevocationStore();
+
   type SessionEntry = {
     transport: InstanceType<typeof StreamableHTTPServerTransport>;
     server: Server;
@@ -359,9 +373,8 @@ export async function runKaiaMcpServerHttp(port: number): Promise<KaiaHttpServer
     clientId: config.oauthClientId,
     accessTokenTtlSeconds: config.accessTokenTtlSeconds,
     audience: config.oauthAudience,
-    signingKey: config.oauthSigningKeyFile
-      ? SigningKey.fromFileOrCreate(config.oauthSigningKeyFile)
-      : SigningKey.generate(),
+    signingKey,
+    revocationStore,
     introspectionClient: config.introspectionClientSecret
       ? { clientId: config.introspectionClientId, clientSecret: config.introspectionClientSecret }
       : undefined,
@@ -374,6 +387,7 @@ export async function runKaiaMcpServerHttp(port: number): Promise<KaiaHttpServer
     audience: runtime.provider.audience,
     kid: runtime.provider.signingKey.kid,
     introspection: runtime.provider.introspectionEnabled,
+    revocationStore: config.oauthRevocationFile ? "file" : "memory",
   });
 
   return {

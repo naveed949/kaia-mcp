@@ -214,6 +214,8 @@ describe("Tool call audit log", () => {
     const errorLines = out.split("\n").filter((l) => l.includes("msg=Tool error"));
     expect(errorLines).toHaveLength(1);
     expect(errorLines[0]).toMatch(/ code=-32603 /);
+    // a server-side fault (not a client mistake) stays at error level
+    expect(errorLines[0]).toContain(" level=error ");
     expect(errorLines[0]).toContain("category=internal");
   });
 
@@ -224,6 +226,51 @@ describe("Tool call audit log", () => {
     await expect(client.getPrompt({ name: `${marker}_prompt` })).rejects.toThrow();
     const out = chunks.join("");
     expect(out).not.toContain(marker);
-    expect(out.split("\n").filter((l) => l.includes("msg=Tool error"))).toHaveLength(2);
+    expect(out.split("\n").filter((l) => l.includes("msg=Request denied"))).toHaveLength(2);
+  });
+
+  it("unknown tool, resource and prompt names are client mistakes: info, never error, deny audit kept", async () => {
+    const client = await connect(auth([SCOPES.READ]));
+    await expect(client.callTool({ name: "no_such_tool", arguments: {} })).rejects.toMatchObject({
+      code: -32602,
+    });
+    await expect(client.readResource({ uri: "kaia://no-such-resource" })).rejects.toMatchObject({
+      code: -32602,
+    });
+    await expect(client.getPrompt({ name: "no_such_prompt" })).rejects.toMatchObject({
+      code: -32602,
+    });
+    const lines = chunks.join("").split("\n").filter(Boolean);
+    expect(
+      lines.filter((l) => / level=error /.test(l)),
+      lines.join("\n")
+    ).toEqual([]);
+    expect(lines.filter((l) => l.includes("msg=Tool error"))).toEqual([]);
+    // the tools/call deny audit line is unchanged
+    expect(toolCallLines()).toHaveLength(1);
+    expect(toolCallLines()[0]).toContain(
+      " level=info msg=Tool call tool=no_such_tool outcome=denied errorCode=-32602 reason=unknown_tool"
+    );
+    const denied = lines.filter((l) => l.includes("msg=Request denied"));
+    expect(denied).toHaveLength(3);
+    for (const [i, method] of ["tools/call", "resources/read", "prompts/get"].entries()) {
+      expect(denied[i]).toContain(
+        ` level=info msg=Request denied code=-32602 method=${method} category=invalid_params errorType=ProtocolError outcome=denied`
+      );
+    }
+    expect(chunks.join("")).not.toContain("no-such-resource");
+    expect(chunks.join("")).not.toContain("no_such_prompt");
+  });
+
+  it("an in-band auth denial is a client outcome too (info), while server faults stay at error", async () => {
+    const client = await connect(auth([SCOPES.READ]));
+    await expect(
+      client.callTool({ name: "encode_function_data", arguments: {} })
+    ).rejects.toMatchObject({ code: -32042 });
+    const lines = chunks.join("").split("\n").filter(Boolean);
+    expect(lines.filter((l) => / level=error /.test(l))).toEqual([]);
+    expect(lines.find((l) => l.includes("msg=Request denied"))).toContain(
+      " level=info msg=Request denied code=-32042 method=tools/call category=auth "
+    );
   });
 });

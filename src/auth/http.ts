@@ -261,10 +261,8 @@ export function checkOrigin(
     normalized = undefined;
   }
   if (normalized && normalized !== "null" && allowedOrigins.includes(normalized)) return true;
-  logger.warn("request refused: Origin not allowed", {
-    origin: origin.slice(0, 200).replace(/[^\x21-\x7e]/g, "?"),
-    method: req.method ?? "",
-  });
+  // Caller input: the logger caps it and percent-encodes '=', whitespace and the rest.
+  logger.warn("request refused: Origin not allowed", { origin, method: req.method ?? "" });
   res.writeHead(403, { "Content-Type": "application/json", "Cache-Control": "no-store" });
   res.end(
     JSON.stringify({

@@ -3,10 +3,16 @@
  * read_contract uses viem readContract; get_contract_abi/source use KaiaScan API.
  */
 
-import type { Abi } from "viem";
 import { createRpcClient } from "../clients/rpc.js";
 import { createKaiaScanClient } from "../clients/kaiascan.js";
-import { validateAddress, validateNetwork } from "../utils/validation.js";
+import {
+  encodeCallData,
+  parseAbiInput,
+  validateAddress,
+  validateCallArgs,
+  validateFunctionName,
+  validateNetwork,
+} from "../utils/validation.js";
 
 // --- Tool definitions ---
 
@@ -67,28 +73,6 @@ export const CONTRACT_TOOLS = [READ_CONTRACT, GET_CONTRACT_ABI, GET_CONTRACT_SOU
 
 // --- Helpers ---
 
-function parseAbiFromInput(abi: unknown): Abi {
-  if (abi == null || (typeof abi !== "string" && !Array.isArray(abi))) {
-    throw new Error("Invalid ABI: must be a JSON string or an array of ABI items.");
-  }
-  let parsed: unknown;
-  if (typeof abi === "string") {
-    const trimmed = abi.trim();
-    if (!trimmed) throw new Error("Invalid ABI: empty string.");
-    try {
-      parsed = JSON.parse(trimmed) as unknown;
-    } catch {
-      throw new Error("Invalid ABI: not valid JSON.");
-    }
-  } else {
-    parsed = abi;
-  }
-  if (!Array.isArray(parsed)) {
-    throw new Error("Invalid ABI: must be an array of ABI items.");
-  }
-  return parsed as Abi;
-}
-
 // --- KaiaScan API response shapes ---
 
 interface ContractListItem {
@@ -115,27 +99,19 @@ export async function handleReadContract(args: {
 }): Promise<{ content: Array<{ type: "text"; text: string }> }> {
   const contractAddress = validateAddress(args.contractAddress);
   const network = validateNetwork(args.network);
-  const abi = parseAbiFromInput(args.abi);
-
-  const functionName = args.functionName;
-  if (typeof functionName !== "string" || !functionName.trim()) {
-    throw new Error("Invalid functionName: must be a non-empty string.");
-  }
-
-  let callArgs: unknown[] | undefined;
-  if (args.args !== undefined && args.args !== null) {
-    if (!Array.isArray(args.args)) {
-      throw new Error("Invalid args: must be an array.");
-    }
-    callArgs = args.args;
-  }
+  const abi = parseAbiInput(args.abi);
+  const functionName = validateFunctionName(args.functionName);
+  const callArgs = validateCallArgs(args.args);
+  // Encode once up front: a function or argument that does not fit the ABI is the caller's
+  // mistake (-32602), found before any RPC call is made.
+  encodeCallData(abi, functionName, callArgs);
 
   const client = createRpcClient(network);
   const result = await client.readContract({
     address: contractAddress,
     abi,
-    functionName: functionName.trim(),
-    args: callArgs as readonly unknown[] | undefined,
+    functionName,
+    args: callArgs,
   });
 
   const text =

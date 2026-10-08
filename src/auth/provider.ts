@@ -797,3 +797,29 @@ export function bearerFromHeader(authorization: string | undefined): string | un
   const match = /^Bearer +([A-Za-z0-9\-._~+/]+=*)$/i.exec(authorization.trim());
   return match?.[1];
 }
+
+export type BearerCredential =
+  | { kind: "none" }
+  | { kind: "malformed" }
+  | { kind: "token"; token: string };
+
+/**
+ * What an Authorization header offers as a bearer credential:
+ * - `token`: a well-formed `"Bearer" 1*SP b64token` (see bearerFromHeader);
+ * - `malformed`: the Bearer scheme, whitespace, then something that is not one b64token
+ *   (quoted, `%`, `!`, a trailing comma or junk, a second credential, a tab, NBSP or other
+ *   non-space separator). The client did present a token, so it gets RFC 6750
+ *   `invalid_token`;
+ * - `none`: no header, an empty one, `Bearer` with nothing after it, or another scheme.
+ *   The client presented no bearer token, so it gets the bare challenge (RFC 6750 3.1).
+ */
+export function parseBearerCredential(authorization: string | undefined): BearerCredential {
+  const token = bearerFromHeader(authorization);
+  if (token) return { kind: "token", token };
+  // The scheme is exactly "Bearer" (the next character cannot continue an RFC 9110 token)
+  // and, the header being trimmed, something other than whitespace follows it.
+  if (/^Bearer[^!#$%&'*+.^_`|~0-9A-Za-z-]/i.test(authorization?.trim() ?? "")) {
+    return { kind: "malformed" };
+  }
+  return { kind: "none" };
+}

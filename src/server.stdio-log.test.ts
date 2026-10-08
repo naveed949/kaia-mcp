@@ -142,7 +142,7 @@ describe("stdio onerror: client mistakes log at info with code and cell", () => 
 });
 
 describe("sdkErrorLogEntry: stdio messages", () => {
-  it("classifies every 'Discarded a ...' message as a client rejection", () => {
+  it("classifies the SDK's known 'Discarded a ...' messages as client rejections", () => {
     for (const [msg, cell, code] of [
       [
         "Discarded a JSON-RPC response received before the connection negotiated an era",
@@ -159,12 +159,29 @@ describe("sdkErrorLogEntry: stdio messages", () => {
         "notification-unsupported-revision",
         -32022,
       ],
-      [`Discarded a future kind of message: ${FORGED}`, "discarded-message", -32600],
     ] as const) {
       const e = sdkErrorLogEntry(new Error(msg));
       expect(e.level, msg).toBe("info");
       expect(e.message).toBe("MCP request rejected");
       expect(e.meta).toEqual({ code, cell, errorType: "Error" });
+    }
+  });
+
+  it("an unknown or altered 'Discarded ...' message is not a known client mistake: error", () => {
+    for (const msg of [
+      `Discarded a future kind of message: ${FORGED}`,
+      "Discarded a ",
+      // the no-caller-text message must match exactly, not as a prefix
+      `Discarded a JSON-RPC response received before the connection negotiated an era ${FORGED}`,
+      // the caller-text messages need the SDK's whole fixed part, separator included
+      `Discarded a notification with a malformed envelope${FORGED}`,
+      `Discarded a notification claiming unsupported protocol revision${FORGED}`,
+      `Discarded a notification claiming something else ${FORGED}`,
+    ]) {
+      const e = sdkErrorLogEntry(new Error(msg));
+      expect(e.level, msg).toBe("error");
+      expect(e.message).toBe("MCP transport error");
+      expect(e.meta).not.toHaveProperty("cell");
     }
   });
 
@@ -195,7 +212,8 @@ describe("sdkErrorLogEntry: stdio messages", () => {
     const dist = dirname(require.resolve("@modelcontextprotocol/server/stdio"));
     const src = readFileSync(join(dist, "stdio.mjs"), "utf8");
     for (const s of [
-      "Discarded a JSON-RPC response received before the connection negotiated an era",
+      // the exact message, closed by its string delimiter
+      '"Discarded a JSON-RPC response received before the connection negotiated an era"',
       "Discarded a notification with a malformed envelope: ",
       "Discarded a notification claiming unsupported protocol revision ",
       "Rejected 2025-era request on a modern-only stdio connection (",

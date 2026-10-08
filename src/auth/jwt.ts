@@ -36,6 +36,15 @@ function rsaThumbprint(jwk: JsonWebKey): string {
   return createHash("sha256").update(canonical).digest("base64url");
 }
 
+const BASE64URL_CHARS = /^[A-Za-z0-9_-]+$/;
+
+/** The bytes of a non-empty, canonical unpadded base64url string, or null. */
+function canonicalBase64url(segment: string): Buffer | null {
+  if (!BASE64URL_CHARS.test(segment)) return null;
+  const bytes = Buffer.from(segment, "base64url");
+  return bytes.toString("base64url") === segment ? bytes : null;
+}
+
 export class SigningKey {
   readonly kid: string;
   private readonly privateKey: KeyObject;
@@ -99,16 +108,25 @@ export class SigningKey {
     return `${signingInput}.${b64url(signature)}`;
   }
 
-  /** Signature + header check only. Returns the payload or null. Claims are not checked here. */
+  /**
+   * Signature + header check only. Returns the payload or null. Claims are not checked here.
+   * Every segment must be canonical unpadded base64url (RFC 7515 2): Node's decoder alone
+   * ignores `=` padding, stray characters and the spare low bits of the last character, so
+   * `<tok>==` or a sibling last character would verify as the same token under another
+   * spelling (and another sha256 token fingerprint).
+   */
   verifySignature(token: string): Record<string, unknown> | null {
     const parts = token.split(".");
-    if (parts.length !== 3 || parts.some((p) => p.length === 0)) return null;
-    const [h, p, s] = parts;
+    if (parts.length !== 3) return null;
+    const decoded = parts.map(canonicalBase64url);
+    if (decoded.some((d) => d === null)) return null;
+    const [h, p] = parts;
+    const [hBytes, pBytes, sigBytes] = decoded as [Buffer, Buffer, Buffer];
     let header: unknown;
     let payload: unknown;
     try {
-      header = JSON.parse(Buffer.from(h, "base64url").toString("utf8"));
-      payload = JSON.parse(Buffer.from(p, "base64url").toString("utf8"));
+      header = JSON.parse(hBytes.toString("utf8"));
+      payload = JSON.parse(pBytes.toString("utf8"));
     } catch {
       return null;
     }
@@ -123,12 +141,7 @@ export class SigningKey {
     }
     const hdr = header as Record<string, unknown>;
     if (hdr.alg !== JWT_ALG || hdr.kid !== this.kid) return null;
-    const ok = cryptoVerify(
-      "sha256",
-      Buffer.from(`${h}.${p}`),
-      this.publicKey,
-      Buffer.from(s, "base64url")
-    );
+    const ok = cryptoVerify("sha256", Buffer.from(`${h}.${p}`), this.publicKey, sigBytes);
     return ok ? (payload as Record<string, unknown>) : null;
   }
 }

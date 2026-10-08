@@ -1,9 +1,9 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { AUTH_ERRORS, WWW_AUTHENTICATE_REALM } from "./constants.js";
 import type { DemoOAuthProvider } from "./provider.js";
-import { bearerFromHeader } from "./provider.js";
+import { parseBearerCredential } from "./provider.js";
 import { TOOL_SCOPES } from "./scopes.js";
-import { logger } from "../utils/logger.js";
+import { logger, truncateUtf8 } from "../utils/logger.js";
 import { MCP_ERROR_CODES } from "../utils/errors.js";
 import { RevocationStoreError } from "./revocation-store.js";
 import type { AuthContext, VerifyResult } from "./types.js";
@@ -240,6 +240,9 @@ export function isPublicDocRequest(req: IncomingMessage): boolean {
   return PUBLIC_DOC_PATHS.has(path);
 }
 
+/** Input bytes of a refused Origin kept in its log line (a serialized origin rarely needs more). */
+export const ORIGIN_LOG_MAX_BYTES = 64;
+
 /**
  * Origin gate for everything except public discovery documents (MCP 2026-07-28: an
  * Origin that is present and invalid MUST get 403; DNS-rebinding protection). A request
@@ -261,8 +264,12 @@ export function checkOrigin(
     normalized = undefined;
   }
   if (normalized && normalized !== "null" && allowedOrigins.includes(normalized)) return true;
-  // Caller input: the logger caps it and percent-encodes '=', whitespace and the rest.
-  logger.warn("request refused: Origin not allowed", { origin, method: req.method ?? "" });
+  // Caller input from an unauthenticated request: cut to ORIGIN_LOG_MAX_BYTES first so the
+  // line stays small; the logger then percent-encodes '=', whitespace and the rest.
+  logger.warn("request refused: Origin not allowed", {
+    origin: truncateUtf8(origin, ORIGIN_LOG_MAX_BYTES),
+    method: req.method ?? "",
+  });
   res.writeHead(403, { "Content-Type": "application/json", "Cache-Control": "no-store" });
   res.end(
     JSON.stringify({
@@ -384,8 +391,11 @@ export function authenticateRequest(
   if (Array.isArray(header)) {
     return { ok: false, status: 401, ...AUTH_ERRORS.UNAUTHORIZED };
   }
-  const token = bearerFromHeader(header);
-  return provider.verifyAccessToken(token);
+  const credential = parseBearerCredential(header);
+  if (credential.kind === "malformed") {
+    return { ok: false, status: 401, ...AUTH_ERRORS.INVALID_TOKEN };
+  }
+  return provider.verifyAccessToken(credential.kind === "token" ? credential.token : undefined);
 }
 
 export type AuxRequestContext = {

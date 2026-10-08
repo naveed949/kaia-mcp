@@ -30,6 +30,21 @@ export class AuthError extends Error {
   }
 }
 
+/**
+ * A tool, resource or prompt argument the caller got wrong (a bad address, ABI, function
+ * name or argument list). Maps to JSON-RPC -32602 Invalid params and is logged at info as a
+ * client mistake, never as a server fault. Throw it only for input validation: anything
+ * that depends on the server's own state or an upstream service stays a plain Error.
+ */
+export class InvalidParamsError extends Error {
+  readonly code = MCP_ERROR_CODES.InvalidParams;
+
+  constructor(message: string) {
+    super(message);
+    this.name = "InvalidParamsError";
+  }
+}
+
 const NETWORK_CODES = new Set([
   "ECONNREFUSED",
   "ECONNRESET",
@@ -83,6 +98,12 @@ export function toMcpError(err: unknown): McpErrorShape {
 
   if (err instanceof AuthError) {
     return { code: err.code, message: err.message, data: { error: err.error } };
+  }
+
+  // Before the message heuristics below: the caller's own text (a function name containing
+  // "429" or "kaiascan") must not turn a validation error into a rate-limit or upstream one.
+  if (err instanceof InvalidParamsError) {
+    return { code: MCP_ERROR_CODES.InvalidParams, message: safeMessage };
   }
 
   if (isRateLimitLike(err))

@@ -130,30 +130,36 @@ const SDK_CELL_CODES: Readonly<Record<string, number>> = {
 };
 
 /**
- * Messages the stdio entry reports when it drops a client message it cannot use (a
- * response before the era is negotiated, a notification with a bad envelope or revision).
- * Notifications get no JSON-RPC answer, so the code is the one the SDK gives the same
- * problem on a request. Matched on the fixed SDK prefix only: the rest can quote caller
- * input. The generic "Discarded a " entry catches future wordings of the same kind; the
- * SDK's "Discarded the probe instance ..." (a server-side timeout) is not matched.
+ * The exact messages the stdio entry reports when it drops a client message it cannot use
+ * (a response before the era is negotiated, a notification with a bad envelope or
+ * revision). Notifications get no JSON-RPC answer, so the code is the one the SDK gives
+ * the same problem on a request. A message with no caller part must equal the SDK text;
+ * one that ends in caller input is matched on the SDK's whole fixed part, up to and
+ * including its separator, and the rest is never logged. Any other "Discarded ..."
+ * message (a future SDK wording, the server-side probe timeout) is not a known client
+ * mistake and stays at error. server.stdio-log.test.ts pins these against the SDK.
  */
-const SDK_STDIO_DISCARDS: ReadonlyArray<readonly [string, string, number]> = [
+const SDK_STDIO_DISCARDS: ReadonlyArray<
+  readonly [match: "exact" | "prefix", text: string, cell: string, code: number]
+> = [
   [
+    "exact",
     "Discarded a JSON-RPC response received before the connection negotiated an era",
     "response-before-negotiation",
     ProtocolErrorCode.InvalidRequest,
   ],
   [
-    "Discarded a notification with a malformed envelope:",
+    "prefix",
+    "Discarded a notification with a malformed envelope: ",
     "notification-envelope-invalid",
     ProtocolErrorCode.InvalidParams,
   ],
   [
-    "Discarded a notification claiming unsupported protocol revision",
+    "prefix",
+    "Discarded a notification claiming unsupported protocol revision ",
     "notification-unsupported-revision",
     ProtocolErrorCode.UnsupportedProtocolVersion,
   ],
-  ["Discarded a ", "discarded-message", ProtocolErrorCode.InvalidRequest],
 ];
 
 /**
@@ -215,8 +221,8 @@ export function sdkErrorLogEntry(err: unknown): SdkErrorLogEntry {
       meta: { code: err.code, cell: "protocol-error", errorType },
     };
   }
-  for (const [prefix, cell, cellCode] of SDK_STDIO_DISCARDS) {
-    if (message.startsWith(prefix)) {
+  for (const [match, text, cell, cellCode] of SDK_STDIO_DISCARDS) {
+    if (match === "exact" ? message === text : message.startsWith(text)) {
       return {
         level: "info",
         message: "MCP request rejected",
@@ -476,6 +482,40 @@ export type KaiaHttpServerHandle = {
 /** Largest MCP POST body accepted (the SDK's own default limit). */
 const MAX_MCP_BODY_BYTES = 4 * 1024 * 1024;
 
+/**
+ * Deepest JSON nesting accepted in an MCP POST body. A tools/call's `arguments` object is
+ * level 3, so this leaves 61 levels for argument values. Without it a body of a few thousand
+ * nested arrays overflowed the SDK's recursive validation, which answered 500 and never
+ * reached onerror, so nothing was logged.
+ */
+export const MAX_JSON_DEPTH = 64;
+
+/**
+ * True when `raw` nests objects/arrays deeper than `max`. One linear pass over the text,
+ * skipping string contents (and escapes in them); run before JSON.parse.
+ */
+export function jsonNestingExceeds(raw: string, max: number): boolean {
+  let depth = 0;
+  let inString = false;
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw.charCodeAt(i);
+    if (inString) {
+      if (c === 0x5c) {
+        i++; // backslash: skip the escaped character
+      } else if (c === 0x22) {
+        inString = false;
+      }
+    } else if (c === 0x22) {
+      inString = true;
+    } else if (c === 0x5b || c === 0x7b) {
+      if (++depth > max) return true;
+    } else if (c === 0x5d || c === 0x7d) {
+      depth--;
+    }
+  }
+  return false;
+}
+
 function jsonRpcError(
   res: ServerResponse,
   status: number,
@@ -657,6 +697,15 @@ export async function runKaiaMcpServerHttp(port: number): Promise<KaiaHttpServer
         } else {
           jsonRpcError(res, 400, -32600, "Invalid Request: body could not be read");
         }
+        return;
+      }
+      if (jsonNestingExceeds(raw, MAX_JSON_DEPTH)) {
+        logger.info("MCP request rejected", {
+          code: ProtocolErrorCode.ParseError,
+          cell: "json-too-deep",
+          tokenFingerprint: auth?.tokenFingerprint,
+        });
+        jsonRpcError(res, 400, -32700, "Parse error: body is nested too deeply");
         return;
       }
       let parsedBody: unknown;

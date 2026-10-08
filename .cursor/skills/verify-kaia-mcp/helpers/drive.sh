@@ -292,6 +292,30 @@ case "${FEATURE}" in
       if (/code=-32602/.test(te)) fail('an unknown tool name (client mistake) was logged as a Tool error: '+te.slice(0,300));
       console.log('drive fail-closed-auth: unknown + forged tool names denied (-32602, reason=unknown_tool), no outcome=allowed, 0 format violations, name percent-encoded, logged as Request denied at info (code/category only), never Tool error');
     "
+    # Bad tool arguments: a caller mistake. -32602 Invalid params, one Request denied info
+    # line (category=invalid_params errorType=InvalidParamsError), no new Tool error line,
+    # and no caller text in the log.
+    TOOL_ERRORS_BEFORE="$({ grep -c "msg=Tool error" "${LOG_FILE_PATH}" || true; } | tr -d '\n')"
+    DENIED_LINES_BEFORE="$({ grep -c "msg=Request denied" "${LOG_FILE_PATH}" || true; } | tr -d '\n')"
+    mcp_call bad-args "${ACCESS}" '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_kaia_balance","arguments":{"address":"BADARG_MARKER_not_an_address"}}}'
+    TOOL_ERRORS_AFTER="$({ grep -c "msg=Tool error" "${LOG_FILE_PATH}" || true; } | tr -d '\n')"
+    DENIED_LINES_AFTER="$({ grep -c "msg=Request denied" "${LOG_FILE_PATH}" || true; } | tr -d '\n')"
+    { grep "msg=Request denied" "${LOG_FILE_PATH}" || true; } | tail -n 1 | save bad-args.request-denied-line.txt
+    echo "{\"toolErrorsBefore\":${TOOL_ERRORS_BEFORE},\"toolErrorsAfter\":${TOOL_ERRORS_AFTER},\"deniedBefore\":${DENIED_LINES_BEFORE},\"deniedAfter\":${DENIED_LINES_AFTER},\"markerInLog\":$(grep -c BADARG_MARKER "${LOG_FILE_PATH}" || true)}" | save bad-args.log-count.json
+    node -e "
+      const fs=require('fs'); const r=(f)=>fs.readFileSync('${OUT}/'+f,'utf8');
+      const fail=(m)=>{ console.error('drive: '+m); process.exit(1); };
+      const raw=r('bad-args.json'); const dl=raw.split('\\n').filter(l=>l.startsWith('data:')).pop();
+      const e=JSON.parse(dl ? dl.slice(5) : raw).error;
+      if (!e || e.code!==-32602 || !/^Invalid address/.test(e.message)) fail('bad argument must be -32602 Invalid address: '+r('bad-args.json').slice(0,300));
+      const n=JSON.parse(r('bad-args.log-count.json'));
+      if (n.deniedAfter!==n.deniedBefore+1) fail('expected one Request denied line for a bad argument '+JSON.stringify(n));
+      if (n.toolErrorsAfter!==n.toolErrorsBefore) fail('a bad argument (client mistake) was logged as a Tool error '+JSON.stringify(n));
+      if (n.markerInLog!==0) fail('the bad argument value reached the log');
+      const l=r('bad-args.request-denied-line.txt');
+      if (!/ level=info msg=Request denied code=-32602 method=tools\\/call category=invalid_params errorType=InvalidParamsError outcome=denied/.test(l)) fail('bad-argument Request denied line wrong: '+l);
+      console.log('drive fail-closed-auth: bad argument -> -32602 Invalid params, one Request denied line at info (invalid_params, InvalidParamsError), no Tool error, argument not logged');
+    "
     curl -sS -X POST "${BASE}/oauth/revoke" \
       -H "Content-Type: application/x-www-form-urlencoded" \
       --data-urlencode "token=${ACCESS}" | save revoke.json
@@ -713,6 +737,13 @@ case "${FEATURE}" in
     curl -sS -D "${OUT}/bad-json.headers" -o "${OUT}/bad-json.json" -X POST "${BASE}/" \
       -H "Authorization: Bearer ${ACCESS}" -H "Content-Type: application/json" \
       -H "Accept: application/json, text/event-stream" -d '{"jsonrpc":' || true
+    # Nested 5,000 levels deep: 400 -32700 before the SDK (it used to answer 500, unlogged).
+    node -e 'const d=5000; process.stdout.write("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"get_chain_info\",\"arguments\":{\"a\":"+"[".repeat(d)+"]".repeat(d)+"}}}")' >"${OUT}/.deep-body.tmp"
+    curl -sS -D "${OUT}/deep-json.headers" -o "${OUT}/deep-json.json" -X POST "${BASE}/" \
+      -H "Authorization: Bearer ${ACCESS}" -H "Content-Type: application/json" \
+      -H "Accept: application/json, text/event-stream" --data-binary "@${OUT}/.deep-body.tmp" || true
+    rm -f "${OUT}/.deep-body.tmp"
+    { grep "cell=json-too-deep" "$(inst logFile)" || true; } | tail -n 1 | save deep-json.log-line.txt
     head -c $((4 * 1024 * 1024 + 16)) /dev/zero | tr '\0' ' ' >"${OUT}/.big-body.tmp"
     # --next sends a second request that reuses the connection when the server allows it:
     # after a 413 the server must close it (Connection: close), never leave it unread.
@@ -750,10 +781,12 @@ if (/mcp-session-id/i.test(r("preflight.headers"))) fail("preflight still mentio
 if (header("preflight.headers", "access-control-allow-origin") === "*") fail("MCP endpoint CORS is *");
 if (status("jwks-evil-origin.headers") !== 200 || header("jwks-evil-origin.headers", "access-control-allow-origin") !== "*") fail("public JWKS not readable cross-origin");
 if (status("bad-json.headers") !== 400 || JSON.parse(r("bad-json.json")).error.code !== -32700) fail("non-JSON body not 400 -32700: " + r("bad-json.json"));
+if (status("deep-json.headers") !== 400 || JSON.parse(r("deep-json.json")).error.code !== -32700) fail("5,000-deep JSON body not 400 -32700: " + r("deep-json.json"));
+if (!/ level=info msg=MCP request rejected code=-32700 cell=json-too-deep( |$)/.test(r("deep-json.log-line.txt"))) fail("deep JSON not logged as one info json-too-deep line: " + r("deep-json.log-line.txt"));
 if (status("too-large.headers") !== 413 || JSON.parse(r("too-large.json")).error.code !== -32600) fail("oversized body not 413 -32600: " + r("too-large.json").slice(0, 200));
 if (header("too-large.headers", "connection").toLowerCase() !== "close") fail("413 must close the connection (Connection: close), got " + header("too-large.headers", "connection"));
 if (status("after-too-large.headers") !== 200) fail("the request after a 413 on the same curl handle did not answer 200 within 5s (connection left unread?)");
-console.log("drive stateless-transport: non-JSON -> 400 -32700; >4 MB -> 413 -32600 + Connection: close, next request on the same handle 200; GET/DELETE -> 405 Allow: POST; tools/list without initialize ok (scope-filtered); no Mcp-Session-Id minted, stale one ignored; foreign Origin -> 403 (MCP + OAuth, tool never ran); own Origin echoed + Vary; preflight allows MCP-Protocol-Version/Mcp-Method/Mcp-Name; public JWKS ACAO *");
+console.log("drive stateless-transport: non-JSON -> 400 -32700; 5,000-deep JSON -> 400 -32700 + one info json-too-deep line; >4 MB -> 413 -32600 + Connection: close, next request on the same handle 200; GET/DELETE -> 405 Allow: POST; tools/list without initialize ok (scope-filtered); no Mcp-Session-Id minted, stale one ignored; foreign Origin -> 403 (MCP + OAuth, tool never ran); own Origin echoed + Vary; preflight allows MCP-Protocol-Version/Mcp-Method/Mcp-Name; public JWKS ACAO *");
 JS
     ;;
 
@@ -764,7 +797,15 @@ JS
     curl -sS -D "${OUT}/bad-token.headers" -o "${OUT}/bad-token.json" -X POST "${BASE}/" \
       -H "Authorization: Bearer not-a-jwt" \
       -H "Content-Type: application/json" -H "Accept: application/json, text/event-stream" -d "${mcp_init}" || true
+    # Malformed bearer credentials (quoted, '%', trailing comma): invalid_token, not the bare challenge.
+    for m in quoted:'"not-a-jwt"' percent:'not%2Da-jwt' comma:'not-a-jwt,'; do
+      curl -sS -D "${OUT}/malformed-${m%%:*}.headers" -o "${OUT}/malformed-${m%%:*}.json" -X POST "${BASE}/" \
+        -H "Authorization: Bearer ${m#*:}" \
+        -H "Content-Type: application/json" -H "Accept: application/json, text/event-stream" -d "${mcp_init}" || true
+    done
     ACCESS="$(device_token read kaia:read)"
+    # The same valid token with '==' appended (non-canonical base64url): invalid_token.
+    mcp_call padded-token "${ACCESS}==" "${mcp_init}" || true
     DENIED_BEFORE="$(tool_call_outcome_count encode_function_data denied)"
     mcp_call insufficient "${ACCESS}" "${ENCODE_BODY/\"id\":1/\"id\":7}"
     DENIED_AFTER="$(tool_call_outcome_count encode_function_data denied)"
@@ -784,6 +825,11 @@ if (JSON.parse(r("no-token.json")).error.code !== -32040) fail("no-credential bo
 const b = www("bad-token.headers");
 if (status("bad-token.headers") !== 401 || !b.includes('error="invalid_token"') || !b.includes('resource_metadata="' + PRM + '"')) fail("bad-token 401 challenge wrong: " + b);
 if (JSON.parse(r("bad-token.json")).error.code !== -32043) fail("bad-token body not -32043");
+for (const f of ["malformed-quoted", "malformed-percent", "malformed-comma", "padded-token"]) {
+  const w = www(f + ".headers");
+  if (status(f + ".headers") !== 401 || !w.includes('error="invalid_token"') || !w.includes('resource_metadata="' + PRM + '"')) fail(f + " 401 invalid_token challenge wrong: " + w);
+  if (JSON.parse(r(f + ".json")).error.code !== -32043) fail(f + " body not -32043");
+}
 const i = www("insufficient.headers");
 if (status("insufficient.headers") !== 403) fail("insufficient scope not HTTP 403: " + status("insufficient.headers"));
 for (const p of ['error="insufficient_scope"', 'scope="kaia:encode"', 'resource_metadata="' + PRM + '"']) if (!i.includes(p)) fail("403 challenge missing " + p + ": " + i);
@@ -793,7 +839,7 @@ if (r("insufficient.json").includes(process.env.EXPECTED_CALLDATA)) fail("denied
 const c = JSON.parse(r("insufficient.tool-call-log-count.json")); if (c.after !== c.before + 1) fail("expected one outcome=denied Tool call line " + JSON.stringify(c));
 if (status("allowed-list.headers") !== 200) fail("same token could not list tools");
 const prm = JSON.parse(r("prm.json")); if (prm.resource !== B) fail("resource_metadata URL does not serve PRM with resource=" + B + ": " + r("prm.json"));
-console.log("drive bearer-challenges: 401 no-credential challenge (resource_metadata + scope, no error); 401 invalid_token challenge; insufficient scope -> 403 Bearer error=insufficient_scope scope=kaia:encode resource_metadata, body JSON-RPC -32042 with id, one denied log line, no calldata; resource_metadata URL serves PRM");
+console.log("drive bearer-challenges: 401 no-credential challenge (resource_metadata + scope, no error); 401 invalid_token challenge (garbage, quoted, %, trailing comma, valid token + ==); insufficient scope -> 403 Bearer error=insufficient_scope scope=kaia:encode resource_metadata, body JSON-RPC -32042 with id, one denied log line, no calldata; resource_metadata URL serves PRM");
 JS
     ;;
 
@@ -1163,7 +1209,8 @@ for (const [f, code] of [["forge-name", -32020], ["forge-header", -32020], ["for
 if (n.allowedAfter !== n.allowedBefore) fail("a forged modern request produced an outcome=allowed line " + JSON.stringify(n));
 if (status("forge-origin.headers") !== 403) fail("foreign Origin not 403: " + status("forge-origin.headers"));
 const ol = r("forge-origin-line.txt").trim();
-if (!/ level=warn msg=request refused: Origin not allowed origin=http:\/\/x\.example%20x%20msg%3DTool%20call%20tool%3Dgenerate_wallet%20outcome%3Dallowed\S* method=POST$/.test(ol)) fail("Origin warn line must hold the Origin as one encoded value: " + ol.slice(0, 300));
+// The Origin is cut to its first 64 bytes (plus an encoded ellipsis) before encoding.
+if (!/ level=warn msg=request refused: Origin not allowed origin=http:\/\/x\.example%20x%20msg%3DTool%20call%20tool%3Dgenerate_wallet%20outcome%3Dal%E2%80%A6 method=POST$/.test(ol)) fail("Origin warn line must hold the Origin's first 64 bytes as one encoded value: " + ol.slice(0, 300));
 if (n.originPlanted !== 0) fail("a foreign Origin planted outcome=allowed in its warn line " + JSON.stringify(n));
 if (n.formatViolations !== 0) fail("log lines with a raw = inside a value, duplicate key or non-printable byte " + JSON.stringify(n));
 if (n.s1ToolCallsAfter !== n.s1ToolCallsBefore) fail("a forged modern request produced a 'msg=Tool call tool=generate_wallet ' line " + JSON.stringify(n));

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { handleGenerateWallet, handleEncodeFunctionData } from "./wallet.js";
 import { resetConfigCache } from "../config.js";
 import { AuthError, MCP_ERROR_CODES } from "../utils/errors.js";
@@ -39,6 +39,62 @@ describe("handleGenerateWallet", () => {
     const pkMatch = text.match(/Private key \(hex\): (0x[a-fA-F0-9]{64})/);
     expect(pkMatch).toBeTruthy();
     expect(pkMatch![1].length).toBe(66);
+  });
+
+  it("the 'key generated' warning goes through the logger (one formatted warn line, no key)", async () => {
+    process.env.KAIA_ALLOW_UNSAFE_WALLET = "1";
+    process.env.LOG_LEVEL = "debug";
+    resetConfigCache();
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const chunks: string[] = [];
+    const orig = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      chunks.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write;
+    let text: string;
+    let warnCalls = -1;
+    try {
+      text = ((await handleGenerateWallet({})).content[0] as { text: string }).text;
+    } finally {
+      process.stderr.write = orig;
+      // mockRestore clears the recorded calls: read them first
+      warnCalls = warnSpy.mock.calls.length;
+      warnSpy.mockRestore();
+      delete process.env.LOG_LEVEL;
+    }
+    expect(warnCalls).toBe(0);
+    const lines = chunks.join("").split("\n").filter(Boolean);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatch(
+      /^timestamp=\S+ level=warn msg=generate_wallet: a private key was generated; never log or expose it$/
+    );
+    const key = /Private key \(hex\): (0x[a-fA-F0-9]{64})/.exec(text)![1];
+    expect(chunks.join("")).not.toContain(key.slice(2));
+  });
+
+  it("the warning respects LOG_LEVEL (silent at error)", async () => {
+    process.env.KAIA_ALLOW_UNSAFE_WALLET = "1";
+    process.env.LOG_LEVEL = "error";
+    resetConfigCache();
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const chunks: string[] = [];
+    const orig = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      chunks.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write;
+    let warnCalls = -1;
+    try {
+      await handleGenerateWallet({});
+    } finally {
+      process.stderr.write = orig;
+      warnCalls = warnSpy.mock.calls.length;
+      warnSpy.mockRestore();
+      delete process.env.LOG_LEVEL;
+    }
+    expect(warnCalls).toBe(0);
+    expect(chunks.join("")).toBe("");
   });
 
   it("includes display network when provided (unsafe mode)", async () => {

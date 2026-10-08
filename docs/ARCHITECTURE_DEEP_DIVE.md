@@ -81,7 +81,7 @@ Design choice: the server does not store a separate map from name → handler; i
 /**
  * callTool is the single entry point for tools/call. The server passes
  * request.params.name and request.params.arguments here. Any thrown error
- * is caught by wrapToolHandler in server.ts and converted to McpError.
+ * is caught by wrapToolHandler in server.ts and converted to a ProtocolError.
  */
 export async function callTool(
   name: string,
@@ -106,7 +106,7 @@ Why a switch instead of a map? The switch is explicit and type-safe: if you add 
 
 ### 2.1 Intent
 
-Handlers throw normal JavaScript errors (network, validation, API errors). The MCP protocol expects JSON-RPC errors with specific codes. **toMcpError** normalizes any thrown value into a single shape `{ code, message, data? }` that the server can turn into an `McpError` and send to the client.
+Handlers throw normal JavaScript errors (network, validation, API errors). The MCP protocol expects JSON-RPC errors with specific codes. **toMcpError** normalizes any thrown value into a single shape `{ code, message, data? }` that the server turns into a `ProtocolError` (from `@modelcontextprotocol/server`) and sends to the client. Argument validation throws `InvalidParamsError` (`src/utils/errors.ts`), which maps to `-32602` Invalid params.
 
 ### 2.2 Error Codes (src/utils/errors.ts)
 
@@ -171,7 +171,7 @@ function isKaiaScanApiLike(err: unknown): boolean {
 }
 ```
 
-Order of checks in `toMcpError` is important: rate limit and network are checked before the generic “has a -32xxx code” and before InternalError. So a 429 from KaiaScan is mapped to RateLimit even if the error object has other properties.
+Order of checks in `toMcpError` is important: `AuthError` and `InvalidParamsError` come first (so caller text such as a function name containing "429" cannot turn a validation error into a rate-limit one), then rate limit and network are checked before the generic “has a -32xxx code” and before InternalError. So a 429 from KaiaScan is mapped to RateLimit even if the error object has other properties.
 
 ### 2.4 Annotated Code: toMcpError and Server Usage
 
@@ -182,6 +182,11 @@ export function toMcpError(err: unknown): McpErrorShape {
   const message = err instanceof Error ? err.message : String(err ?? "Internal error");
   const safeMessage = message || "Internal error";
 
+  if (err instanceof AuthError)
+    return { code: err.code, message: err.message, data: { error: err.error } };
+  // A caller's bad argument: -32602, checked before the message heuristics below
+  if (err instanceof InvalidParamsError)
+    return { code: MCP_ERROR_CODES.InvalidParams, message: safeMessage };
   if (isRateLimitLike(err))
     return { code: MCP_ERROR_CODES.RateLimit, message: safeMessage, data: err };
   if (isNetworkLike(err))
@@ -205,16 +210,18 @@ function wrapToolHandler<T, R>(
   method: string,
   handler: (req: T) => R | Promise<R>
 ): (req: T, extra: unknown) => Promise<R> {
-  return async (req: T, extra: unknown) => {
+  return async (req: T, _extra: unknown) => {
     try {
       return await Promise.resolve(handler(req));
     } catch (err) {
-      const mcp = err instanceof McpError ? { code: err.code, data: err.data } : toMcpError(err);
+      const mcp =
+        err instanceof ProtocolError ? { code: err.code, data: err.data } : toMcpError(err);
       // Code and category only: error messages often echo caller input. The logger
       // percent-encodes every value, so even errorType cannot add a field.
       const errorType = err instanceof Error ? err.name : typeof err;
       if (CLIENT_HANDLER_CODES.has(mcp.code)) {
-        // unknown name, bad arguments, in-band auth denial: a client mistake, not a fault
+        // unknown name, invalid argument (InvalidParamsError, -32602), in-band auth
+        // denial: a client mistake, not a fault
         logger.info("Request denied", {
           method,
           code: mcp.code,
@@ -229,9 +236,9 @@ function wrapToolHandler<T, R>(
           errorType,
         });
       }
-      if (err instanceof McpError) throw err;
+      if (err instanceof ProtocolError) throw err;
       const shape = toMcpError(err);
-      throw new McpError(shape.code, shape.message, shape.data);
+      throw new ProtocolError(shape.code, shape.message, shape.data);
     }
   };
 }

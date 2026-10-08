@@ -1,5 +1,5 @@
+import { AuthError, InvalidParamsError, MCP_ERROR_CODES, toMcpError } from "./errors.js";
 import { describe, it, expect } from "vitest";
-import { toMcpError, MCP_ERROR_CODES, AuthError } from "./errors.js";
 import { AUTH_ERRORS } from "../auth/constants.js";
 
 describe("toMcpError", () => {
@@ -53,5 +53,16 @@ describe("toMcpError", () => {
 
     const r2 = toMcpError(undefined);
     expect(r2.code).toBe(MCP_ERROR_CODES.InternalError);
+  });
+});
+
+describe("InvalidParamsError", () => {
+  it("carries JSON-RPC InvalidParams (-32602)", () => {
+    const e = new InvalidParamsError("x");
+    expect(e).toBeInstanceOf(Error);
+    expect(e.name).toBe("InvalidParamsError");
+    expect(e.code).toBe(MCP_ERROR_CODES.InvalidParams);
+    expect(e.code).toBe(-32602);
+    expect(toMcpError(e)).toEqual({ code: -32602, message: "x" });
   });
 });

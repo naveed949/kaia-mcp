@@ -41,7 +41,7 @@ describe("handleReadContract", () => {
       contractAddress: validAddress,
       functionName: "balanceOf",
       abi: JSON.stringify(balanceOfAbi),
-      args: ["0xholder0000000000000000000000000000000000"],
+      args: ["0x00000000000000000000000000000000000000aa"],
       network: "mainnet",
     });
     expect(result.content).toHaveLength(1);
@@ -57,7 +57,7 @@ describe("handleReadContract", () => {
       address: validAddress,
       abi: balanceOfAbi,
       functionName: "balanceOf",
-      args: ["0xholder0000000000000000000000000000000000"],
+      args: ["0x00000000000000000000000000000000000000aa"],
     });
   });
 
@@ -66,6 +66,7 @@ describe("handleReadContract", () => {
       contractAddress: validAddress,
       functionName: "balanceOf",
       abi: balanceOfAbi,
+      args: ["0x00000000000000000000000000000000000000aa"],
       network: "mainnet",
     });
     const client = mockCreateRpcClient.mock.results[0]?.value as {
@@ -75,7 +76,7 @@ describe("handleReadContract", () => {
       expect.objectContaining({
         address: validAddress,
         functionName: "balanceOf",
-        args: undefined,
+        args: ["0x00000000000000000000000000000000000000aa"],
       })
     );
   });

@@ -4,6 +4,7 @@
  */
 
 import { createKaiaScanClient } from "../clients/kaiascan.js";
+import { InvalidParamsError } from "../utils/errors.js";
 import { validateAddress, validateNetwork } from "../utils/validation.js";
 
 // --- Tool definitions ---
@@ -175,7 +176,7 @@ export async function handleGetNftItem(args: {
   const tokenId =
     args.tokenId !== undefined && args.tokenId !== null ? String(args.tokenId).trim() : "";
   if (!tokenId) {
-    throw new Error("tokenId is required.");
+    throw new InvalidParamsError("tokenId is required.");
   }
   validateNetwork(args.network);
 

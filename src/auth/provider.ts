@@ -182,8 +182,10 @@ export class DemoOAuthProvider {
       code_challenge_methods_supported: ["S256"],
       token_endpoint_auth_methods_supported: ["none"],
       scopes_supported: [...ALL_SCOPES],
+      // No id_token is ever issued, so no id_token_signing_alg_values_supported and no
+      // response type beyond "code". The openid-configuration path stays as an alias of
+      // the RFC 8414 document because gateways (s1-tool-gate) discover through it.
       subject_types_supported: ["public"],
-      id_token_signing_alg_values_supported: ["none"],
       access_token_signing_alg_values_supported: ["RS256"],
       ...(this.introspectionEnabled
         ? {

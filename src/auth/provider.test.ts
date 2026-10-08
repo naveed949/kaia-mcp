@@ -208,6 +208,16 @@ describe("DemoOAuthProvider", () => {
     ).toBe(false);
   });
 
+  it("discovery advertises no id_token support because no id tokens are issued", () => {
+    const disc = createDemoOAuthProvider({ issuer }).discovery();
+    expect(disc).not.toHaveProperty("id_token_signing_alg_values_supported");
+    expect(disc.response_types_supported).toEqual(["code"]);
+    expect(disc.scopes_supported).not.toContain("openid");
+    expect(JSON.stringify(disc)).not.toMatch(/id_token/);
+    // Contract consumed by s1-tool-gate's claims-gate proxy.
+    expect(disc).toMatchObject({ issuer, jwks_uri: `${issuer}/oauth/jwks` });
+  });
+
   it("publishes a public-only JWKS whose kid is the RFC 7638 thumbprint, and persists a dev key with 0600", () => {
     const provider = createDemoOAuthProvider({ issuer });
     const [key] = provider.jwks().keys;

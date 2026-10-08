@@ -102,6 +102,9 @@ The response never echoes the token.
 `plain` PKCE is rejected.
 
 1. Discover: `GET /.well-known/openid-configuration` and `GET /.well-known/oauth-protected-resource`.
+
+   The authorization-server metadata is served at both `/.well-known/oauth-authorization-server` (RFC 8414) and `/.well-known/openid-configuration`. This demo IdP issues no ID tokens, so the document has no `id_token_signing_alg_values_supported`, `response_types_supported` is `["code"]`, and `openid` is not a supported scope.
+
 2. Create a PKCE pair (`code_verifier` 43–128 chars; `code_challenge = BASE64URL(SHA256(verifier))`).
 3. Open the browser at:
 

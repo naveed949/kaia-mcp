@@ -128,12 +128,52 @@ describe("HTTP log and auth follow-ups", () => {
       });
     }
 
+    it("absolute bound: the longest Origin line is at most 310 bytes, whatever the header", async () => {
+      const { h } = await start();
+      chunks.length = 0;
+      for (const origin of [
+        "\u00ff".repeat(32), // 64 UTF-8 bytes: exactly at the cap, every byte encoded
+        "\u00ff".repeat(33),
+        "\u00ff".repeat(4000),
+        "%".repeat(64),
+        "=".repeat(65),
+      ]) {
+        await rawPost(h.localUrl, { Origin: origin }, "{}");
+      }
+      const warn = lines().filter((l) => l.includes("msg=request refused: Origin not allowed"));
+      expect(warn).toHaveLength(5);
+      const longest = Math.max(...warn.map((l) => Buffer.byteLength(l)));
+      expect(longest).toBeLessThanOrEqual(310);
+    });
+
     it("a short foreign Origin is logged whole", async () => {
       const { h } = await start();
       await rawPost(h.localUrl, { Origin: "https://evil.example.test" }, "{}");
       const warn = lines().find((l) => l.includes("msg=request refused: Origin not allowed"));
       expect(warn).toContain(" origin=https://evil.example.test ");
     });
+  });
+
+  describe("L2: a refused Origin is redacted before it is cut", () => {
+    for (const [label, wrap] of [
+      ["bare JWT", (t: string) => t],
+      ["JWT in a URL path", (t: string) => `https://evil.example.test/${t}`],
+      ["Bearer <JWT>", (t: string) => `Bearer ${t}`],
+      ["JWT after 40 bytes of padding", (t: string) => `${"a".repeat(40)}${t}`],
+    ] as const) {
+      it(`${label}: no eyJ fragment of the token reaches the log`, async () => {
+        const { h, token } = await start();
+        chunks.length = 0;
+        const res = await rawPost(h.localUrl, { Origin: wrap(token) }, "{}");
+        expect(res.status).toBe(403);
+        const warn = lines().filter((l) => l.includes("msg=request refused: Origin not allowed"));
+        expect(warn).toHaveLength(1);
+        const out = chunks.join("");
+        expect(out).not.toContain("eyJ");
+        expect(out).not.toContain(token.slice(0, 20));
+        expect(out).not.toContain(token.split(".")[2].slice(0, 16));
+      });
+    }
   });
 
   describe("L4: malformed Bearer credentials get the invalid_token challenge", () => {

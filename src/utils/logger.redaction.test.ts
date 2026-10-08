@@ -78,4 +78,16 @@ describe("logger redaction order and coverage", () => {
     expect(out()).toContain("obj=a%20b%20outcome%3Dallowed");
     expect(out()).not.toContain(" outcome=allowed");
   });
+
+  it("an upstream URL in any field loses its key path segment, query string and userinfo", () => {
+    const key = "FAKEKEYpath7Qx9v2mN4bLr8Tz3Wc6Yd";
+    const url = `https://u:pw9secret@rpc.example.test/v2/${key}?apikey=FAKEQUERY55&x=1`;
+    logger.error("probe", {
+      error: new Error(`HTTP request failed.\n\nURL: ${url}\nRequest body: {}`),
+      detail: `URL: ${url}`,
+      list: [url],
+    });
+    expect(out()).not.toMatch(/FAKEKEY|FAKEQUERY55|pw9secret/);
+    expect(out()).toContain("rpc.example.test/v2/[redacted]?[redacted]");
+  });
 });

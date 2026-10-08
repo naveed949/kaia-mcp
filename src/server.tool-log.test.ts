@@ -220,18 +220,22 @@ describe("Tool call audit log", () => {
     expect(denied[0]).toContain("category=invalid_params");
   });
 
-  it("the Tool error line for a server fault carries a code and category, not the raw message", async () => {
+  it("a server fault: the caller gets a generic message, the detail stays in the log (encoded)", async () => {
     const marker = "SERVER_FAULT_MARKER";
-    getChainId.mockRejectedValueOnce(new Error(`unexpected ${marker}`));
+    getChainId.mockRejectedValueOnce(new Error(`unexpected ${marker} x=1`));
     const client = await connect(auth([SCOPES.READ]));
-    await expect(client.callTool({ name: "get_chain_info", arguments: {} })).rejects.toThrow();
+    const err = await client.callTool({ name: "get_chain_info", arguments: {} }).then(
+      () => undefined,
+      (e: { code: number; message: string; data?: unknown }) => e
+    );
+    expect(err).toMatchObject({ code: -32603, message: "Internal error" });
+    expect(JSON.stringify(err)).not.toContain(marker);
     const out = chunks.join("");
-    expect(out).not.toContain(marker);
     const errorLines = out.split("\n").filter((l) => l.includes("msg=Tool error"));
     expect(errorLines).toHaveLength(1);
-    expect(errorLines[0]).toMatch(/ code=-32603 /);
-    expect(errorLines[0]).toContain(" level=error ");
-    expect(errorLines[0]).toContain("category=internal");
+    expect(errorLines[0]).toMatch(
+      / level=error msg=Tool error code=-32603 method=tools\/call category=internal errorType=Error detail=unexpected%20SERVER_FAULT_MARKER%20x%3D1$/
+    );
   });
 
   it("resource and prompt errors do not log the caller's uri or name either", async () => {

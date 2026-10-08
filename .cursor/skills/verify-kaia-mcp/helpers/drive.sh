@@ -1180,6 +1180,11 @@ JS
       -H "Origin: http://x.example ${FORGE_HDR}" -H "Content-Type: application/json" \
       --data-binary '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' || true
     { grep "msg=request refused: Origin not allowed" "${LOG_FILE_PATH}" || true; } | tail -n 1 | save forge-origin-line.txt
+    # A JWT sent as Origin is redacted before the 64-byte cut: no eyJ fragment in the log.
+    curl -sS -D "${OUT}/jwt-origin.headers" -o "${OUT}/jwt-origin.json" -X POST "${BASE}/" \
+      -H "Origin: ${READ_TOKEN}" -H "Content-Type: application/json" \
+      --data-binary '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' || true
+    { grep "msg=request refused: Origin not allowed" "${LOG_FILE_PATH}" || true; } | tail -n 1 | save jwt-origin-line.txt
     modern_post forge-name forge-name.body.json x
     modern_post forge-header forge-header.body.json "${FORGE_HDR}"
     # header and envelope agree on the crafted version, so the SDK's UnsupportedProtocolVersion
@@ -1212,6 +1217,9 @@ const ol = r("forge-origin-line.txt").trim();
 // The Origin is cut to its first 64 bytes (plus an encoded ellipsis) before encoding.
 if (!/ level=warn msg=request refused: Origin not allowed origin=http:\/\/x\.example%20x%20msg%3DTool%20call%20tool%3Dgenerate_wallet%20outcome%3Dal%E2%80%A6 method=POST$/.test(ol)) fail("Origin warn line must hold the Origin's first 64 bytes as one encoded value: " + ol.slice(0, 300));
 if (n.originPlanted !== 0) fail("a foreign Origin planted outcome=allowed in its warn line " + JSON.stringify(n));
+if (status("jwt-origin.headers") !== 403) fail("JWT-as-Origin not 403: " + status("jwt-origin.headers"));
+const jl = r("jwt-origin-line.txt").trim();
+if (!/ level=warn msg=request refused: Origin not allowed origin=\[redacted-jwt\] method=POST$/.test(jl) || /eyJ/.test(jl)) fail("a JWT sent as Origin must be redacted before it is cut (no eyJ fragment): " + jl.replace(/eyJ[A-Za-z0-9_-]*/g, "eyJ<masked>").slice(0, 300));
 if (n.formatViolations !== 0) fail("log lines with a raw = inside a value, duplicate key or non-printable byte " + JSON.stringify(n));
 if (n.s1ToolCallsAfter !== n.s1ToolCallsBefore) fail("a forged modern request produced a 'msg=Tool call tool=generate_wallet ' line " + JSON.stringify(n));
 if (n.rejectedAfter - n.rejectedBefore !== 6) fail("expected 6 new 'MCP request rejected' lines " + JSON.stringify(n));
@@ -1222,7 +1230,7 @@ for (const l of lines) {
 }
 if (n.bytesAfterForge - n.bytesBefore > 3 * 1024) fail("3 forged requests grew the log by " + (n.bytesAfterForge - n.bytesBefore) + " bytes");
 if (n.bytesAfterFlood - n.bytesAfterForge > 3 * 1024) fail("3 x 1 MiB names grew the log by " + (n.bytesAfterFlood - n.bytesAfterForge) + " bytes");
-console.log("drive protocol-2026-07-28: forged params.name / Mcp-Name / _meta version -> 400 (-32020/-32022), 0 new allowed Tool call lines, 0 s1 Tool call lines, rejected lines carry cell+code only; forged foreign Origin -> 403 with the Origin as one encoded value (0 planted tokens); 0 log format violations; 3 x 1 MiB names added " + (n.bytesAfterFlood - n.bytesAfterForge) + " log bytes");
+console.log("drive protocol-2026-07-28: forged params.name / Mcp-Name / _meta version -> 400 (-32020/-32022), 0 new allowed Tool call lines, 0 s1 Tool call lines, rejected lines carry cell+code only; forged foreign Origin -> 403 with the Origin as one encoded value (0 planted tokens); JWT as Origin -> 403, logged origin=[redacted-jwt] (no eyJ fragment); 0 log format violations; 3 x 1 MiB names added " + (n.bytesAfterFlood - n.bytesAfterForge) + " log bytes");
 JS
     ;;
 

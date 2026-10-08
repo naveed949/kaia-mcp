@@ -4,8 +4,13 @@
  */
 
 import { createKaiaScanClient } from "../clients/kaiascan.js";
-import { InvalidParamsError } from "../utils/errors.js";
-import { validateAddress, validateNetwork } from "../utils/validation.js";
+import { KaiaScanApiError } from "../utils/errors.js";
+import {
+  optionalNumber,
+  validateAddress,
+  validateNetwork,
+  validateTokenId,
+} from "../utils/validation.js";
 
 // --- Tool definitions ---
 
@@ -139,8 +144,7 @@ export async function handleGetNftInfo(args: {
   try {
     data = await client.get<NonFungibleTokenResponse>(path);
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(`KaiaScan API error (non-fungible token): ${msg}`);
+    throw KaiaScanApiError.wrap("non-fungible token", err);
   }
 
   const name = data?.name ?? "—";
@@ -173,11 +177,7 @@ export async function handleGetNftItem(args: {
   network?: unknown;
 }): Promise<{ content: Array<{ type: "text"; text: string }> }> {
   const contractAddress = validateAddress(args.contractAddress);
-  const tokenId =
-    args.tokenId !== undefined && args.tokenId !== null ? String(args.tokenId).trim() : "";
-  if (!tokenId) {
-    throw new InvalidParamsError("tokenId is required.");
-  }
+  const tokenId = validateTokenId(args.tokenId);
   validateNetwork(args.network);
 
   const client = createKaiaScanClient();
@@ -187,8 +187,7 @@ export async function handleGetNftItem(args: {
   try {
     data = await client.get<NftTokenItemResponse>(path);
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(`KaiaScan API error (NFT item): ${msg}`);
+    throw KaiaScanApiError.wrap("NFT item", err);
   }
 
   const info = data?.info;
@@ -241,8 +240,8 @@ export async function handleGetNftTransfers(args: {
 }): Promise<{ content: Array<{ type: "text"; text: string }> }> {
   const contractAddress = validateAddress(args.contractAddress);
   validateNetwork(args.network);
-  const page = Math.max(1, Number(args.page) || 1);
-  const size = Math.min(2000, Math.max(1, Number(args.size) || 20));
+  const page = Math.max(1, optionalNumber(args.page, "page") || 1);
+  const size = Math.min(2000, Math.max(1, optionalNumber(args.size, "size") || 20));
 
   const client = createKaiaScanClient();
   const path = `api/v1/nfts/${contractAddress}/transfers`;
@@ -252,8 +251,7 @@ export async function handleGetNftTransfers(args: {
   try {
     data = await client.get<NftTransfersResponse>(path, params);
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(`KaiaScan API error (NFT transfers): ${msg}`);
+    throw KaiaScanApiError.wrap("NFT transfers", err);
   }
 
   const results = data?.results ?? [];

@@ -4,6 +4,7 @@
 
 import { createRpcClient } from "../clients/rpc.js";
 import { createKaiaScanClient } from "../clients/kaiascan.js";
+import { KaiaScanApiError } from "../utils/errors.js";
 import { getChain } from "../chains.js";
 import { formatKaia } from "../utils/format.js";
 import { validateNetwork } from "../utils/validation.js";
@@ -102,8 +103,7 @@ export async function handleGetKaiaPrice(args: {
   try {
     data = await client.get<KaiaApiResponse>(path);
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(`KaiaScan API error (Kaia price): ${msg}`);
+    throw KaiaScanApiError.wrap("Kaia price", err);
   }
 
   const price = data?.klay_price;

@@ -5,8 +5,16 @@
 import type { Address } from "viem";
 import { createRpcClient } from "../clients/rpc.js";
 import { createKaiaScanClient } from "../clients/kaiascan.js";
+import { KaiaScanApiError } from "../utils/errors.js";
 import { formatKaia } from "../utils/format.js";
-import { validateAddress, validateNetwork, validateTxHash } from "../utils/validation.js";
+import {
+  optionalNumber,
+  validateAddress,
+  validateHexData,
+  validateNetwork,
+  validateTxHash,
+  validateWeiValue,
+} from "../utils/validation.js";
 
 const INPUT_TRUNCATE_LEN = 66; // 0x + 32 bytes hex
 
@@ -190,8 +198,8 @@ export async function handleGetAccountTransactions(args: {
 }): Promise<{ content: Array<{ type: "text"; text: string }> }> {
   const address = validateAddress(args.address);
   validateNetwork(args.network);
-  const page = Math.max(1, Number(args.page) || 1);
-  const limit = Math.min(2000, Math.max(1, Number(args.limit) || 20));
+  const page = Math.max(1, optionalNumber(args.page, "page") || 1);
+  const limit = Math.min(2000, Math.max(1, optionalNumber(args.limit, "limit") || 20));
 
   const client = createKaiaScanClient();
   const path = `api/v1/accounts/${address}/transactions`;
@@ -201,8 +209,7 @@ export async function handleGetAccountTransactions(args: {
   try {
     data = await client.get<AccountTransactionsResponse>(path, params);
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(`KaiaScan API error (account transactions): ${msg}`);
+    throw KaiaScanApiError.wrap("account transactions", err);
   }
 
   const results = data?.results ?? [];
@@ -230,13 +237,6 @@ export async function handleGetAccountTransactions(args: {
   return { content: [{ type: "text" as const, text }] };
 }
 
-function parseValue(value: unknown): bigint | undefined {
-  if (value === undefined || value === null || value === "") return undefined;
-  const s = String(value).trim();
-  if (s.startsWith("0x")) return BigInt(s);
-  return BigInt(s);
-}
-
 export async function handleEstimateGas(args: {
   from?: unknown;
   to?: unknown;
@@ -244,17 +244,14 @@ export async function handleEstimateGas(args: {
   data?: unknown;
   network?: unknown;
 }): Promise<{ content: Array<{ type: "text"; text: string }> }> {
+  // Every argument is validated before the RPC call: a bad one is the caller's (-32602).
   const from = validateAddress(args.from) as Address;
   const to =
-    args.to != null && String(args.to).trim() !== ""
-      ? (validateAddress(args.to) as Address)
-      : undefined;
-  const value = parseValue(args.value);
-  let data: `0x${string}` | undefined;
-  if (args.data != null && String(args.data).trim() !== "") {
-    const d = String(args.data).trim();
-    data = (d.startsWith("0x") ? d : `0x${d}`) as `0x${string}`;
-  }
+    args.to === undefined || args.to === null || (typeof args.to === "string" && !args.to.trim())
+      ? undefined
+      : (validateAddress(args.to) as Address);
+  const value = validateWeiValue(args.value);
+  const data = validateHexData(args.data);
   const network = validateNetwork(args.network);
 
   const client = createRpcClient(network);

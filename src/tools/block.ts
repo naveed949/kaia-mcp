@@ -4,7 +4,7 @@
 
 import { createRpcClient } from "../clients/rpc.js";
 import { createKaiaScanClient } from "../clients/kaiascan.js";
-import { InvalidParamsError } from "../utils/errors.js";
+import { InvalidParamsError, KaiaScanApiError } from "../utils/errors.js";
 import { validateNetwork, validateBlockNumberOrHash } from "../utils/validation.js";
 
 // --- Tool definitions ---
@@ -189,8 +189,7 @@ export async function handleGetBlockRewards(args: {
   try {
     rewards = await client.get<BlockRewardsResponse>(rewardsPath);
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(`KaiaScan API error (block rewards): ${msg}`);
+    throw KaiaScanApiError.wrap("block rewards", err);
   }
 
   try {

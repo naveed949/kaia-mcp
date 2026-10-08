@@ -5,9 +5,12 @@
 
 import { createRpcClient } from "../clients/rpc.js";
 import { createKaiaScanClient } from "../clients/kaiascan.js";
+import { KaiaScanApiError } from "../utils/errors.js";
 import {
   encodeCallData,
   parseAbiInput,
+  resolveAbiFunction,
+  validateAbiFunctionTypes,
   validateAddress,
   validateCallArgs,
   validateFunctionName,
@@ -104,13 +107,18 @@ export async function handleReadContract(args: {
   const callArgs = validateCallArgs(args.args);
   // Encode once up front: a function or argument that does not fit the ABI is the caller's
   // mistake (-32602), found before any RPC call is made.
+  const fn = resolveAbiFunction(abi, functionName, callArgs);
   encodeCallData(abi, functionName, callArgs);
+  // The result is decoded with the function's `outputs`: a missing or bogus output type is
+  // the caller's mistake too, and must be caught here rather than after the RPC returns.
+  validateAbiFunctionTypes(fn, { requireOutputs: true });
 
   const client = createRpcClient(network);
   const result = await client.readContract({
     address: contractAddress,
     abi,
-    functionName,
+    // The resolved name: viem decodes by name, so encode and decode use the same function.
+    functionName: fn.name,
     args: callArgs,
   });
 
@@ -140,8 +148,7 @@ export async function handleGetContractAbi(args: {
   try {
     data = await client.get<unknown>(path);
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(`KaiaScan API error (contract ABI): ${msg}`);
+    throw KaiaScanApiError.wrap("contract ABI", err);
   }
 
   const text =
@@ -171,8 +178,7 @@ export async function handleGetContractSource(args: {
   try {
     data = await client.get<GetContractsResponse>(path, params);
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(`KaiaScan API error (contract source): ${msg}`);
+    throw KaiaScanApiError.wrap("contract source", err);
   }
 
   const list = Array.isArray(data) ? data : [];

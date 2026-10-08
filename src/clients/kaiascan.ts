@@ -6,6 +6,9 @@
 import type { Config } from "../config.js";
 import { getConfig } from "../config.js";
 import { createRateLimiter, type RateLimiter } from "../utils/rate-limit.js";
+import { KaiaScanApiError, KaiaScanRateLimitError } from "../utils/errors.js";
+
+export { KaiaScanApiError, KaiaScanRateLimitError };
 
 const KAIASCAN_API_BASE = "https://api.kaiascan.io";
 
@@ -18,14 +21,6 @@ function getKaiaScanLimiter(requestsPerSecond: number) {
     kaiascanLimiterCache.set(requestsPerSecond, limiter);
   }
   return limiter;
-}
-
-export class KaiaScanRateLimitError extends Error {
-  readonly status = 429;
-  constructor(message = "KaiaScan API rate limit (429)") {
-    super(message);
-    this.name = "KaiaScanRateLimitError";
-  }
 }
 
 export type KaiaScanClient = {
@@ -58,11 +53,13 @@ export function createKaiaScanClient(config?: Config): KaiaScanClient {
     retry = false
   ): Promise<T> {
     await limiter.acquire();
+    // The URL carries the API key: it is never put into an error (message or cause).
     const url = buildUrl(path, params, c.kaiascanApiKey);
     const controller = new AbortController();
     const id = setTimeout(() => controller.abort(), timeoutMs);
+    let res: Response;
     try {
-      const res = await fetch(url, {
+      res = await fetch(url, {
         method: "GET",
         headers: {
           Accept: "application/json",
@@ -70,23 +67,25 @@ export function createKaiaScanClient(config?: Config): KaiaScanClient {
         },
         signal: controller.signal,
       });
-      clearTimeout(id);
-      if (res.status === 429) {
-        if (!retry) {
-          await new Promise((r) => setTimeout(r, 1500));
-          return doFetch<T>(path, params, true);
-        }
-        throw new KaiaScanRateLimitError(
-          `KaiaScan API rate limit: ${res.status} ${res.statusText}`
-        );
-      }
-      if (!res.ok) {
-        throw new Error(`KaiaScan API error: ${res.status} ${res.statusText}`);
-      }
-      return res.json() as Promise<T>;
     } catch (err) {
       clearTimeout(id);
-      throw err;
+      throw new KaiaScanApiError({ cause: err });
+    }
+    clearTimeout(id);
+    if (res.status === 429) {
+      if (!retry) {
+        await new Promise((r) => setTimeout(r, 1500));
+        return doFetch<T>(path, params, true);
+      }
+      throw new KaiaScanRateLimitError();
+    }
+    if (!res.ok) {
+      throw new KaiaScanApiError({ status: res.status });
+    }
+    try {
+      return (await res.json()) as T;
+    } catch (err) {
+      throw new KaiaScanApiError({ status: res.status, cause: err });
     }
   }
 

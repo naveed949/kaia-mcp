@@ -6,7 +6,8 @@
 
 import { createRpcClient } from "../clients/rpc.js";
 import { createKaiaScanClient } from "../clients/kaiascan.js";
-import { validateAddress, validateNetwork } from "../utils/validation.js";
+import { KaiaScanApiError } from "../utils/errors.js";
+import { optionalNumber, validateAddress, validateNetwork } from "../utils/validation.js";
 
 // --- Tool definitions ---
 
@@ -147,8 +148,7 @@ export async function handleGetTokenInfo(args: {
   try {
     data = await client.get<FungibleTokenResponse>(path);
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(`KaiaScan API error (fungible token): ${msg}`);
+    throw KaiaScanApiError.wrap("fungible token", err);
   }
 
   const name = data?.name ?? "—";
@@ -183,8 +183,8 @@ export async function handleGetTokenHolders(args: {
 }): Promise<{ content: Array<{ type: "text"; text: string }> }> {
   const contractAddress = validateAddress(args.contractAddress);
   validateNetwork(args.network);
-  const page = Math.max(1, Number(args.page) || 1);
-  const size = Math.min(2000, Math.max(1, Number(args.size) || 20));
+  const page = Math.max(1, optionalNumber(args.page, "page") || 1);
+  const size = Math.min(2000, Math.max(1, optionalNumber(args.size, "size") || 20));
 
   const client = createKaiaScanClient();
   const path = `api/v1/tokens/${contractAddress}/holders`;
@@ -194,8 +194,7 @@ export async function handleGetTokenHolders(args: {
   try {
     data = await client.get<TokenHoldersResponse>(path, params);
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(`KaiaScan API error (token holders): ${msg}`);
+    throw KaiaScanApiError.wrap("token holders", err);
   }
 
   const results = data?.results ?? [];
@@ -233,8 +232,8 @@ export async function handleGetTokenTransfers(args: {
 }): Promise<{ content: Array<{ type: "text"; text: string }> }> {
   const contractAddress = validateAddress(args.contractAddress);
   validateNetwork(args.network);
-  const page = Math.max(1, Number(args.page) || 1);
-  const size = Math.min(2000, Math.max(1, Number(args.size) || 20));
+  const page = Math.max(1, optionalNumber(args.page, "page") || 1);
+  const size = Math.min(2000, Math.max(1, optionalNumber(args.size, "size") || 20));
 
   const client = createKaiaScanClient();
   const path = `api/v1/tokens/${contractAddress}/transfers`;
@@ -244,8 +243,7 @@ export async function handleGetTokenTransfers(args: {
   try {
     data = await client.get<TokenTransfersResponse>(path, params);
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(`KaiaScan API error (token transfers): ${msg}`);
+    throw KaiaScanApiError.wrap("token transfers", err);
   }
 
   const results = data?.results ?? [];
@@ -304,18 +302,14 @@ export async function handleGetTokenAllowance(args: {
 
   const client = createRpcClient(network);
 
-  let allowance: bigint;
-  try {
-    allowance = await client.readContract({
-      address: tokenAddress,
-      abi: ALLOWANCE_ABI,
-      functionName: "allowance",
-      args: [owner, spender],
-    });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(`RPC error (allowance): ${msg}`);
-  }
+  // An RPC failure propagates as viem's error so it is classified (and kept out of the
+  // caller's answer) like every other upstream fault.
+  const allowance: bigint = await client.readContract({
+    address: tokenAddress,
+    abi: ALLOWANCE_ABI,
+    functionName: "allowance",
+    args: [owner, spender],
+  });
 
   const human = decimals >= 0 && decimals <= 42 ? Number(allowance) / 10 ** decimals : null;
   const lines = [

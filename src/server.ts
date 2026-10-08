@@ -11,7 +11,13 @@ import {
 import { serveStdio, type StdioServerHandle } from "@modelcontextprotocol/server/stdio";
 import { toNodeHandler } from "@modelcontextprotocol/node";
 import { getConfig } from "./config.js";
-import { AuthError, MCP_ERROR_CODES, toMcpError } from "./utils/errors.js";
+import {
+  AuthError,
+  InvalidParamsError,
+  MCP_ERROR_CODES,
+  describeFailure,
+  toMcpError,
+} from "./utils/errors.js";
 import { logger } from "./utils/logger.js";
 import { listTools, callTool } from "./tools/index.js";
 import { authorizeToolCall, requiredScopeForTool, type ToolAuthOptions } from "./auth/scopes.js";
@@ -259,21 +265,25 @@ function logSdkError(err: unknown): void {
 }
 
 /**
- * Handler error codes that mean the client asked for something it cannot have (an unknown
- * tool, resource or prompt name, bad arguments, a missing or under-scoped token): logged
- * at info as a denial, not at error. Everything else is a server-side fault.
+ * SDK ProtocolError codes (thrown by kaia's own handlers, e.g. an unknown resource, prompt or
+ * tool name) that mean the client asked for something it cannot have: logged at info as a
+ * denial. Only errors kaia raises itself about the request can be client mistakes:
+ * InvalidParamsError (a bad argument), AuthError (missing or under-scoped token) and these
+ * ProtocolErrors. An error from an upstream (the RPC node, KaiaScan) is a server-side
+ * failure whatever JSON-RPC code it carries; the upstream's code is never trusted to mean
+ * "caller mistake".
  */
-const CLIENT_HANDLER_CODES: ReadonlySet<number> = new Set<number>([
+const CLIENT_PROTOCOL_ERROR_CODES: ReadonlySet<number> = new Set<number>([
   MCP_ERROR_CODES.Parse,
   MCP_ERROR_CODES.InvalidRequest,
   MCP_ERROR_CODES.MethodNotFound,
   MCP_ERROR_CODES.InvalidParams,
-  MCP_ERROR_CODES.Unauthorized,
-  MCP_ERROR_CODES.TokenExpired,
-  MCP_ERROR_CODES.InsufficientScope,
-  MCP_ERROR_CODES.InvalidToken,
-  MCP_ERROR_CODES.ToolDisabled,
 ]);
+
+function isClientMistake(err: unknown): boolean {
+  if (err instanceof InvalidParamsError || err instanceof AuthError) return true;
+  return err instanceof ProtocolError && CLIENT_PROTOCOL_ERROR_CODES.has(err.code);
+}
 
 function wrapToolHandler<T, R>(
   method: string,
@@ -283,26 +293,44 @@ function wrapToolHandler<T, R>(
     try {
       return await Promise.resolve(handler(req));
     } catch (err) {
-      const mcp =
-        err instanceof ProtocolError ? { code: err.code, data: err.data } : toMcpError(err);
-      // Code and category only: tool, resource and prompt error messages routinely echo
-      // caller input (e.g. 'Function "X" not found on ABI', an unknown uri or name).
       const errorType = err instanceof Error ? err.name : typeof err;
-      if (CLIENT_HANDLER_CODES.has(mcp.code)) {
+      if (isClientMistake(err)) {
+        const code = err instanceof ProtocolError ? err.code : toMcpError(err).code;
+        // Code and category only: tool, resource and prompt error messages routinely echo
+        // caller input (e.g. 'Function "X" not found on ABI', an unknown uri or name).
         logger.info("Request denied", {
           method,
-          code: mcp.code,
-          category: errorCategory(mcp.code),
+          code,
+          category: errorCategory(code),
           errorType,
           outcome: "denied",
         });
-      } else {
-        logger.error("Tool error", {
-          code: mcp.code,
-          category: errorCategory(mcp.code),
-          errorType,
-        });
+        if (err instanceof ProtocolError) throw err;
+        const shape = toMcpError(err);
+        throw new ProtocolError(shape.code, shape.message, shape.data);
       }
+      // A server-side failure: an upstream fault, an unexpected exception, or a ProtocolError
+      // kaia did not raise as a client mistake. The caller gets a generic message (toMcpError
+      // never passes upstream text, the RPC URL or the request body on); the upstream's code,
+      // status and short description go to the log only, redacted and encoded by the logger.
+      const failure =
+        err instanceof ProtocolError
+          ? {
+              code: err.code,
+              detail: err.message,
+              upstreamCode: undefined,
+              upstreamStatus: undefined,
+            }
+          : describeFailure(err);
+      logger.error("Tool error", {
+        code: failure.code,
+        method,
+        category: errorCategory(failure.code),
+        errorType,
+        upstreamCode: failure.upstreamCode,
+        upstreamStatus: failure.upstreamStatus,
+        detail: failure.detail,
+      });
       if (err instanceof ProtocolError) throw err;
       const shape = toMcpError(err);
       throw new ProtocolError(shape.code, shape.message, shape.data);

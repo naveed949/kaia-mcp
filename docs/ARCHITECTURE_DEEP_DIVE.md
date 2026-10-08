@@ -106,7 +106,7 @@ Why a switch instead of a map? The switch is explicit and type-safe: if you add 
 
 ### 2.1 Intent
 
-Handlers throw normal JavaScript errors (network, validation, API errors). The MCP protocol expects JSON-RPC errors with specific codes. **toMcpError** normalizes any thrown value into a single shape `{ code, message, data? }` that the server turns into a `ProtocolError` (from `@modelcontextprotocol/server`) and sends to the client. Argument validation throws `InvalidParamsError` (`src/utils/errors.ts`), which maps to `-32602` Invalid params.
+Handlers throw normal JavaScript errors (network, validation, API errors). The MCP protocol expects JSON-RPC errors with specific codes. **toMcpError** normalizes any thrown value into a single shape `{ code, message, data? }` that the server turns into a `ProtocolError` (from `@modelcontextprotocol/server`) and sends to the client. Argument validation throws `InvalidParamsError` (`src/utils/errors.ts`), which maps to `-32602` Invalid params. Only kaia's own errors about the request (`InvalidParamsError`, `AuthError`, and the `ProtocolError`s its handlers throw for unknown names) are client mistakes. An upstream error is a server-side failure whatever code it carries, and the caller gets a fixed message for its class, never the upstream text, URL or request body.
 
 ### 2.2 Error Codes (src/utils/errors.ts)
 
@@ -119,59 +119,32 @@ export const MCP_ERROR_CODES = {
   MethodNotFound: -32601, // Method not found
   InvalidParams: -32602, // Invalid parameters (e.g. bad address)
   InternalError: -32603, // Generic server error
-  RpcProviderError: -32001, // RPC/network failure (ECONNREFUSED, ETIMEDOUT, etc.)
-  KaiaScanApiError: -32002, // KaiaScan API failure
+  RpcProviderError: -32001, // any RPC node failure, whatever JSON-RPC code the node used
+  KaiaScanApiError: -32004, // KaiaScan API failure (-32002 is rewritten to -32602 by MCP SDK v2)
   RateLimit: -32003, // 429 / rate limit
 } as const;
 ```
 
-The -32xxx range is reserved for application-specific errors. The server uses -32001, -32002, -32003 so the client can distinguish network vs API vs rate-limit and react (e.g. retry with backoff for rate limit).
+The -32000…-32099 range is for server-defined errors. The server uses -32001 (RPC provider), -32004 (KaiaScan) and -32003 (rate limit) so the client can distinguish RPC vs KaiaScan vs rate-limit and react (e.g. retry with backoff for rate limit). It avoids -32002: the MCP SDK v2 wire codecs rewrite -32002 (the retired ResourceNotFound) to -32602 Invalid params, which would present a KaiaScan outage as a caller mistake.
 
 ### 2.3 Annotated Code: Classification
 
 ```typescript
-// src/utils/errors.ts (excerpt)
-
-const NETWORK_CODES = new Set([
-  "ECONNREFUSED",
-  "ECONNRESET",
-  "ETIMEDOUT",
-  "ENOTFOUND",
-  "ENETUNREACH",
-  "EAI_AGAIN",
-  "EPIPE",
-]);
-
-function isNetworkLike(err: unknown): boolean {
-  // 1) Node-style errors have .code
-  if (err && typeof err === "object" && "code" in err) {
-    const code = (err as { code?: string }).code;
-    if (typeof code === "string" && NETWORK_CODES.has(code)) return true;
-  }
-  // 2) Fetch/TypeError with network-related message
-  const name = err instanceof Error ? err.name : "";
-  if (name === "FetchError" || name === "TypeError") {
-    const msg = err instanceof Error ? err.message : String(err);
-    if (/fetch|network|failed|ECONNREFUSED|ETIMEDOUT/i.test(msg)) return true;
-  }
-  return false;
+// src/utils/errors.ts (excerpt): typed upstream errors, no message heuristics
+export class KaiaScanApiError extends Error {
+  /* operation ("token holders"), HTTP status, cause; thrown by the KaiaScan client */
 }
+export class KaiaScanRateLimitError extends KaiaScanApiError {} // 429 after one retry
 
-function isRateLimitLike(err: unknown): boolean {
-  if (err && typeof err === "object" && "status" in err) {
-    if ((err as { status?: number }).status === 429) return true;
-  }
-  const msg = err instanceof Error ? err.message : String(err);
-  return /rate limit|429|too many requests/i.test(msg);
-}
-
-function isKaiaScanApiLike(err: unknown): boolean {
-  const msg = err instanceof Error ? err.message : String(err);
-  return /kaiascan|api\.kaia|scan\.kaia/i.test(msg) || msg.includes("KaiaScan");
+export function describeFailure(err: unknown): FailureDescription {
+  // KaiaScanRateLimitError -> -32003; KaiaScanApiError -> -32004;
+  // viem BaseError (any RPC failure, whatever upstream code) -> -32001, or -32003 for HTTP 429;
+  // a network error code (ECONNREFUSED, ...) -> -32001; anything else -> -32603.
+  // Returns { code, message (fixed, for the caller), upstreamCode?, upstreamStatus?, detail (log only) }.
 }
 ```
 
-Order of checks in `toMcpError` is important: `AuthError` and `InvalidParamsError` come first (so caller text such as a function name containing "429" cannot turn a validation error into a rate-limit one), then rate limit and network are checked before the generic “has a -32xxx code” and before InternalError. So a 429 from KaiaScan is mapped to RateLimit even if the error object has other properties.
+Order of checks in `toMcpError` matters only for kaia's own errors: `AuthError` and `InvalidParamsError` come first and keep their kaia-authored messages (so caller text such as a function name containing "429" cannot turn a validation error into a rate-limit one). Everything else goes through `describeFailure`, which classifies by error type and structured fields (the viem error class, an HTTP status of 429), never by searching message text, and never passes an upstream's JSON-RPC code through as kaia's.
 
 ### 2.4 Annotated Code: toMcpError and Server Usage
 
@@ -179,61 +152,47 @@ Order of checks in `toMcpError` is important: `AuthError` and `InvalidParamsErro
 // src/utils/errors.ts (excerpt)
 
 export function toMcpError(err: unknown): McpErrorShape {
-  const message = err instanceof Error ? err.message : String(err ?? "Internal error");
-  const safeMessage = message || "Internal error";
-
   if (err instanceof AuthError)
     return { code: err.code, message: err.message, data: { error: err.error } };
-  // A caller's bad argument: -32602, checked before the message heuristics below
+  // A caller's bad argument: -32602, kaia's own message
   if (err instanceof InvalidParamsError)
-    return { code: MCP_ERROR_CODES.InvalidParams, message: safeMessage };
-  if (isRateLimitLike(err))
-    return { code: MCP_ERROR_CODES.RateLimit, message: safeMessage, data: err };
-  if (isNetworkLike(err))
-    return { code: MCP_ERROR_CODES.RpcProviderError, message: safeMessage, data: err };
-  if (isKaiaScanApiLike(err))
-    return { code: MCP_ERROR_CODES.KaiaScanApiError, message: safeMessage, data: err };
-  // If the error already has a valid JSON-RPC application code, preserve it
-  if (err && typeof err === "object" && "code" in err) {
-    const code = (err as { code?: number }).code;
-    if (typeof code === "number" && code <= -32000 && code >= -32768)
-      return { code, message: safeMessage, data: err };
-  }
-  return { code: MCP_ERROR_CODES.InternalError, message: safeMessage, data: err };
+    return { code: MCP_ERROR_CODES.InvalidParams, message: err.message || "Invalid params" };
+  // Everything else: kaia's code and a fixed message; data is at most the upstream's
+  // numeric code / HTTP status. Never the upstream text, RPC URL or request body.
+  const f = describeFailure(err);
+  const data = { upstreamCode: f.upstreamCode, upstreamStatus: f.upstreamStatus }; // when set
+  return { code: f.code, message: f.message, data };
 }
 ```
 
 ```typescript
 // src/server.ts (excerpt)
 
-function wrapToolHandler<T, R>(
-  method: string,
-  handler: (req: T) => R | Promise<R>
-): (req: T, extra: unknown) => Promise<R> {
+function isClientMistake(err: unknown): boolean {
+  if (err instanceof InvalidParamsError || err instanceof AuthError) return true;
+  return err instanceof ProtocolError && CLIENT_PROTOCOL_ERROR_CODES.has(err.code);
+}
+
+function wrapToolHandler<T, R>(method: string, handler: (req: T) => R | Promise<R>) {
   return async (req: T, _extra: unknown) => {
     try {
       return await Promise.resolve(handler(req));
     } catch (err) {
-      const mcp =
-        err instanceof ProtocolError ? { code: err.code, data: err.data } : toMcpError(err);
-      // Code and category only: error messages often echo caller input. The logger
-      // percent-encodes every value, so even errorType cannot add a field.
       const errorType = err instanceof Error ? err.name : typeof err;
-      if (CLIENT_HANDLER_CODES.has(mcp.code)) {
-        // unknown name, invalid argument (InvalidParamsError, -32602), in-band auth
-        // denial: a client mistake, not a fault
-        logger.info("Request denied", {
-          method,
-          code: mcp.code,
-          category: errorCategory(mcp.code),
-          errorType,
-          outcome: "denied",
-        });
+      if (isClientMistake(err)) {
+        // unknown name, invalid argument, in-band auth denial: code and category only
+        logger.info("Request denied", { method, code, category, errorType, outcome: "denied" });
       } else {
+        // upstream fault or unexpected exception: the detail goes to the (redacted) log only
+        const failure = describeFailure(err);
         logger.error("Tool error", {
-          code: mcp.code,
-          category: errorCategory(mcp.code),
+          code: failure.code,
+          method,
+          category: errorCategory(failure.code),
           errorType,
+          upstreamCode: failure.upstreamCode,
+          upstreamStatus: failure.upstreamStatus,
+          detail: failure.detail,
         });
       }
       if (err instanceof ProtocolError) throw err;
@@ -244,7 +203,7 @@ function wrapToolHandler<T, R>(
 }
 ```
 
-So: every tools/list, tools/call, resources/list, resources/read, prompts/list, prompts/get handler is wrapped. Any thrown value becomes a structured MCP error and is logged (code and category, never the raw message) before rethrow. The client always receives a valid JSON-RPC error response. Unknown tool names are rejected in the `tools/call` handler before `callTool` runs (`-32602`, logged `outcome=denied reason=unknown_tool`); the `default` branch below is a second line of defense.
+So: every tools/list, tools/call, resources/list, resources/read, prompts/list, prompts/get handler is wrapped. Any thrown value becomes a structured MCP error and is logged before rethrow: a client mistake with code and category only, a server-side failure with code, category, the upstream's numeric code or status and a redacted short `detail`. The client always receives a valid JSON-RPC error response. Unknown tool names are rejected in the `tools/call` handler before `callTool` runs (`-32602`, logged `outcome=denied reason=unknown_tool`); the `default` branch below is a second line of defense.
 
 ---
 
@@ -376,7 +335,7 @@ async function doFetch<T>(path: string, params?: Record<string, string>, retry =
 }
 ```
 
-So: every KaiaScan request is rate-limited by `acquire()`, and has a timeout via `AbortController`. On 429, the client retries once after 1.5s; if it still gets 429, it throws `KaiaScanRateLimitError`. That error has `status: 429`, so `isRateLimitLike()` in `toMcpError` returns true and the client gets MCP code `-32003` (RateLimit). So the agent (or the client app) can detect rate limiting and back off.
+So: every KaiaScan request is rate-limited by `acquire()`, and has a timeout via `AbortController`. On 429, the client retries once after 1.5s; if it still gets 429, it throws `KaiaScanRateLimitError`, which `toMcpError` maps to MCP code `-32003` (RateLimit). Every other failure (HTTP error status, network error, timeout, non-JSON body) is a `KaiaScanApiError` (`-32004`); the request URL, which carries the API key, is never put into the error. So the agent (or the client app) can detect rate limiting and back off.
 
 ---
 

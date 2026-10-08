@@ -10,7 +10,7 @@ import {
   ErrorCode,
   McpError,
 } from "@modelcontextprotocol/sdk/types.js";
-import type { IncomingMessage } from "node:http";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import { getConfig } from "./config.js";
 import { AuthError, MCP_ERROR_CODES, toMcpError } from "./utils/errors.js";
 import { logger } from "./utils/logger.js";
@@ -28,6 +28,7 @@ import {
 import {
   applyCors,
   authenticateRequest,
+  readBody,
   tryHandleAuxRequest,
   writeAuthFailure,
 } from "./auth/http.js";
@@ -267,18 +268,34 @@ export type KaiaHttpServerHandle = {
   oauth: DemoOAuthProvider;
 };
 
+/** Largest MCP POST body accepted (the SDK's own default limit). */
+const MAX_MCP_BODY_BYTES = 4 * 1024 * 1024;
+
+function jsonRpcError(
+  res: ServerResponse,
+  status: number,
+  code: number,
+  message: string,
+  extraHeaders: Record<string, string> = {}
+): void {
+  res.writeHead(status, { "Content-Type": "application/json", ...extraHeaders });
+  res.end(JSON.stringify({ jsonrpc: "2.0", error: { code, message }, id: null }));
+}
+
 /**
- * Runs the Kaia MCP server over Streamable HTTP on the given port.
- * Creates a per-session transport+server pair so multiple clients can
- * connect concurrently. Validates config at startup.
+ * Runs the Kaia MCP server over Streamable HTTP on the given port, stateless per MCP
+ * 2026-07-28: there are no protocol-level sessions. Every POST gets a fresh server and
+ * transport (`sessionIdGenerator: undefined`), so `Mcp-Session-Id` is never minted or
+ * echoed (a legacy client's header is ignored) and any instance behind a load balancer
+ * can answer any request. GET and DELETE on the MCP endpoint are 405. Validates config
+ * at startup.
  *
- * Partner default (KAIA_AUTH_MODE=required): every MCP request must carry a
- * Bearer access token. Token scopes are mapped onto the allowed-tool registry
- * for that session. Missing, expired, or revoked tokens fail closed with no
- * tool side effects.
+ * Partner default (KAIA_AUTH_MODE=required): every MCP request must carry a Bearer
+ * access token, and that request's token is the only authority for it. Token scopes are
+ * mapped onto the allowed-tool registry. Missing, expired, or revoked tokens fail closed
+ * with no tool side effects.
  */
 export async function runKaiaMcpServerHttp(port: number): Promise<KaiaHttpServerHandle> {
-  const { randomUUID } = await import("node:crypto");
   const { createServer } = await import("node:http");
   const { StreamableHTTPServerTransport } =
     await import("@modelcontextprotocol/sdk/server/streamableHttp.js");
@@ -296,44 +313,27 @@ export async function runKaiaMcpServerHttp(port: number): Promise<KaiaHttpServer
     ? FileRevocationStore.open(config.oauthRevocationFile)
     : new MemoryRevocationStore();
 
-  type SessionEntry = {
-    transport: InstanceType<typeof StreamableHTTPServerTransport>;
-    server: Server;
-    setAuth: (ctx: AuthContext | null) => void;
-  };
-  const sessions = new Map<string, SessionEntry>();
-
   const runtime: { provider?: DemoOAuthProvider } = {};
 
-  function createSession(initialAuth: AuthContext | null): SessionEntry {
-    let auth = initialAuth;
+  /** One JSON-RPC POST: a fresh server+transport, torn down when the response ends. */
+  async function serveMcpPost(
+    req: IncomingMessage,
+    res: ServerResponse,
+    auth: AuthContext | null,
+    parsedBody: unknown
+  ): Promise<void> {
     const server = createKaiaMcpServer({
       requireAuth: authMode === "required",
       getAuthContext: () => auth,
     });
-    const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: () => randomUUID(),
-      onsessioninitialized: (sessionId: string) => {
-        logger.info("Session initialized", { sessionId, tokenFingerprint: auth?.tokenFingerprint });
-        sessions.set(sessionId, entry);
-      },
-    });
-    transport.onclose = () => {
-      const sid = transport.sessionId;
-      if (sid) {
-        logger.info("Session closed", { sessionId: sid });
-        sessions.delete(sid);
-      }
-    };
+    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     server.onerror = (err) => logger.error("Server transport error", { error: err });
-    const entry: SessionEntry = {
-      transport,
-      server,
-      setAuth: (ctx) => {
-        auth = ctx;
-      },
-    };
-    return entry;
+    res.on("close", () => {
+      void transport.close();
+      void server.close();
+    });
+    await server.connect(transport);
+    await transport.handleRequest(req, res, parsedBody);
   }
 
   const httpServer = createServer(async (req, res) => {
@@ -352,73 +352,51 @@ export async function runKaiaMcpServerHttp(port: number): Promise<KaiaHttpServer
       });
       if (handled) return;
 
+      // MCP 2026-07-28 Streamable HTTP is POST only: no standalone GET stream and no
+      // session to DELETE.
+      if (req.method !== "POST") {
+        jsonRpcError(res, 405, -32000, "Method not allowed: the MCP endpoint accepts POST only", {
+          Allow: "POST",
+        });
+        return;
+      }
+
       normalizeAcceptHeader(req);
 
-      let sessionAuth: AuthContext | null = null;
+      let auth: AuthContext | null = null;
       if (authMode === "required") {
         const result = authenticateRequest(req, runtime.provider!);
         if (!result.ok) {
           writeAuthFailure(res, result);
           return;
         }
-        sessionAuth = result.context;
+        auth = result.context;
         logger.debug("MCP request authenticated", {
           tokenFingerprint: result.context.tokenFingerprint,
           scopes: result.context.scopes.join(" "),
         });
       }
 
-      const sessionId = req.headers["mcp-session-id"] as string | undefined;
-
-      if (sessionId && sessions.has(sessionId)) {
-        sessions.get(sessionId)!.setAuth(sessionAuth);
-        await sessions.get(sessionId)!.transport.handleRequest(req, res);
+      let raw: string;
+      try {
+        raw = await readBody(req, MAX_MCP_BODY_BYTES);
+      } catch {
+        jsonRpcError(res, 413, -32600, "Invalid Request: body is too large");
+        return;
+      }
+      let parsedBody: unknown;
+      try {
+        parsedBody = JSON.parse(raw);
+      } catch {
+        jsonRpcError(res, 400, -32700, "Parse error: body is not valid JSON");
         return;
       }
 
-      if (req.method === "POST" && !sessionId) {
-        const entry = createSession(sessionAuth);
-        await entry.server.connect(entry.transport);
-        await entry.transport.handleRequest(req, res);
-        return;
-      }
-
-      if (req.method === "GET" && sessionId && !sessions.has(sessionId)) {
-        res.writeHead(404, { "Content-Type": "application/json" });
-        res.end(
-          JSON.stringify({
-            jsonrpc: "2.0",
-            error: { code: -32000, message: "Session not found" },
-            id: null,
-          })
-        );
-        return;
-      }
-
-      if (req.method === "DELETE" && sessionId && sessions.has(sessionId)) {
-        await sessions.get(sessionId)!.transport.handleRequest(req, res);
-        return;
-      }
-
-      res.writeHead(400, { "Content-Type": "application/json" });
-      res.end(
-        JSON.stringify({
-          jsonrpc: "2.0",
-          error: { code: -32000, message: "Bad Request" },
-          id: null,
-        })
-      );
+      await serveMcpPost(req, res, auth, parsedBody);
     } catch (err) {
       logger.error("HTTP request error", { error: err });
       if (!res.headersSent) {
-        res.writeHead(500, { "Content-Type": "application/json" });
-        res.end(
-          JSON.stringify({
-            jsonrpc: "2.0",
-            error: { code: -32603, message: "Internal server error" },
-            id: null,
-          })
-        );
+        jsonRpcError(res, 500, -32603, "Internal server error");
       }
     }
   });

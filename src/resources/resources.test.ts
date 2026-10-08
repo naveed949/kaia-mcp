@@ -118,14 +118,14 @@ describe("readResource", () => {
     expect(text).toContain("0xbbb");
   });
 
-  it("readResource with invalid URI throws McpError", async () => {
-    const { McpError } = await import("@modelcontextprotocol/sdk/types.js");
-    await expect(readResource("not-a-uri")).rejects.toThrow(McpError);
-    await expect(readResource("https://example.com")).rejects.toThrow(McpError);
+  it("readResource with invalid URI throws ProtocolError", async () => {
+    const { ProtocolError } = await import("@modelcontextprotocol/server");
+    await expect(readResource("not-a-uri")).rejects.toThrow(ProtocolError);
+    await expect(readResource("https://example.com")).rejects.toThrow(ProtocolError);
   });
 
-  it("readResource with unknown kaia:// URI throws McpError", async () => {
-    const { McpError } = await import("@modelcontextprotocol/sdk/types.js");
-    await expect(readResource("kaia://mainnet/unknown/path")).rejects.toThrow(McpError);
+  it("readResource with unknown kaia:// URI throws ProtocolError", async () => {
+    const { ProtocolError } = await import("@modelcontextprotocol/server");
+    await expect(readResource("kaia://mainnet/unknown/path")).rejects.toThrow(ProtocolError);
   });
 });

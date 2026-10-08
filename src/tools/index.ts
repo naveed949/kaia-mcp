@@ -2,7 +2,7 @@
  * MCP tools registry — Phase 4–7 (account, transaction, block, token, NFT, contract, network, wallet).
  */
 
-import type { ListToolsResult, CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import type { ListToolsResult, CallToolResult } from "@modelcontextprotocol/server";
 import { authorizeToolCall, authorizeToolList, filterToolsByAuth } from "../auth/scopes.js";
 import type { ToolAuthOptions } from "../auth/scopes.js";
 import {

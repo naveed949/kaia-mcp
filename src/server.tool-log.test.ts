@@ -3,8 +3,8 @@
  * decision, and carries the outcome. It never carries arguments or token material.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { Client } from "@modelcontextprotocol/sdk/client";
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { Client } from "@modelcontextprotocol/client";
+import { InMemoryTransport } from "@modelcontextprotocol/server";
 import { createKaiaMcpServer } from "./server.js";
 import { resetConfigCache } from "./config.js";
 import { DEMO_CLIENT_ID, SCOPES } from "./auth/constants.js";

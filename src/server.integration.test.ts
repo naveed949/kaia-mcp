@@ -8,9 +8,10 @@
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { resolve } from "node:path";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { CallToolResultSchema, type CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import { Client } from "@modelcontextprotocol/client";
+import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
+import { CallToolResultSchema } from "@modelcontextprotocol/core";
+import type { CallToolResult } from "@modelcontextprotocol/server";
 import { createRpcClient } from "./clients/rpc.js";
 import { createKaiaScanClient } from "./clients/kaiascan.js";
 import { resetConfigCache } from "./config.js";

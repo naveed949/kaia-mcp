@@ -1,6 +1,6 @@
 ---
 name: verify-kaia-mcp
-description: Verify the kaia-mcp HTTP MCP connector (stateless MCP 2026-07-28 transport, Origin validation, OAuth PKCE, RFC 8707 resource/audience, RFC 9728 Bearer challenges incl. 403 insufficient_scope, RFC 9207 iss, scoped tools, fail-closed auth, gated generate_wallet, JWT access tokens + JWKS rotation, RFC 7662 introspection, revocation that survives restart, multi-instance with a shared key) by launching isolated local instances and driving them with curl. Use when proving partner auth, scope gates, token verification/revocation, stateless deployment, or private-key withholding.
+description: Verify the kaia-mcp HTTP MCP connector (stateless MCP 2026-07-28 transport, Origin validation, OAuth PKCE, RFC 8707 resource/audience, RFC 9728 Bearer challenges incl. 403 insufficient_scope, RFC 9207 iss, scoped tools, fail-closed auth, gated generate_wallet, JWT access tokens + JWKS rotation, RFC 7662 introspection, revocation that survives restart, multi-instance with a shared key, SDK v2 protocol 2026-07-28 discover/HeaderMismatch/cacheScope) by launching isolated local instances and driving them with curl. Use when proving partner auth, scope gates, token verification/revocation, stateless deployment, or private-key withholding.
 ---
 
 # Verify kaia-mcp
@@ -54,11 +54,12 @@ Harness is curl against the instance URL in `instance.json` (`http://127.0.0.1:<
 .cursor/skills/verify-kaia-mcp/helpers/drive.sh bearer-challenges     # 401 challenges, 403 insufficient_scope
 .cursor/skills/verify-kaia-mcp/helpers/drive.sh resource-indicators   # RFC 8707 resource/aud, RFC 9207 iss, PRM
 .cursor/skills/verify-kaia-mcp/helpers/drive.sh stateless-multi-instance  # starts extra processes; shared key, rotation, aud rejection, legacy aud, allowed origins, one denylist per process, revocations survive restart
+.cursor/skills/verify-kaia-mcp/helpers/drive.sh protocol-2026-07-28   # server/discover, -32020 HeaderMismatch, tools/list private/0, legacy init, forged/huge names never reach the log
 ```
 
-Stable handles: paths `/health`, `/.well-known/openid-configuration`, `/oauth/authorize`, `/oauth/consent`, `/oauth/token`, `/oauth/device`, `/oauth/device/verify`, `/oauth/revoke`, `/oauth/jwks`, `/oauth/introspect`, `/.well-known/oauth-authorization-server`, `/.well-known/oauth-protected-resource`, `/.well-known/kaia-mcp/tool-scopes`, and MCP `POST /` with JSON-RPC methods `initialize`, `tools/list`, `tools/call`. OAuth parameter `resource` (the issuer URL). Demo client id `kaia-mcp-demo`. Redirect `http://127.0.0.1/callback`. Scopes `kaia:read`, `kaia:encode`, `kaia:wallet`.
+Stable handles: paths `/health`, `/.well-known/openid-configuration`, `/oauth/authorize`, `/oauth/consent`, `/oauth/token`, `/oauth/device`, `/oauth/device/verify`, `/oauth/revoke`, `/oauth/jwks`, `/oauth/introspect`, `/.well-known/oauth-authorization-server`, `/.well-known/oauth-protected-resource`, `/.well-known/kaia-mcp/tool-scopes`, and MCP `POST /` with JSON-RPC methods `initialize`, `server/discover`, `tools/list`, `tools/call`. Modern (2026-07-28) requests carry the `_meta` envelope keys `io.modelcontextprotocol/protocolVersion`, `io.modelcontextprotocol/clientInfo`, `io.modelcontextprotocol/clientCapabilities` and the headers `MCP-Protocol-Version`, `Mcp-Method`, `Mcp-Name`. Log handles: `msg=Tool call tool=<name> outcome=<allowed|denied>` and `msg=MCP request rejected code=<code> cell=<cell>`. OAuth parameter `resource` (the issuer URL). Demo client id `kaia-mcp-demo`. Redirect `http://127.0.0.1/callback`. Scopes `kaia:read`, `kaia:encode`, `kaia:wallet`.
 
-Every MCP request is one stateless POST (MCP 2026-07-28): `tools/list` or `tools/call` with `Authorization`, no `initialize` first and no `Mcp-Session-Id`. `drive.sh` does this in `mcp_call`, which fails the drive if any response carries `Mcp-Session-Id`. A `Server not initialized` error or a session header means a pre-stateless build is running. curl sends no `Origin` (allowed); only `stateless-transport` sends one.
+Every MCP request is one stateless POST: `tools/list` or `tools/call` with `Authorization`, no `initialize` first and no `Mcp-Session-Id`. `mcp_call` sends no modern envelope, so it exercises the 2025-era stateless fallback; only `protocol-2026-07-28` drives the modern path. `drive.sh` does this in `mcp_call`, which fails the drive if any response carries `Mcp-Session-Id`. A `Server not initialized` error or a session header means a pre-stateless build is running. curl sends no `Origin` (allowed); only `stateless-transport` sends one.
 
 `stateless-multi-instance` starts its own extra kaia-mcp processes (`start_extra_kaia` in `common.sh`) from this run's `server.env` with overrides, on free ports, logging into the same `server.log`. Their pids go to `/tmp/kaia-mcp-verify-<run-id>/extra-pids`; the drive stops them and `cleanup.sh` stops any left over.
 
@@ -66,7 +67,7 @@ Read the matching file under `features/` and follow every entry point it lists. 
 
 ## Evidence
 
-Named location: `.cursor/skills/verify-kaia-mcp/evidence/<run-id>/`. Each feature writes a subdirectory (`oauth-pkce-scoped-tools/`, `fail-closed-auth/`, `generate-wallet-gated/`, `device-flow/`, `jwt-access-tokens/`, `token-introspection/`, `revocation-restart/`, `stateless-transport/`, `bearer-challenges/`, `resource-indicators/`, `stateless-multi-instance/`).
+Named location: `.cursor/skills/verify-kaia-mcp/evidence/<run-id>/`. Each feature writes a subdirectory (`oauth-pkce-scoped-tools/`, `fail-closed-auth/`, `generate-wallet-gated/`, `device-flow/`, `jwt-access-tokens/`, `token-introspection/`, `revocation-restart/`, `stateless-transport/`, `bearer-challenges/`, `resource-indicators/`, `stateless-multi-instance/`, `protocol-2026-07-28/`).
 
 Proof standards:
 

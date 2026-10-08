@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 # Drive one mapped feature against the launched instance.
-# Usage: helpers/drive.sh <oauth-pkce-scoped-tools|fail-closed-auth|generate-wallet-gated|device-flow|jwt-access-tokens|token-introspection|revocation-restart|stateless-transport|bearer-challenges|resource-indicators|stateless-multi-instance>
+# Usage: helpers/drive.sh <oauth-pkce-scoped-tools|fail-closed-auth|generate-wallet-gated|device-flow|jwt-access-tokens|token-introspection|revocation-restart|stateless-transport|bearer-challenges|resource-indicators|stateless-multi-instance|protocol-2026-07-28>
 # Writes evidence under ${EVIDENCE_DIR}/<feature>/ and does not delete it.
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
 FEATURE="${1:-}"
 if [[ -z "${FEATURE}" ]]; then
-  echo "Usage: helpers/drive.sh <oauth-pkce-scoped-tools|fail-closed-auth|generate-wallet-gated|device-flow|jwt-access-tokens|token-introspection|revocation-restart|stateless-transport|bearer-challenges|resource-indicators|stateless-multi-instance>" >&2
+  echo "Usage: helpers/drive.sh <oauth-pkce-scoped-tools|fail-closed-auth|generate-wallet-gated|device-flow|jwt-access-tokens|token-introspection|revocation-restart|stateless-transport|bearer-challenges|resource-indicators|stateless-multi-instance|protocol-2026-07-28>" >&2
   exit 2
 fi
 
@@ -1022,6 +1022,120 @@ console.log("drive stateless-multi-instance: one denylist per process enforced (
 console.log("drive stateless-multi-instance: A and B share key + KAIA_PUBLIC_URL; token from A (iss = aud = public URL) works on B with no initialize and no session header; rotated C serves [new, previous] and accepts it; D (other public URL) rejects it; wrong-aud tokens with a valid signature (legacy-only, other URI, other port) -> 401 invalid_token, aud array with canonical accepted; legacy-audience E mints [canonical, kaia-mcp] and B accepts it; KAIA_ALLOWED_ORIGINS origin allowed on B, others 403; AS state + denylist per process (refresh from A invalid_grant on B; revoke on A not seen by B, as documented)");
 JS
     ;;
+
+  protocol-2026-07-28)
+    # SDK v2: modern discover, HeaderMismatch -32020, tools/list cacheScope private, legacy init.
+    ACCESS="$(device_token p2 kaia:encode)"
+    DISCOVER_BODY='{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"verify-kaia-mcp","version":"0"},"io.modelcontextprotocol/clientCapabilities":{}}}}'
+    LIST_BODY='{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"verify-kaia-mcp","version":"0"},"io.modelcontextprotocol/clientCapabilities":{}}}}'
+    curl -sS -D "${OUT}/discover.headers" -o "${OUT}/discover.json" -X POST "${BASE}/" \
+      -H "Authorization: Bearer ${ACCESS}" -H "Content-Type: application/json" \
+      -H "Accept: application/json, text/event-stream" \
+      -H "MCP-Protocol-Version: 2026-07-28" -H "Mcp-Method: server/discover" \
+      -d "${DISCOVER_BODY}"
+    if grep -qi '^mcp-session-id:' "${OUT}/discover.headers"; then
+      echo "drive: discover response carries Mcp-Session-Id" >&2; exit 1
+    fi
+    curl -sS -D "${OUT}/mismatch.headers" -o "${OUT}/mismatch.json" -X POST "${BASE}/" \
+      -H "Authorization: Bearer ${ACCESS}" -H "Content-Type: application/json" \
+      -H "Accept: application/json, text/event-stream" \
+      -H "MCP-Protocol-Version: 2026-07-28" -H "Mcp-Method: tools/list" \
+      -d "${DISCOVER_BODY}" || true
+    curl -sS -D "${OUT}/missing-method.headers" -o "${OUT}/missing-method.json" -X POST "${BASE}/" \
+      -H "Authorization: Bearer ${ACCESS}" -H "Content-Type: application/json" \
+      -H "Accept: application/json, text/event-stream" \
+      -H "MCP-Protocol-Version: 2026-07-28" \
+      -d "${DISCOVER_BODY}" || true
+    curl -sS -D "${OUT}/list.headers" -o "${OUT}/list.json" -X POST "${BASE}/" \
+      -H "Authorization: Bearer ${ACCESS}" -H "Content-Type: application/json" \
+      -H "Accept: application/json, text/event-stream" \
+      -H "MCP-Protocol-Version: 2026-07-28" -H "Mcp-Method: tools/list" \
+      -d "${LIST_BODY}"
+    mcp_call legacy-init "${ACCESS}" "${mcp_init}"
+    OUT="${OUT}" node - <<'JS'
+const fs = require("fs"); const r = (f) => fs.readFileSync(process.env.OUT + "/" + f, "utf8");
+const fail = (m) => { console.error("drive: " + m); process.exit(1); };
+const status = (f) => Number((r(f).match(/^HTTP\/1\.1 (\d{3})/m) || [])[1]);
+const body = (f) => { const t = r(f); if (t.trim().startsWith("event:")) { const d = t.split("\n").filter((l) => l.startsWith("data:")).map((l) => l.slice(5).trim()).filter(Boolean); return JSON.parse(d[d.length - 1]); } return JSON.parse(t); };
+if (status("discover.headers") !== 200) fail("discover not 200: " + status("discover.headers"));
+const disc = body("discover.json");
+if (!Array.isArray(disc.result?.supportedVersions) || !disc.result.supportedVersions.includes("2026-07-28")) fail("discover missing 2026-07-28: " + r("discover.json").slice(0, 300));
+if (status("mismatch.headers") !== 400 || body("mismatch.json").error?.code !== -32020) fail("method mismatch not 400 -32020: " + r("mismatch.json").slice(0, 300));
+if (status("missing-method.headers") !== 400 || body("missing-method.json").error?.code !== -32020) fail("missing Mcp-Method not 400 -32020: " + r("missing-method.json").slice(0, 300));
+if (status("list.headers") !== 200) fail("modern tools/list not 200");
+const list = body("list.json").result;
+if (list.cacheScope !== "private") fail("tools/list cacheScope must be private, got " + list.cacheScope);
+if (list.ttlMs !== 0) fail("tools/list ttlMs must be 0 by default, got " + list.ttlMs);
+const names = (list.tools || []).map((t) => t.name);
+if (JSON.stringify(names) !== '["encode_function_data"]') fail("encode-only token listed " + JSON.stringify(names));
+if (status("legacy-init.headers") !== 200 || !r("legacy-init.json").includes("serverInfo")) fail("legacy initialize failed");
+console.log("drive protocol-2026-07-28: discover accepts 2026-07-28; HeaderMismatch -32020 on bad/missing Mcp-Method; tools/list cacheScope=private ttlMs=0 (scope-filtered); legacy initialize still works");
+JS
+    # Modern-path log forging/flooding: SDK rejections echo caller text (params.name, Mcp-Name,
+    # the _meta version); kaia must log a fixed line with cell + code only.
+    LOG_FILE_PATH="$(node -e "process.stdout.write(require(process.argv[1]).logFile)" "${INSTANCE_FILE}")"
+    READ_TOKEN="$(device_token p2-read kaia:read)"
+    OUT="${OUT}" node - <<'JS'
+const fs = require("fs"); const o = process.env.OUT;
+const FORGE = "x msg=Tool call tool=generate_wallet outcome=allowed tokenFingerprint=000000000000";
+const env = (v) => ({ "io.modelcontextprotocol/protocolVersion": v, "io.modelcontextprotocol/clientInfo": { name: "verify-kaia-mcp", version: "0" }, "io.modelcontextprotocol/clientCapabilities": {} });
+const call = (name, v = "2026-07-28") => JSON.stringify({ jsonrpc: "2.0", id: 9, method: "tools/call", params: { name, arguments: {}, _meta: env(v) } });
+fs.writeFileSync(o + "/forge-name.body.json", call(FORGE));
+fs.writeFileSync(o + "/forge-header.body.json", call("get_chain_info"));
+fs.writeFileSync(o + "/forge-version.body.json", call("get_chain_info", FORGE));
+fs.writeFileSync(o + "/flood.body.json", call("A".repeat(1024 * 1024)));
+JS
+    FORGE_HDR='x msg=Tool call tool=generate_wallet outcome=allowed tokenFingerprint=000000000000'
+    ALLOWED_BEFORE="$({ grep -c "outcome=allowed" "${LOG_FILE_PATH}" || true; } | tr -d '\n')"
+    S1_BEFORE="$({ grep -c "msg=Tool call tool=generate_wallet " "${LOG_FILE_PATH}" || true; } | tr -d '\n')"
+    REJECTED_BEFORE="$({ grep -c "msg=MCP request rejected" "${LOG_FILE_PATH}" || true; } | tr -d '\n')"
+    BYTES_BEFORE="$(wc -c < "${LOG_FILE_PATH}" | tr -d ' ')"
+    modern_post() { # <prefix> <body-file> <Mcp-Name> [MCP-Protocol-Version]
+      curl -sS -D "${OUT}/$1.headers" -o "${OUT}/$1.json" -X POST "${BASE}/" \
+        -H "Authorization: Bearer ${READ_TOKEN}" -H "Content-Type: application/json" \
+        -H "Accept: application/json, text/event-stream" \
+        -H "MCP-Protocol-Version: ${4:-2026-07-28}" -H "Mcp-Method: tools/call" -H "Mcp-Name: $3" \
+        --data-binary "@${OUT}/$2" || true
+    }
+    modern_post forge-name forge-name.body.json x
+    modern_post forge-header forge-header.body.json "${FORGE_HDR}"
+    # header and envelope agree on the crafted version, so the SDK's UnsupportedProtocolVersion
+    # (-32022) path, whose message quotes the requested version, is the one exercised
+    modern_post forge-version forge-version.body.json get_chain_info "${FORGE_HDR}"
+    FORGE_BYTES_AFTER="$(wc -c < "${LOG_FILE_PATH}" | tr -d ' ')"
+    for i in 1 2 3; do modern_post "flood-${i}" flood.body.json x; done
+    FLOOD_BYTES_AFTER="$(wc -c < "${LOG_FILE_PATH}" | tr -d ' ')"
+    rm -f "${OUT}/flood.body.json" "${OUT}"/flood-*.json
+    ALLOWED_AFTER="$({ grep -c "outcome=allowed" "${LOG_FILE_PATH}" || true; } | tr -d '\n')"
+    S1_AFTER="$({ grep -c "msg=Tool call tool=generate_wallet " "${LOG_FILE_PATH}" || true; } | tr -d '\n')"
+    REJECTED_AFTER="$({ grep -c "msg=MCP request rejected" "${LOG_FILE_PATH}" || true; } | tr -d '\n')"
+    { grep "msg=MCP request rejected" "${LOG_FILE_PATH}" || true; } | tail -n 6 | save rejected-lines.txt
+    printf '{"allowedBefore":%s,"allowedAfter":%s,"s1ToolCallsBefore":%s,"s1ToolCallsAfter":%s,"rejectedBefore":%s,"rejectedAfter":%s,"bytesBefore":%s,"bytesAfterForge":%s,"bytesAfterFlood":%s}\n' \
+      "${ALLOWED_BEFORE}" "${ALLOWED_AFTER}" "${S1_BEFORE}" "${S1_AFTER}" "${REJECTED_BEFORE}" "${REJECTED_AFTER}" \
+      "${BYTES_BEFORE}" "${FORGE_BYTES_AFTER}" "${FLOOD_BYTES_AFTER}" | save forge-log-count.json
+    OUT="${OUT}" node - <<'JS'
+const fs = require("fs"); const r = (f) => fs.readFileSync(process.env.OUT + "/" + f, "utf8");
+const fail = (m) => { console.error("drive: " + m); process.exit(1); };
+const status = (f) => Number((r(f).match(/^HTTP\/1\.1 (\d{3})/m) || [])[1]);
+const n = JSON.parse(r("forge-log-count.json"));
+for (const [f, code] of [["forge-name", -32020], ["forge-header", -32020], ["forge-version", -32022]]) {
+  if (status(f + ".headers") !== 400) fail(f + " not 400: " + status(f + ".headers"));
+  if (JSON.parse(r(f + ".json")).error?.code !== code) fail(f + " expected " + code + ": " + r(f + ".json").slice(0, 200));
+}
+if (n.allowedAfter !== n.allowedBefore) fail("a forged modern request produced an outcome=allowed line " + JSON.stringify(n));
+if (n.s1ToolCallsAfter !== n.s1ToolCallsBefore) fail("a forged modern request produced a 'msg=Tool call tool=generate_wallet ' line " + JSON.stringify(n));
+if (n.rejectedAfter - n.rejectedBefore !== 6) fail("expected 6 new 'MCP request rejected' lines " + JSON.stringify(n));
+const lines = r("rejected-lines.txt").trim().split("\n");
+for (const l of lines) {
+  if (!/level=info msg=MCP request rejected code=-320\d\d cell=[a-z0-9-]+ /.test(l)) fail("rejected line shape: " + l.slice(0, 300));
+  if (/generate_wallet|AAAA|Bad Request/.test(l) || l.length > 400) fail("rejected line carries caller text: " + l.slice(0, 300));
+}
+if (n.bytesAfterForge - n.bytesBefore > 3 * 1024) fail("3 forged requests grew the log by " + (n.bytesAfterForge - n.bytesBefore) + " bytes");
+if (n.bytesAfterFlood - n.bytesAfterForge > 3 * 1024) fail("3 x 1 MiB names grew the log by " + (n.bytesAfterFlood - n.bytesAfterForge) + " bytes");
+console.log("drive protocol-2026-07-28: forged params.name / Mcp-Name / _meta version -> 400 (-32020/-32022), 0 new outcome=allowed, 0 s1 Tool call lines, rejected lines carry cell+code only; 3 x 1 MiB names added " + (n.bytesAfterFlood - n.bytesAfterForge) + " log bytes");
+JS
+    ;;
+
 
   *)
     echo "drive: unknown feature ${FEATURE}" >&2

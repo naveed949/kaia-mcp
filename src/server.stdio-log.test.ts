@@ -175,6 +175,8 @@ describe("sdkErrorLogEntry: stdio messages", () => {
       `Discarded a JSON-RPC response received before the connection negotiated an era ${FORGED}`,
       // the caller-text messages need the SDK's whole fixed part, separator included
       `Discarded a notification with a malformed envelope${FORGED}`,
+      // the separator is ": " (colon and space): a colon alone is not the SDK's text
+      `Discarded a notification with a malformed envelope:${FORGED}`,
       `Discarded a notification claiming unsupported protocol revision${FORGED}`,
       `Discarded a notification claiming something else ${FORGED}`,
     ]) {

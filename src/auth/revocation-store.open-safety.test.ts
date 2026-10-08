@@ -92,8 +92,8 @@ describe("FileRevocationStore.open safety", () => {
       lines.push(String(chunk));
       return true;
     }) as typeof process.stderr.write;
+    const store = FileRevocationStore.open(path);
     try {
-      const store = FileRevocationStore.open(path);
       store.add("jti-1", Date.now() + 60_000);
       store.add("jti-2", Date.now() + 60_000);
       vi.mocked(fs.fsyncSync).mockImplementation((fd: number) => {
@@ -113,6 +113,7 @@ describe("FileRevocationStore.open safety", () => {
     expect(warns).toHaveLength(1);
     expect(warns[0]).toContain("level=warn");
     expect(warns[0]).toMatch(/errno=EPERM/);
+    store.close();
     expect(FileRevocationStore.open(path).has("jti-3")).toBe(true);
   });
 });

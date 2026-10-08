@@ -25,18 +25,75 @@ function escapeHtml(s: string): string {
   });
 }
 
-export async function readBody(req: IncomingMessage, maxBytes = 1_000_000): Promise<string> {
-  const chunks: Buffer[] = [];
-  let size = 0;
-  for await (const chunk of req) {
-    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    size += buf.length;
-    if (size > maxBytes) {
-      throw Object.assign(new Error("payload too large"), { oauthError: "invalid_request" });
-    }
-    chunks.push(buf);
+/**
+ * A request body that could not be read. `status` is 413 when it is over the limit and
+ * 400 when the stream failed (client aborted, malformed chunking). Either way the
+ * connection is in an unknown state, so the response must close it (`closeConnection`).
+ */
+export class BodyReadError extends Error {
+  readonly status: 400 | 413;
+
+  constructor(status: 400 | 413, message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "BodyReadError";
+    this.status = status;
   }
-  return Buffer.concat(chunks).toString("utf8");
+}
+
+/**
+ * Read the whole body, at most `maxBytes`. Rejects with `BodyReadError` (413 or 400).
+ * The caller must answer through `closeConnection` on rejection: the socket may still
+ * carry unread body bytes, and a keep-alive client would otherwise send its next request
+ * on a connection the server no longer reads.
+ */
+export function readBody(req: IncomingMessage, maxBytes = 1_000_000): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    let settled = false;
+    const settle = (done: () => void) => {
+      if (settled) return;
+      settled = true;
+      req.off("data", onData);
+      req.off("end", onEnd);
+      req.off("error", onError);
+      req.off("close", onClose);
+      done();
+    };
+    const tooLarge = () => settle(() => reject(new BodyReadError(413, "payload too large")));
+    const onData = (chunk: Buffer | string) => {
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      size += buf.length;
+      if (size > maxBytes) tooLarge();
+      else chunks.push(buf);
+    };
+    const onEnd = () => settle(() => resolve(Buffer.concat(chunks).toString("utf8")));
+    const onError = (err: unknown) =>
+      settle(() =>
+        reject(new BodyReadError(400, "request body could not be read", { cause: err }))
+      );
+    const onClose = () => settle(() => reject(new BodyReadError(400, "request body ended early")));
+
+    // A declared length over the limit is refused before reading anything.
+    const declared = Number(req.headers?.["content-length"]);
+    if (Number.isFinite(declared) && declared > maxBytes) {
+      tooLarge();
+      return;
+    }
+    req.on("data", onData);
+    req.on("end", onEnd);
+    req.on("error", onError);
+    req.on("close", onClose);
+  });
+}
+
+/**
+ * Mark the response as the last one on this connection. Node then closes the socket once
+ * the response is written, so unread request bytes are never parsed as a next request and
+ * a keep-alive client opens a fresh connection instead of waiting on this one.
+ */
+export function closeConnection(res: ServerResponse): void {
+  if (!res.headersSent) res.setHeader("Connection", "close");
 }
 
 type ParsedForm = {
@@ -109,6 +166,9 @@ type PublicOAuthError = { status: number; error: string; description: string };
  * exception text can carry file paths and other internals, so it goes to the log only.
  */
 function publicOAuthError(err: unknown): PublicOAuthError {
+  if (err instanceof BodyReadError) {
+    return { status: err.status, error: "invalid_request", description: err.message };
+  }
   if (err instanceof RevocationStoreError) {
     logger.error("oauth revocation not persisted", {
       jti: err.entryId,
@@ -127,6 +187,7 @@ function publicOAuthError(err: unknown): PublicOAuthError {
 }
 
 function sendOAuthError(res: ServerResponse, err: unknown): void {
+  if (err instanceof BodyReadError) closeConnection(res);
   const e = publicOAuthError(err);
   json(res, e.status, { error: e.error, error_description: e.description });
 }

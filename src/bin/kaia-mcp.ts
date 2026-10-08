@@ -73,7 +73,15 @@ async function main(): Promise<void> {
     return;
   }
 
-  await runKaiaMcpServerHttp(port);
+  const handle = await runKaiaMcpServerHttp(port);
+  // A clean stop releases the revocation store's lock file right away, so the next start
+  // (or a restarted container) does not have to wait for the lock to be seen as abandoned.
+  for (const signal of ["SIGINT", "SIGTERM"] as const) {
+    process.once(signal, () => {
+      logger.info("Stopping Kaia MCP server (HTTP)", { signal });
+      void handle.close().finally(() => process.exit(0));
+    });
+  }
 }
 
 main().catch((err) => {

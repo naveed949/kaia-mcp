@@ -82,6 +82,7 @@ describe("FileRevocationStore durability", () => {
     store.add("jti-short-write-1", exp);
     store.add("jti-short-write-2", exp);
     expect(readEntries().map((e) => e.id)).toEqual(["jti-short-write-1", "jti-short-write-2"]);
+    store.close();
     expect(FileRevocationStore.open(path).has("jti-short-write-2")).toBe(true);
   });
 
@@ -150,9 +151,15 @@ describe("FileRevocationStore durability", () => {
   it("retries the write on the next add after a failed one, even for the same entry", () => {
     const store = FileRevocationStore.open(path);
     const exp = Date.now() + 60_000;
-    vi.mocked(fs.openSync).mockImplementationOnce(() => {
-      throw Object.assign(new Error("EIO: i/o error, open"), { code: "EIO" });
-    });
+    // Fail the denylist's temp-file open once (not the lock check that precedes it).
+    let failed = false;
+    vi.mocked(fs.openSync).mockImplementation(((p: unknown, ...rest: unknown[]) => {
+      if (!failed && String(p).startsWith(`${path}.${process.pid}.`)) {
+        failed = true;
+        throw Object.assign(new Error("EIO: i/o error, open"), { code: "EIO" });
+      }
+      return (realOpen as (...a: unknown[]) => number)(p, ...rest);
+    }) as typeof fs.openSync);
     expect(() => store.add("jti-retry", exp)).toThrow(RevocationStoreError);
     expect(store.has("jti-retry")).toBe(true);
     expect(fs.existsSync(path)).toBe(false);

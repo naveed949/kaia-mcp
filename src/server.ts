@@ -30,6 +30,8 @@ import {
   authenticateRequest,
   checkOrigin,
   readBody,
+  BodyReadError,
+  closeConnection,
   tryHandleAuxRequest,
   writeAuthFailure,
   writeInsufficientScope,
@@ -322,6 +324,8 @@ export async function runKaiaMcpServerHttp(port: number): Promise<KaiaHttpServer
       throw new Error(`previous signing key ${file} is unreadable`, { cause: err });
     }
   });
+  // A file store holds a lock on its file until close(): every exit path below that does
+  // not hand the store to a running server must release it.
   const revocationStore: RevocationStore = config.oauthRevocationFile
     ? FileRevocationStore.open(config.oauthRevocationFile)
     : new MemoryRevocationStore();
@@ -440,8 +444,14 @@ export async function runKaiaMcpServerHttp(port: number): Promise<KaiaHttpServer
       let raw: string;
       try {
         raw = await readBody(req, MAX_MCP_BODY_BYTES);
-      } catch {
-        jsonRpcError(res, 413, -32600, "Invalid Request: body is too large");
+      } catch (err) {
+        if (!(err instanceof BodyReadError)) throw err;
+        closeConnection(res);
+        if (err.status === 413) {
+          jsonRpcError(res, 413, -32600, "Invalid Request: body is too large");
+        } else {
+          jsonRpcError(res, 400, -32600, "Invalid Request: body could not be read");
+        }
         return;
       }
       let parsedBody: unknown;
@@ -472,25 +482,34 @@ export async function runKaiaMcpServerHttp(port: number): Promise<KaiaHttpServer
       const bound = typeof addr === "object" && addr ? addr.port : port;
       resolve(bound);
     });
+  }).catch((err: unknown) => {
+    revocationStore.close?.();
+    throw err;
   });
 
   const localUrl = `http://127.0.0.1:${actualPort}`;
   const issuer = config.publicUrl ?? localUrl;
   if (!allowedOrigins.includes(issuer)) allowedOrigins.push(issuer);
-  runtime.provider = createDemoOAuthProvider({
-    issuer,
-    clientId: config.oauthClientId,
-    accessTokenTtlSeconds: config.accessTokenTtlSeconds,
-    resource: issuer,
-    legacyAudience: config.oauthLegacyAudience,
-    requireResource: config.oauthRequireResource,
-    signingKey,
-    previousSigningKeys,
-    revocationStore,
-    introspectionClient: config.introspectionClientSecret
-      ? { clientId: config.introspectionClientId, clientSecret: config.introspectionClientSecret }
-      : undefined,
-  });
+  try {
+    runtime.provider = createDemoOAuthProvider({
+      issuer,
+      clientId: config.oauthClientId,
+      accessTokenTtlSeconds: config.accessTokenTtlSeconds,
+      resource: issuer,
+      legacyAudience: config.oauthLegacyAudience,
+      requireResource: config.oauthRequireResource,
+      signingKey,
+      previousSigningKeys,
+      revocationStore,
+      introspectionClient: config.introspectionClientSecret
+        ? { clientId: config.introspectionClientId, clientSecret: config.introspectionClientSecret }
+        : undefined,
+    });
+  } catch (err) {
+    httpServer.close();
+    revocationStore.close?.();
+    throw err;
+  }
 
   logger.info("HTTP server listening", {
     port: actualPort,
@@ -516,7 +535,11 @@ export async function runKaiaMcpServerHttp(port: number): Promise<KaiaHttpServer
         if (typeof httpServer.closeAllConnections === "function") {
           httpServer.closeAllConnections();
         }
-        httpServer.close((err) => (err ? reject(err) : resolve()));
+        httpServer.close((err) => {
+          revocationStore.close?.();
+          if (err) reject(err);
+          else resolve();
+        });
       }),
   };
 }

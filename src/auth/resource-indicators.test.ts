@@ -319,8 +319,12 @@ describe("RFC 8707 resource indicators over HTTP", () => {
     dirs.push(dir);
     process.env.KAIA_OAUTH_SIGNING_KEY_FILE = join(dir, "signing-key.pem");
     process.env.KAIA_PUBLIC_URL = "https://kaia.example.test";
+    // Each instance needs its own denylist file: a shared one is refused at startup.
+    process.env.KAIA_OAUTH_REVOCATION_FILE = join(dir, "revoked-a.json");
     resetConfigCache();
     const a = await start();
+    process.env.KAIA_OAUTH_REVOCATION_FILE = join(dir, "revoked-b.json");
+    resetConfigCache();
     const b = await start();
     expect(a.port).not.toBe(b.port);
     const dc = await deviceApproved(a.localUrl);

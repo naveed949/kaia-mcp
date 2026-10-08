@@ -465,6 +465,7 @@ export async function tryHandleAuxRequest(
         );
         loc.searchParams.set("error_description", msg);
         if (state) loc.searchParams.set("state", state);
+        loc.searchParams.set("iss", ctx.provider.issuer);
         res.writeHead(302, { Location: loc.toString() });
         res.end();
       } else {

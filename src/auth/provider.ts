@@ -248,6 +248,8 @@ export class DemoOAuthProvider {
         "urn:ietf:params:oauth:grant-type:device_code",
       ],
       code_challenge_methods_supported: ["S256"],
+      // RFC 9207: every authorization response (success or error) carries `iss`.
+      authorization_response_iss_parameter_supported: true,
       token_endpoint_auth_methods_supported: ["none"],
       scopes_supported: [...ALL_SCOPES],
       access_token_signing_alg_values_supported: ["RS256"],
@@ -339,6 +341,7 @@ export class DemoOAuthProvider {
     this.authzRequests.delete(requestId);
     const url = new URL(req.redirectUri);
     if (req.state) url.searchParams.set("state", req.state);
+    url.searchParams.set("iss", this.issuer);
     if (decision !== "approve") {
       url.searchParams.set("error", "access_denied");
       logger.info("oauth consent denied", { clientId: req.clientId });

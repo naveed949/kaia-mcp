@@ -5,13 +5,13 @@ Every authentication failure on the MCP endpoint tells the client where to get a
 ## Sub-features
 
 - `challenge-no-credentials` answers a POST without `Authorization` with `401`, `WWW-Authenticate: Bearer realm="kaia-mcp", resource_metadata="<issuer>/.well-known/oauth-protected-resource", scope="kaia:read"` (no `error`), and body code `-32040`.
-- `challenge-invalid-token` answers a garbage bearer with `401`, a challenge with `error="invalid_token"` and `resource_metadata`, and body code `-32043`.
+- `challenge-invalid-token` answers a garbage bearer with `401`, a challenge with `error="invalid_token"` and `resource_metadata`, and body code `-32043`. A malformed bearer credential (quoted, containing `%`, a trailing comma) and a valid token with `==` appended (non-canonical base64url) get the same `invalid_token` challenge, not the bare one.
 - `challenge-insufficient-scope` answers a `kaia:read` token calling `encode_function_data` with `403`, `WWW-Authenticate: Bearer … error="insufficient_scope", scope="kaia:encode", resource_metadata="…"`, body `{"jsonrpc":"2.0","id":7,"error":{"code":-32042,…,"data":{"error":"insufficient_scope",…}}}`, one `outcome=denied` log line, and no calldata.
 - `challenge-prm` serves the protected resource metadata at the `resource_metadata` URL with `resource` equal to the issuer.
 
 ## How to get to it (user POV)
 
-- POST `initialize` to `/` with no `Authorization`, then with `Authorization: Bearer not-a-jwt`.
+- POST `initialize` to `/` with no `Authorization`, then with `Authorization: Bearer not-a-jwt`, `Bearer "not-a-jwt"`, `Bearer not%2Da-jwt` and `Bearer not-a-jwt,`.
 - Get a `kaia:read` token (device flow) and `tools/call` `encode_function_data` with JSON-RPC `id` 7; then `tools/list` with the same token.
 - `GET` the `resource_metadata` URL from the 401 challenge.
 
@@ -23,7 +23,7 @@ Preconditions:
 
 - **Run.** `.cursor/skills/verify-kaia-mcp/helpers/drive.sh bearer-challenges`.
 - **No credentials.** `no-token.headers` is `HTTP/1.1 401` with the challenge above and no `error=`; `no-token.json` has `error.code=-32040`.
-- **Invalid token.** `bad-token.headers` is `HTTP/1.1 401` with `error="invalid_token"`; `bad-token.json` has `error.code=-32043`.
+- **Invalid token.** `bad-token.headers` is `HTTP/1.1 401` with `error="invalid_token"`; `bad-token.json` has `error.code=-32043`. The same holds for `malformed-quoted`, `malformed-percent`, `malformed-comma` and `padded-token` (`.headers` and `.json`).
 - **Insufficient scope.** `insufficient.headers` is `HTTP/1.1 403` with `error="insufficient_scope"`, `scope="kaia:encode"`, `resource_metadata`. `insufficient.json` has `id=7`, `error.code=-32042`, and no `0x70a08231…`. `insufficient.tool-call-log-count.json` shows `after = before + 1`. `allowed-list.headers` is `HTTP/1.1 200`.
 - **Metadata.** `prm.json` has `resource` equal to the instance issuer.
 - **Proof.** All of the files above are under `.cursor/skills/verify-kaia-mcp/evidence/<run-id>/bearer-challenges/`.

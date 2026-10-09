@@ -13,7 +13,7 @@
 
 import { getConfig } from "../config.js";
 import type { LogLevel } from "../config.js";
-import { redactMeta, redactString } from "./redact.js";
+import { boundRedactionInput, isSecretKey, redactString } from "./redact.js";
 
 const LEVEL_ORDER: LogLevel[] = ["debug", "info", "warn", "error"];
 
@@ -74,8 +74,46 @@ export function escapeLogText(
   return bytes.length > maxBytes ? out + ELLIPSIS : out;
 }
 
+/**
+ * Cut `text` to at most `maxBytes` UTF-8 bytes on a code-point boundary, appending "…" when
+ * anything was cut. For a caller value whose log line must stay small (an unauthenticated
+ * request's Origin): each input byte can become up to 3 encoded characters, so the general
+ * 256-byte value cap alone still lets a tiny request write a ~800-byte line.
+ */
+export function truncateUtf8(text: string, maxBytes: number): string {
+  if (Buffer.byteLength(text, "utf8") <= maxBytes) return text;
+  let out = "";
+  let used = 0;
+  for (const ch of text) {
+    const n = Buffer.byteLength(ch, "utf8");
+    if (used + n > maxBytes) break;
+    out += ch;
+    used += n;
+  }
+  return out + "\u2026";
+}
+
+/**
+ * Text ready for the cap: bounded at a whitespace boundary (boundRedactionInput keeps or
+ * drops each non-whitespace run whole, so no secret is cut), then redacted. The bound keeps
+ * the redactor's work at a few KB whatever the value's size (a 4 MB tool name, a contract's
+ * revert reason).
+ */
+function redactForLog(text: string): string {
+  return redactString(boundRedactionInput(text));
+}
+
 function escapeMessage(message: string): string {
-  return escapeLogText(redactString(message), { allowSpace: true });
+  return escapeLogText(redactForLog(message), { allowSpace: true });
+}
+
+/**
+ * One log field: bound and redact the raw text first (a JWT or `Bearer <token>` anywhere in
+ * it, whatever the value's type), then cap and percent-encode. Redacting after the cap would
+ * miss a token cut by it and leave its `eyJ...` header and payload in the log.
+ */
+function fieldText(value: unknown, maxBytes: number = LOG_VALUE_MAX_BYTES): string {
+  return escapeLogText(redactForLog(toText(value)), { maxBytes });
 }
 
 function formatEntry(
@@ -84,20 +122,23 @@ function formatEntry(
   meta?: { error?: unknown; code?: number; [k: string]: unknown }
 ): string {
   const timestamp = new Date().toISOString();
-  // Redaction runs on the full raw values, before they are capped and encoded.
-  const safeMeta = redactMeta(meta as Record<string, unknown> | undefined) as
-    | { error?: unknown; code?: number; [k: string]: unknown }
-    | undefined;
+  // Secret-named keys (token, authorization, ...) are replaced whole; every other value is
+  // bounded and redacted in fieldText (the one redaction point), before the cap.
+  const safeMeta = meta
+    ? Object.fromEntries(
+        Object.entries(meta).map(([k, v]) => [k, isSecretKey(k) ? "[redacted]" : v])
+      )
+    : undefined;
   const parts = [`timestamp=${timestamp}`, `level=${level}`, `msg=${escapeMessage(message)}`];
-  if (safeMeta?.code !== undefined) parts.push(`code=${escapeLogText(safeMeta.code)}`);
+  if (safeMeta?.code !== undefined) parts.push(`code=${fieldText(safeMeta.code)}`);
   if (safeMeta?.error !== undefined) {
-    const err = safeMeta.error instanceof Error ? safeMeta.error.message : toText(safeMeta.error);
-    parts.push(`error=${escapeLogText(redactString(err), { maxBytes: LOG_ERROR_MAX_BYTES })}`);
+    const err = safeMeta.error instanceof Error ? safeMeta.error.message : safeMeta.error;
+    parts.push(`error=${fieldText(err, LOG_ERROR_MAX_BYTES)}`);
   }
   for (const [k, v] of Object.entries(safeMeta ?? {})) {
     if (v === undefined || k === "error" || k === "code") continue;
-    const key = PLAIN_KEY.test(k) ? k : escapeLogText(k);
-    parts.push(`${key}=${escapeLogText(v)}`);
+    const key = PLAIN_KEY.test(k) ? k : fieldText(k);
+    parts.push(`${key}=${fieldText(v)}`);
   }
   return parts.join(" ");
 }

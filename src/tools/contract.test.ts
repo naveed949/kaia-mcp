@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
+import { encodeFunctionData } from "viem";
 import { handleReadContract, handleGetContractAbi, handleGetContractSource } from "./contract.js";
 import { createRpcClient } from "../clients/rpc.js";
 import { createKaiaScanClient } from "../clients/kaiascan.js";
@@ -31,9 +32,15 @@ describe("handleReadContract", () => {
   beforeEach(() => {
     resetConfigCache();
     vi.clearAllMocks();
+    // read_contract encodes once and sends that calldata with `call` (PR #9 round 5).
     mockCreateRpcClient.mockReturnValue({
-      readContract: vi.fn().mockResolvedValue(1000000n),
+      call: vi.fn().mockResolvedValue({ data: `0x${(1000000).toString(16).padStart(64, "0")}` }),
     } as unknown as ReturnType<typeof createRpcClient>);
+  });
+  const balanceOfData = encodeFunctionData({
+    abi: balanceOfAbi,
+    functionName: "balanceOf",
+    args: ["0x00000000000000000000000000000000000000aa"],
   });
 
   it("returns decoded result for valid ABI and args", async () => {
@@ -41,7 +48,7 @@ describe("handleReadContract", () => {
       contractAddress: validAddress,
       functionName: "balanceOf",
       abi: JSON.stringify(balanceOfAbi),
-      args: ["0xholder0000000000000000000000000000000000"],
+      args: ["0x00000000000000000000000000000000000000aa"],
       network: "mainnet",
     });
     expect(result.content).toHaveLength(1);
@@ -51,14 +58,9 @@ describe("handleReadContract", () => {
     expect(text).toContain("1000000");
     expect(mockCreateRpcClient).toHaveBeenCalledWith("mainnet");
     const client = mockCreateRpcClient.mock.results[0]?.value as {
-      readContract: ReturnType<typeof vi.fn>;
+      call: ReturnType<typeof vi.fn>;
     };
-    expect(client.readContract).toHaveBeenCalledWith({
-      address: validAddress,
-      abi: balanceOfAbi,
-      functionName: "balanceOf",
-      args: ["0xholder0000000000000000000000000000000000"],
-    });
+    expect(client.call).toHaveBeenCalledWith({ to: validAddress, data: balanceOfData });
   });
 
   it("accepts ABI as array", async () => {
@@ -66,16 +68,16 @@ describe("handleReadContract", () => {
       contractAddress: validAddress,
       functionName: "balanceOf",
       abi: balanceOfAbi,
+      args: ["0x00000000000000000000000000000000000000aa"],
       network: "mainnet",
     });
     const client = mockCreateRpcClient.mock.results[0]?.value as {
-      readContract: ReturnType<typeof vi.fn>;
+      call: ReturnType<typeof vi.fn>;
     };
-    expect(client.readContract).toHaveBeenCalledWith(
+    expect(client.call).toHaveBeenCalledWith(
       expect.objectContaining({
-        address: validAddress,
-        functionName: "balanceOf",
-        args: undefined,
+        to: validAddress,
+        data: balanceOfData,
       })
     );
   });

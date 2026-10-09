@@ -5,8 +5,9 @@
 import type { Address } from "viem";
 import { createRpcClient } from "../clients/rpc.js";
 import { createKaiaScanClient } from "../clients/kaiascan.js";
+import { KaiaScanApiError } from "../utils/errors.js";
 import { formatKaia, formatPeb } from "../utils/format.js";
-import { validateAddress, validateNetwork } from "../utils/validation.js";
+import { optionalNumber, validateAddress, validateNetwork } from "../utils/validation.js";
 
 // --- Tool definitions (name, description, inputSchema) ---
 
@@ -204,8 +205,8 @@ export async function handleGetAccountTokens(args: {
 }): Promise<{ content: Array<{ type: "text"; text: string }> }> {
   const address = validateAddress(args.address);
   validateNetwork(args.network); // ensure valid; KaiaScan main URL may not distinguish kairos
-  const page = Math.max(1, Number(args.page) || 1);
-  const size = Math.min(2000, Math.max(1, Number(args.size) || 100));
+  const page = Math.max(1, optionalNumber(args.page, "page") || 1);
+  const size = Math.min(2000, Math.max(1, optionalNumber(args.size, "size") || 100));
 
   const client = createKaiaScanClient();
   const path = `api/v1/accounts/${address}/token-balances`;
@@ -215,8 +216,7 @@ export async function handleGetAccountTokens(args: {
   try {
     data = await client.get<TokenBalancesResponse>(path, params);
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(`KaiaScan API error (token balances): ${msg}`);
+    throw KaiaScanApiError.wrap("token balances", err);
   }
 
   const results = data?.results ?? [];
@@ -250,8 +250,8 @@ export async function handleGetAccountNfts(args: {
 }): Promise<{ content: Array<{ type: "text"; text: string }> }> {
   const address = validateAddress(args.address);
   validateNetwork(args.network);
-  const page = Math.max(1, Number(args.page) || 1);
-  const size = Math.min(2000, Math.max(1, Number(args.size) || 20));
+  const page = Math.max(1, optionalNumber(args.page, "page") || 1);
+  const size = Math.min(2000, Math.max(1, optionalNumber(args.size, "size") || 20));
 
   const client = createKaiaScanClient();
   const path = `api/v1/accounts/${address}/nft-inventories`;
@@ -261,8 +261,7 @@ export async function handleGetAccountNfts(args: {
   try {
     data = await client.get<NftInventoriesResponse>(path, params);
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(`KaiaScan API error (NFT inventories): ${msg}`);
+    throw KaiaScanApiError.wrap("NFT inventories", err);
   }
 
   const results = data?.results ?? [];

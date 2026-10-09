@@ -125,7 +125,7 @@ const ALL_RESOURCES = [
 
 **readResource(uri)** in the same file:
 
-1. Validates that the URI starts with `kaia://`; otherwise throws `McpError` with `InvalidParams`.
+1. Validates that the URI starts with `kaia://`; otherwise throws `ProtocolError` with `InvalidParams`.
 2. Dispatches on the exact URI (e.g. `kaia://mainnet/status` → `fetchNetworkStatus("mainnet")`).
 3. Returns a **ReadResourceResult** with `contents: [{ uri, mimeType, text }]`. Most resources are `text/plain`; `kaia://docs/rpc-methods` is `text/markdown`.
 
@@ -177,7 +177,7 @@ Each prompt has:
 
 - **listPrompts()** — returns each prompt’s name, description, and arguments (with `required` flags) for the MCP `prompts/list` response.
 - **getPrompt(name, args)**:
-  1. Finds the prompt by name; if not found, throws `McpError` with `InvalidParams`.
+  1. Finds the prompt by name; if not found, throws `ProtocolError` with `InvalidParams`.
   2. For each argument, if required and missing/empty, throws; otherwise optional args default (e.g. `network` → `"mainnet"`).
   3. Calls `def.template(resolved)` to get the text.
   4. Returns **GetPromptResult** with `messages: [{ role: "user", content: { type: "text", text } }]`.

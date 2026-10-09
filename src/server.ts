@@ -11,7 +11,13 @@ import {
 import { serveStdio, type StdioServerHandle } from "@modelcontextprotocol/server/stdio";
 import { toNodeHandler } from "@modelcontextprotocol/node";
 import { getConfig } from "./config.js";
-import { AuthError, MCP_ERROR_CODES, toMcpError } from "./utils/errors.js";
+import {
+  AuthError,
+  InvalidParamsError,
+  MCP_ERROR_CODES,
+  describeFailure,
+  toMcpError,
+} from "./utils/errors.js";
 import { logger } from "./utils/logger.js";
 import { listTools, callTool } from "./tools/index.js";
 import { authorizeToolCall, requiredScopeForTool, type ToolAuthOptions } from "./auth/scopes.js";
@@ -130,30 +136,36 @@ const SDK_CELL_CODES: Readonly<Record<string, number>> = {
 };
 
 /**
- * Messages the stdio entry reports when it drops a client message it cannot use (a
- * response before the era is negotiated, a notification with a bad envelope or revision).
- * Notifications get no JSON-RPC answer, so the code is the one the SDK gives the same
- * problem on a request. Matched on the fixed SDK prefix only: the rest can quote caller
- * input. The generic "Discarded a " entry catches future wordings of the same kind; the
- * SDK's "Discarded the probe instance ..." (a server-side timeout) is not matched.
+ * The exact messages the stdio entry reports when it drops a client message it cannot use
+ * (a response before the era is negotiated, a notification with a bad envelope or
+ * revision). Notifications get no JSON-RPC answer, so the code is the one the SDK gives
+ * the same problem on a request. A message with no caller part must equal the SDK text;
+ * one that ends in caller input is matched on the SDK's whole fixed part, up to and
+ * including its separator, and the rest is never logged. Any other "Discarded ..."
+ * message (a future SDK wording, the server-side probe timeout) is not a known client
+ * mistake and stays at error. server.stdio-log.test.ts pins these against the SDK.
  */
-const SDK_STDIO_DISCARDS: ReadonlyArray<readonly [string, string, number]> = [
+const SDK_STDIO_DISCARDS: ReadonlyArray<
+  readonly [match: "exact" | "prefix", text: string, cell: string, code: number]
+> = [
   [
+    "exact",
     "Discarded a JSON-RPC response received before the connection negotiated an era",
     "response-before-negotiation",
     ProtocolErrorCode.InvalidRequest,
   ],
   [
-    "Discarded a notification with a malformed envelope:",
+    "prefix",
+    "Discarded a notification with a malformed envelope: ",
     "notification-envelope-invalid",
     ProtocolErrorCode.InvalidParams,
   ],
   [
-    "Discarded a notification claiming unsupported protocol revision",
+    "prefix",
+    "Discarded a notification claiming unsupported protocol revision ",
     "notification-unsupported-revision",
     ProtocolErrorCode.UnsupportedProtocolVersion,
   ],
-  ["Discarded a ", "discarded-message", ProtocolErrorCode.InvalidRequest],
 ];
 
 /**
@@ -215,8 +227,8 @@ export function sdkErrorLogEntry(err: unknown): SdkErrorLogEntry {
       meta: { code: err.code, cell: "protocol-error", errorType },
     };
   }
-  for (const [prefix, cell, cellCode] of SDK_STDIO_DISCARDS) {
-    if (message.startsWith(prefix)) {
+  for (const [match, text, cell, cellCode] of SDK_STDIO_DISCARDS) {
+    if (match === "exact" ? message === text : message.startsWith(text)) {
       return {
         level: "info",
         message: "MCP request rejected",
@@ -253,21 +265,25 @@ function logSdkError(err: unknown): void {
 }
 
 /**
- * Handler error codes that mean the client asked for something it cannot have (an unknown
- * tool, resource or prompt name, bad arguments, a missing or under-scoped token): logged
- * at info as a denial, not at error. Everything else is a server-side fault.
+ * SDK ProtocolError codes (thrown by kaia's own handlers, e.g. an unknown resource, prompt or
+ * tool name) that mean the client asked for something it cannot have: logged at info as a
+ * denial. Only errors kaia raises itself about the request can be client mistakes:
+ * InvalidParamsError (a bad argument), AuthError (missing or under-scoped token) and these
+ * ProtocolErrors. An error from an upstream (the RPC node, KaiaScan) is a server-side
+ * failure whatever JSON-RPC code it carries; the upstream's code is never trusted to mean
+ * "caller mistake".
  */
-const CLIENT_HANDLER_CODES: ReadonlySet<number> = new Set<number>([
+const CLIENT_PROTOCOL_ERROR_CODES: ReadonlySet<number> = new Set<number>([
   MCP_ERROR_CODES.Parse,
   MCP_ERROR_CODES.InvalidRequest,
   MCP_ERROR_CODES.MethodNotFound,
   MCP_ERROR_CODES.InvalidParams,
-  MCP_ERROR_CODES.Unauthorized,
-  MCP_ERROR_CODES.TokenExpired,
-  MCP_ERROR_CODES.InsufficientScope,
-  MCP_ERROR_CODES.InvalidToken,
-  MCP_ERROR_CODES.ToolDisabled,
 ]);
+
+function isClientMistake(err: unknown): boolean {
+  if (err instanceof InvalidParamsError || err instanceof AuthError) return true;
+  return err instanceof ProtocolError && CLIENT_PROTOCOL_ERROR_CODES.has(err.code);
+}
 
 function wrapToolHandler<T, R>(
   method: string,
@@ -277,26 +293,44 @@ function wrapToolHandler<T, R>(
     try {
       return await Promise.resolve(handler(req));
     } catch (err) {
-      const mcp =
-        err instanceof ProtocolError ? { code: err.code, data: err.data } : toMcpError(err);
-      // Code and category only: tool, resource and prompt error messages routinely echo
-      // caller input (e.g. 'Function "X" not found on ABI', an unknown uri or name).
       const errorType = err instanceof Error ? err.name : typeof err;
-      if (CLIENT_HANDLER_CODES.has(mcp.code)) {
+      if (isClientMistake(err)) {
+        const code = err instanceof ProtocolError ? err.code : toMcpError(err).code;
+        // Code and category only: tool, resource and prompt error messages routinely echo
+        // caller input (e.g. 'Function "X" not found on ABI', an unknown uri or name).
         logger.info("Request denied", {
           method,
-          code: mcp.code,
-          category: errorCategory(mcp.code),
+          code,
+          category: errorCategory(code),
           errorType,
           outcome: "denied",
         });
-      } else {
-        logger.error("Tool error", {
-          code: mcp.code,
-          category: errorCategory(mcp.code),
-          errorType,
-        });
+        if (err instanceof ProtocolError) throw err;
+        const shape = toMcpError(err);
+        throw new ProtocolError(shape.code, shape.message, shape.data);
       }
+      // A server-side failure: an upstream fault, an unexpected exception, or a ProtocolError
+      // kaia did not raise as a client mistake. The caller gets a generic message (toMcpError
+      // never passes upstream text, the RPC URL or the request body on); the upstream's code,
+      // status and short description go to the log only, redacted and encoded by the logger.
+      const failure =
+        err instanceof ProtocolError
+          ? {
+              code: err.code,
+              detail: err.message,
+              upstreamCode: undefined,
+              upstreamStatus: undefined,
+            }
+          : describeFailure(err);
+      logger.error("Tool error", {
+        code: failure.code,
+        method,
+        category: errorCategory(failure.code),
+        errorType,
+        upstreamCode: failure.upstreamCode,
+        upstreamStatus: failure.upstreamStatus,
+        detail: failure.detail,
+      });
       if (err instanceof ProtocolError) throw err;
       const shape = toMcpError(err);
       throw new ProtocolError(shape.code, shape.message, shape.data);
@@ -475,6 +509,40 @@ export type KaiaHttpServerHandle = {
 
 /** Largest MCP POST body accepted (the SDK's own default limit). */
 const MAX_MCP_BODY_BYTES = 4 * 1024 * 1024;
+
+/**
+ * Deepest JSON nesting accepted in an MCP POST body. A tools/call's `arguments` object is
+ * level 3, so this leaves 61 levels for argument values. Without it a body of a few thousand
+ * nested arrays overflowed the SDK's recursive validation, which answered 500 and never
+ * reached onerror, so nothing was logged.
+ */
+export const MAX_JSON_DEPTH = 64;
+
+/**
+ * True when `raw` nests objects/arrays deeper than `max`. One linear pass over the text,
+ * skipping string contents (and escapes in them); run before JSON.parse.
+ */
+export function jsonNestingExceeds(raw: string, max: number): boolean {
+  let depth = 0;
+  let inString = false;
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw.charCodeAt(i);
+    if (inString) {
+      if (c === 0x5c) {
+        i++; // backslash: skip the escaped character
+      } else if (c === 0x22) {
+        inString = false;
+      }
+    } else if (c === 0x22) {
+      inString = true;
+    } else if (c === 0x5b || c === 0x7b) {
+      if (++depth > max) return true;
+    } else if (c === 0x5d || c === 0x7d) {
+      depth--;
+    }
+  }
+  return false;
+}
 
 function jsonRpcError(
   res: ServerResponse,
@@ -657,6 +725,15 @@ export async function runKaiaMcpServerHttp(port: number): Promise<KaiaHttpServer
         } else {
           jsonRpcError(res, 400, -32600, "Invalid Request: body could not be read");
         }
+        return;
+      }
+      if (jsonNestingExceeds(raw, MAX_JSON_DEPTH)) {
+        logger.info("MCP request rejected", {
+          code: ProtocolErrorCode.ParseError,
+          cell: "json-too-deep",
+          tokenFingerprint: auth?.tokenFingerprint,
+        });
+        jsonRpcError(res, 400, -32700, "Parse error: body is nested too deeply");
         return;
       }
       let parsedBody: unknown;

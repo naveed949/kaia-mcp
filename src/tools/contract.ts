@@ -3,10 +3,20 @@
  * read_contract uses viem readContract; get_contract_abi/source use KaiaScan API.
  */
 
-import type { Abi } from "viem";
+import { BaseError, decodeFunctionResult, getContractError } from "viem";
 import { createRpcClient } from "../clients/rpc.js";
 import { createKaiaScanClient } from "../clients/kaiascan.js";
-import { validateAddress, validateNetwork } from "../utils/validation.js";
+import { KaiaScanApiError } from "../utils/errors.js";
+import {
+  encodeCallData,
+  parseAbiInput,
+  requireDecodableOutputs,
+  resolveAbiFunction,
+  validateAddress,
+  validateCallArgs,
+  validateFunctionName,
+  validateNetwork,
+} from "../utils/validation.js";
 
 // --- Tool definitions ---
 
@@ -67,28 +77,6 @@ export const CONTRACT_TOOLS = [READ_CONTRACT, GET_CONTRACT_ABI, GET_CONTRACT_SOU
 
 // --- Helpers ---
 
-function parseAbiFromInput(abi: unknown): Abi {
-  if (abi == null || (typeof abi !== "string" && !Array.isArray(abi))) {
-    throw new Error("Invalid ABI: must be a JSON string or an array of ABI items.");
-  }
-  let parsed: unknown;
-  if (typeof abi === "string") {
-    const trimmed = abi.trim();
-    if (!trimmed) throw new Error("Invalid ABI: empty string.");
-    try {
-      parsed = JSON.parse(trimmed) as unknown;
-    } catch {
-      throw new Error("Invalid ABI: not valid JSON.");
-    }
-  } else {
-    parsed = abi;
-  }
-  if (!Array.isArray(parsed)) {
-    throw new Error("Invalid ABI: must be an array of ABI items.");
-  }
-  return parsed as Abi;
-}
-
 // --- KaiaScan API response shapes ---
 
 interface ContractListItem {
@@ -115,28 +103,40 @@ export async function handleReadContract(args: {
 }): Promise<{ content: Array<{ type: "text"; text: string }> }> {
   const contractAddress = validateAddress(args.contractAddress);
   const network = validateNetwork(args.network);
-  const abi = parseAbiFromInput(args.abi);
+  // parseAbiInput copies the ABI into kaia's own strictly typed, bounded form; only the
+  // one function resolved from it ever reaches viem.
+  const abi = parseAbiInput(args.abi);
+  const functionName = validateFunctionName(args.functionName);
+  const callArgs = validateCallArgs(args.args);
+  // Resolve once, up front: a function or argument that does not fit the ABI is the
+  // caller's mistake (-32602), found before any RPC call is made.
+  const fn = resolveAbiFunction(abi, functionName, callArgs);
+  // The result is decoded with the function's `outputs`: a missing or bogus output type is
+  // the caller's mistake too, and must be caught here rather than after the RPC returns.
+  requireDecodableOutputs(fn);
+  const data = encodeCallData(fn, callArgs);
 
-  const functionName = args.functionName;
-  if (typeof functionName !== "string" || !functionName.trim()) {
-    throw new Error("Invalid functionName: must be a non-empty string.");
-  }
-
-  let callArgs: unknown[] | undefined;
-  if (args.args !== undefined && args.args !== null) {
-    if (!Array.isArray(args.args)) {
-      throw new Error("Invalid args: must be an array.");
-    }
-    callArgs = args.args;
-  }
-
+  // viem's readContract (call, then decode, errors through getContractError), with the
+  // calldata encoded above instead of encoding the args a second time.
   const client = createRpcClient(network);
-  const result = await client.readContract({
-    address: contractAddress,
-    abi,
-    functionName: functionName.trim(),
-    args: callArgs as readonly unknown[] | undefined,
-  });
+  let result: unknown;
+  try {
+    const { data: returned } = await client.call({ to: contractAddress, data });
+    result = decodeFunctionResult({
+      abi: [fn.item],
+      functionName: fn.item.name,
+      args: callArgs,
+      data: returned ?? "0x",
+    } as never);
+  } catch (err) {
+    throw getContractError(err as BaseError, {
+      abi: [fn.item],
+      address: contractAddress,
+      args: callArgs,
+      docsPath: "/docs/contract/readContract",
+      functionName: fn.item.name,
+    });
+  }
 
   const text =
     result === undefined || result === null
@@ -164,8 +164,7 @@ export async function handleGetContractAbi(args: {
   try {
     data = await client.get<unknown>(path);
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(`KaiaScan API error (contract ABI): ${msg}`);
+    throw KaiaScanApiError.wrap("contract ABI", err);
   }
 
   const text =
@@ -195,8 +194,7 @@ export async function handleGetContractSource(args: {
   try {
     data = await client.get<GetContractsResponse>(path, params);
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(`KaiaScan API error (contract source): ${msg}`);
+    throw KaiaScanApiError.wrap("contract source", err);
   }
 
   const list = Array.isArray(data) ? data : [];

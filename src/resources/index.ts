@@ -5,9 +5,9 @@
 import type { ListResourcesResult, ReadResourceResult } from "@modelcontextprotocol/server";
 import { createRpcClient } from "../clients/rpc.js";
 import { createKaiaScanClient } from "../clients/kaiascan.js";
+import { KaiaScanApiError } from "../utils/errors.js";
 import { getChain } from "../chains.js";
 import { formatKaia } from "../utils/format.js";
-import { toMcpError } from "../utils/errors.js";
 import { ProtocolError, ProtocolErrorCode } from "@modelcontextprotocol/server";
 import { getPopularMainnetTokens } from "./token-list.js";
 import { RPC_METHODS_DOCS } from "./rpc-methods-docs.js";
@@ -108,7 +108,11 @@ async function fetchNetworkStatus(network: "mainnet" | "kairos"): Promise<string
 
 async function fetchTopAccounts(): Promise<string> {
   const scan = createKaiaScanClient();
-  const data = await scan.get<TopAccountsResponse>("api/v1/kaia/top-accounts");
+  const data = await scan
+    .get<TopAccountsResponse>("api/v1/kaia/top-accounts")
+    .catch((err: unknown) => {
+      throw KaiaScanApiError.wrap("top accounts", err);
+    });
   const list = Array.isArray(data)
     ? data
     : ((data as { holder?: TopAccountHolder[] }).holder ?? []);
@@ -124,51 +128,47 @@ async function fetchTopAccounts(): Promise<string> {
 
 /**
  * Reads a resource by URI. Returns MCP ReadResourceResult with contents (text or blob).
- * On error, throws ProtocolError so the server handler can return proper JSON-RPC error.
+ * An unknown or malformed URI throws kaia's own ProtocolError (InvalidParams, a caller
+ * mistake). An RPC or KaiaScan failure propagates unchanged, so the server's handler wrapper
+ * classifies it as a server-side failure and answers with a generic message.
  */
 export async function readResource(uri: string): Promise<ReadResourceResult> {
-  try {
-    const trimmed = (uri ?? "").trim();
-    if (!trimmed || !trimmed.startsWith("kaia://")) {
-      throw new ProtocolError(
-        ProtocolErrorCode.InvalidParams,
-        `Invalid resource URI: ${uri}. Expected kaia://<path>.`
-      );
-    }
-
-    let text: string;
-    let mimeType: string = "text/plain";
-
-    if (trimmed === RESOURCE_MAINNET_STATUS) {
-      text = await fetchNetworkStatus("mainnet");
-    } else if (trimmed === RESOURCE_KAIROS_STATUS) {
-      text = await fetchNetworkStatus("kairos");
-    } else if (trimmed === RESOURCE_MAINNET_TOKENS_POPULAR) {
-      const tokens = getPopularMainnetTokens();
-      text = [
-        "# Popular tokens (Kaia mainnet)",
-        "",
-        ...tokens.map((t) => `${t.name} (${t.symbol}): ${t.address}`),
-      ].join("\n");
-    } else if (trimmed === RESOURCE_MAINNET_TOP_ACCOUNTS) {
-      text = await fetchTopAccounts();
-    } else if (trimmed === RESOURCE_DOCS_RPC_METHODS) {
-      text = RPC_METHODS_DOCS;
-      mimeType = "text/markdown";
-    } else {
-      throw new ProtocolError(
-        ProtocolErrorCode.InvalidParams,
-        `Unknown resource URI: ${uri}. Use resources/list to see available URIs.`
-      );
-    }
-
-    return {
-      contents: [{ uri: trimmed, mimeType, text }],
-      _meta: {},
-    };
-  } catch (err) {
-    if (err instanceof ProtocolError) throw err;
-    const mcp = toMcpError(err);
-    throw new ProtocolError(mcp.code, mcp.message, mcp.data);
+  const trimmed = (uri ?? "").trim();
+  if (!trimmed || !trimmed.startsWith("kaia://")) {
+    throw new ProtocolError(
+      ProtocolErrorCode.InvalidParams,
+      `Invalid resource URI: ${uri}. Expected kaia://<path>.`
+    );
   }
+
+  let text: string;
+  let mimeType: string = "text/plain";
+
+  if (trimmed === RESOURCE_MAINNET_STATUS) {
+    text = await fetchNetworkStatus("mainnet");
+  } else if (trimmed === RESOURCE_KAIROS_STATUS) {
+    text = await fetchNetworkStatus("kairos");
+  } else if (trimmed === RESOURCE_MAINNET_TOKENS_POPULAR) {
+    const tokens = getPopularMainnetTokens();
+    text = [
+      "# Popular tokens (Kaia mainnet)",
+      "",
+      ...tokens.map((t) => `${t.name} (${t.symbol}): ${t.address}`),
+    ].join("\n");
+  } else if (trimmed === RESOURCE_MAINNET_TOP_ACCOUNTS) {
+    text = await fetchTopAccounts();
+  } else if (trimmed === RESOURCE_DOCS_RPC_METHODS) {
+    text = RPC_METHODS_DOCS;
+    mimeType = "text/markdown";
+  } else {
+    throw new ProtocolError(
+      ProtocolErrorCode.InvalidParams,
+      `Unknown resource URI: ${uri}. Use resources/list to see available URIs.`
+    );
+  }
+
+  return {
+    contents: [{ uri: trimmed, mimeType, text }],
+    _meta: {},
+  };
 }

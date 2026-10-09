@@ -46,6 +46,7 @@ import {
   handleGetChainInfo,
 } from "./network.js";
 import { WALLET_TOOLS, handleGenerateWallet, handleEncodeFunctionData } from "./wallet.js";
+import { InvalidParamsError } from "../utils/errors.js";
 
 export {
   ACCOUNT_TOOLS,
@@ -173,6 +174,6 @@ export async function callTool(
     case "encode_function_data":
       return { ...(await handleEncodeFunctionData(a)), _meta: {} };
     default:
-      throw new Error(`Unknown tool: ${name}`);
+      throw new InvalidParamsError(`Unknown tool: ${name}`);
   }
 }

@@ -7,9 +7,16 @@
  */
 
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
-import { encodeFunctionData, type Abi } from "viem";
 import { getConfig } from "../config.js";
+import { logger } from "../utils/logger.js";
 import { AuthError } from "../utils/errors.js";
+import {
+  encodeCallData,
+  parseAbiInput,
+  resolveAbiFunction,
+  validateCallArgs,
+  validateFunctionName,
+} from "../utils/validation.js";
 import { AUTH_ERRORS } from "../auth/constants.js";
 
 // --- Tool definitions ---
@@ -54,30 +61,6 @@ export const ENCODE_FUNCTION_DATA = {
 
 export const WALLET_TOOLS = [GENERATE_WALLET, ENCODE_FUNCTION_DATA];
 
-// --- Helpers ---
-
-function parseAbiFromInput(abi: unknown): Abi {
-  if (abi == null || (typeof abi !== "string" && !Array.isArray(abi))) {
-    throw new Error("Invalid ABI: must be a JSON string or an array of ABI items.");
-  }
-  let parsed: unknown;
-  if (typeof abi === "string") {
-    const trimmed = abi.trim();
-    if (!trimmed) throw new Error("Invalid ABI: empty string.");
-    try {
-      parsed = JSON.parse(trimmed) as unknown;
-    } catch {
-      throw new Error("Invalid ABI: not valid JSON.");
-    }
-  } else {
-    parsed = abi;
-  }
-  if (!Array.isArray(parsed)) {
-    throw new Error("Invalid ABI: must be an array of ABI items.");
-  }
-  return parsed as Abi;
-}
-
 // --- Handlers ---
 
 let generateWalletInvocations = 0;
@@ -107,11 +90,8 @@ export async function handleGenerateWallet(args: {
   const privateKey = generatePrivateKey();
   const account = privateKeyToAccount(privateKey);
 
-  if (typeof console !== "undefined" && console.warn) {
-    console.warn(
-      "[generate_wallet] Private key was generated. Do not log or expose the private key."
-    );
-  }
+  // Through the logger like every other stderr line (format, level filter); never the key.
+  logger.warn("generate_wallet: a private key was generated; never log or expose it");
 
   const lines = [
     `Address: ${account.address}`,
@@ -131,26 +111,11 @@ export async function handleEncodeFunctionData(args: {
   functionName?: unknown;
   args?: unknown;
 }): Promise<{ content: Array<{ type: "text"; text: string }> }> {
-  const abi = parseAbiFromInput(args.abi);
-
-  const functionName = args.functionName;
-  if (typeof functionName !== "string" || !functionName.trim()) {
-    throw new Error("Invalid functionName: must be a non-empty string.");
-  }
-
-  let callArgs: readonly unknown[] | undefined;
-  if (args.args !== undefined && args.args !== null) {
-    if (!Array.isArray(args.args)) {
-      throw new Error("Invalid args: must be an array.");
-    }
-    callArgs = args.args;
-  }
-
-  const data = encodeFunctionData({
-    abi,
-    functionName: functionName.trim(),
-    args: callArgs,
-  });
+  const abi = parseAbiInput(args.abi);
+  const functionName = validateFunctionName(args.functionName);
+  const callArgs = validateCallArgs(args.args);
+  // Only the one resolved function, kaia's own copy, reaches viem.
+  const data = encodeCallData(resolveAbiFunction(abi, functionName, callArgs), callArgs);
 
   return {
     content: [{ type: "text" as const, text: data }],

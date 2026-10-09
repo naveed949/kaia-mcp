@@ -4,6 +4,7 @@
 
 import { createRpcClient } from "../clients/rpc.js";
 import { createKaiaScanClient } from "../clients/kaiascan.js";
+import { InvalidParamsError, KaiaScanApiError } from "../utils/errors.js";
 import { validateNetwork, validateBlockNumberOrHash } from "../utils/validation.js";
 
 // --- Tool definitions ---
@@ -164,17 +165,17 @@ export async function handleGetBlockRewards(args: {
   } else if (typeof args.blockNumber === "string") {
     const s = args.blockNumber.trim();
     if (s.startsWith("0x") && s.length === 66) {
-      throw new Error(
+      throw new InvalidParamsError(
         "Invalid block number: block hash not allowed. Use a block number (integer)."
       );
     }
     const n = s.startsWith("0x") ? parseInt(s, 16) : parseInt(s, 10);
     if (!Number.isInteger(n) || n < 0 || isNaN(n)) {
-      throw new Error("Invalid block number: must be a non-negative integer.");
+      throw new InvalidParamsError("Invalid block number: must be a non-negative integer.");
     }
     blockNumber = n;
   } else {
-    throw new Error("Invalid block number: must be a non-negative integer.");
+    throw new InvalidParamsError("Invalid block number: must be a non-negative integer.");
   }
   validateNetwork(args.network);
 
@@ -188,8 +189,7 @@ export async function handleGetBlockRewards(args: {
   try {
     rewards = await client.get<BlockRewardsResponse>(rewardsPath);
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(`KaiaScan API error (block rewards): ${msg}`);
+    throw KaiaScanApiError.wrap("block rewards", err);
   }
 
   try {

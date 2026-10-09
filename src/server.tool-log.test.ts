@@ -174,12 +174,24 @@ describe("Tool call audit log", () => {
     });
     getChainId.mockClear();
     const client = await connect(auth([SCOPES.READ]));
-    await expect(client.callTool({ name: "get_chain_info", arguments: {} })).rejects.toThrow();
+    await expect(client.callTool({ name: "get_chain_info", arguments: {} })).rejects.toMatchObject({
+      code: -32603,
+      message: "Internal error: authorization failed",
+    });
     const lines = toolCallLines();
     expect(lines).toHaveLength(1);
     expect(lines[0]).toContain("msg=Tool call tool=get_chain_info outcome=denied ");
     expect(lines[0]).toContain("reason=internal_error");
     expect(getChainId).not.toHaveBeenCalled();
+    // kaia's own -32603 ProtocolError is a server fault, not a caller mistake: one error line,
+    // no "Request denied".
+    const out = chunks.join("");
+    expect(out).not.toContain("msg=Request denied");
+    const errorLines = out.split("\n").filter((l) => l.includes("msg=Tool error"));
+    expect(errorLines).toHaveLength(1);
+    expect(errorLines[0]).toMatch(
+      / level=error msg=Tool error code=-32603 method=tools\/call category=internal errorType=ProtocolError detail=Internal%20error:%20authorization%20failed$/
+    );
   });
 
   it("a failing auth-context lookup logs one denied line and fails closed", async () => {
@@ -195,7 +207,7 @@ describe("Tool call audit log", () => {
     expect(getChainId).not.toHaveBeenCalled();
   });
 
-  it("the Tool error line carries a code and category, not the raw message with caller input", async () => {
+  it("a bad tool argument logs Request denied (code, category), never the caller's text", async () => {
     const marker = "CALLER_INPUT_MARKER_fn";
     const client = await connect(auth([SCOPES.ENCODE]));
     await expect(
@@ -211,12 +223,31 @@ describe("Tool call audit log", () => {
     ).rejects.toThrow(marker);
     const out = chunks.join("");
     expect(out).not.toContain(marker);
+    expect(out).not.toContain("msg=Tool error");
+    const denied = out.split("\n").filter((l) => l.includes("msg=Request denied"));
+    expect(denied).toHaveLength(1);
+    // a caller mistake (function not on the ABI): -32602 at info, not a server fault
+    expect(denied[0]).toMatch(/ code=-32602 /);
+    expect(denied[0]).toContain(" level=info ");
+    expect(denied[0]).toContain("category=invalid_params");
+  });
+
+  it("a server fault: the caller gets a generic message, the detail stays in the log (encoded)", async () => {
+    const marker = "SERVER_FAULT_MARKER";
+    getChainId.mockRejectedValueOnce(new Error(`unexpected ${marker} x=1`));
+    const client = await connect(auth([SCOPES.READ]));
+    const err = await client.callTool({ name: "get_chain_info", arguments: {} }).then(
+      () => undefined,
+      (e: { code: number; message: string; data?: unknown }) => e
+    );
+    expect(err).toMatchObject({ code: -32603, message: "Internal error" });
+    expect(JSON.stringify(err)).not.toContain(marker);
+    const out = chunks.join("");
     const errorLines = out.split("\n").filter((l) => l.includes("msg=Tool error"));
     expect(errorLines).toHaveLength(1);
-    expect(errorLines[0]).toMatch(/ code=-32603 /);
-    // a server-side fault (not a client mistake) stays at error level
-    expect(errorLines[0]).toContain(" level=error ");
-    expect(errorLines[0]).toContain("category=internal");
+    expect(errorLines[0]).toMatch(
+      / level=error msg=Tool error code=-32603 method=tools\/call category=internal errorType=Error detail=unexpected%20SERVER_FAULT_MARKER%20x%3D1$/
+    );
   });
 
   it("resource and prompt errors do not log the caller's uri or name either", async () => {

@@ -42,4 +42,9 @@ describe("createRpcClient", () => {
     });
     expect(typeof client.getBlockNumber).toBe("function");
   });
+
+  it("turns off EIP-3668 offchain lookups (CCIP-read): no contract-chosen URL is fetched", () => {
+    expect(createRpcClient("mainnet").ccipRead).toBe(false);
+    expect(createRpcClient("kairos").ccipRead).toBe(false);
+  });
 });

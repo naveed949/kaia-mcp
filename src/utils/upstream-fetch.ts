@@ -8,8 +8,8 @@
  */
 
 /**
- * 8 MiB. Twice the largest response whose result kaia accepts: a read_contract result at
- * the 2 MiB raw cap (#14) is 4 MiB of hex, a JSON-RPC response of about 4,194,342 bytes.
+ * 8 MiB: twice the hex of the largest result kaia accepts. A read_contract result at the
+ * 2 MiB raw cap (#14) is 4 MiB of hex, a JSON-RPC response of about 4,194,342 bytes.
  * Real responses are far smaller (of 30 recent Kaia mainnet blocks fetched with full
  * transactions, the largest was 34 KB). Below viem's own 10 MiB default.
  */

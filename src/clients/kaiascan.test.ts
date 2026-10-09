@@ -78,4 +78,44 @@ describe("createKaiaScanClient", () => {
     const err = new KaiaScanRateLimitError();
     expect(toMcpError(err).code).toBe(MCP_ERROR_CODES.RateLimit);
   });
+
+  it("clears its timeout once the response is read or the request fails (no late abort)", async () => {
+    const signals: AbortSignal[] = [];
+    let fail = false;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((_url: string, init: RequestInit) => {
+        signals.push(init.signal as AbortSignal);
+        return fail
+          ? Promise.reject(new Error("connect refused"))
+          : Promise.resolve(new Response('{"ok":1}', { status: 200 }));
+      })
+    );
+    const client = createKaiaScanClient({
+      kaiaRpcUrl: "https://a.io",
+      kaiaKairosRpcUrl: "https://b.io",
+      kaiascanApiKey: "",
+      defaultNetwork: "mainnet",
+      logLevel: "info",
+      rateLimitRpc: 10,
+      rateLimitKaiascan: 100,
+      rpcTimeoutMs: 30000,
+      kaiascanTimeoutMs: 50,
+      authMode: "required",
+      allowUnsafeWallet: false,
+      oauthClientId: "kaia-mcp-demo",
+      accessTokenTtlSeconds: 900,
+      oauthRequireResource: false,
+      allowedOrigins: [],
+      oauthPreviousSigningKeyFiles: [],
+      introspectionClientId: "kaia-mcp-gateway",
+    });
+    await expect(client.get("/api")).resolves.toEqual({ ok: 1 });
+    fail = true;
+    await expect(client.get("/api")).rejects.toThrow();
+    // Past the 50 ms timeout: a timer left running would have aborted the signals by now.
+    await new Promise((r) => setTimeout(r, 150));
+    expect(signals).toHaveLength(2);
+    expect(signals.map((s) => s.aborted)).toEqual([false, false]);
+  });
 });

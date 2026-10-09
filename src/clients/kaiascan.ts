@@ -7,6 +7,7 @@ import type { Config } from "../config.js";
 import { getConfig } from "../config.js";
 import { createRateLimiter, type RateLimiter } from "../utils/rate-limit.js";
 import { KaiaScanApiError, KaiaScanRateLimitError } from "../utils/errors.js";
+import { fetchBounded } from "../utils/upstream-fetch.js";
 
 export { KaiaScanApiError, KaiaScanRateLimitError };
 
@@ -40,7 +41,9 @@ function buildUrl(path: string, params?: Record<string, string>, apiKey?: string
 
 /**
  * Creates a KaiaScan API client. Uses getConfig() for API key if config is not provided.
- * Rate-limited, with fetch timeout (KAIASCAN_TIMEOUT_MS, default 15s) and 429 retry once.
+ * Rate-limited, with fetch timeout (KAIASCAN_TIMEOUT_MS, default 15s, body included) and 429
+ * retry once. Response bodies are capped (MAX_UPSTREAM_RESPONSE_BYTES); redirects are not
+ * followed.
  */
 export function createKaiaScanClient(config?: Config): KaiaScanClient {
   const c = config ?? getConfig();
@@ -59,19 +62,25 @@ export function createKaiaScanClient(config?: Config): KaiaScanClient {
     const id = setTimeout(() => controller.abort(), timeoutMs);
     let res: Response;
     try {
-      res = await fetch(url, {
-        method: "GET",
-        headers: {
-          Accept: "application/json",
-          "Content-Type": "application/json",
+      // The timeout covers the body too; over MAX_UPSTREAM_RESPONSE_BYTES the cause is an
+      // UpstreamResponseTooLargeError (-32005); a redirect is not followed (!res.ok below).
+      res = await fetchBounded(
+        url,
+        {
+          method: "GET",
+          headers: {
+            Accept: "application/json",
+            "Content-Type": "application/json",
+          },
+          signal: controller.signal,
         },
-        signal: controller.signal,
-      });
+        "KaiaScan"
+      );
     } catch (err) {
-      clearTimeout(id);
       throw new KaiaScanApiError({ cause: err });
+    } finally {
+      clearTimeout(id);
     }
-    clearTimeout(id);
     if (res.status === 429) {
       if (!retry) {
         await new Promise((r) => setTimeout(r, 1500));

@@ -66,6 +66,16 @@ describe("L-1: only a safe-integer upstream code reaches error.data", () => {
     const deep = Object.assign(new BaseError("deep"), { code: -32010 });
     const mid = Object.assign(new BaseError("mid", { cause: deep }), { code: "ECONNRESET" });
     expect(describeFailure(new BaseError("outer", { cause: mid })).upstreamCode).toBe(-32010);
+    // The same for a *numeric* non-integer code above it (C27: the walk must test for a
+    // safe integer, not just a number, or it stops at 1.5 and loses the node's -32010).
+    for (const bad of [1.5, 2 ** 60, Number.NaN]) {
+      const deep2 = Object.assign(new BaseError("deep"), { code: -32010 });
+      const mid2 = Object.assign(new BaseError("mid", { cause: deep2 }), { code: bad });
+      expect(
+        describeFailure(new BaseError("outer", { cause: mid2 })).upstreamCode,
+        String(bad)
+      ).toBe(-32010);
+    }
   });
 
   it("integer codes still pass through, negative and positive", () => {

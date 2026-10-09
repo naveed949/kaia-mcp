@@ -68,7 +68,16 @@ describe("validateAbiFunctionTypes is linear-time on caller types", () => {
     expect(MAX_ABI_TYPE_LENGTH).toBe(256);
     const longest = "uint256" + "[1]".repeat(83); // exactly 256 characters
     expect(longest).toHaveLength(256);
-    for (const type of ["uint256[2][][3]", "address[]", "bytes32[4]", "string", longest]) {
+    // Every digit, single and multi-digit lengths (C18: a scan that missed `9` refused these).
+    const everyDigit = ["uint256[9]", "bytes32[19]", "address[5678]", "uint8[0][1234567890]"];
+    for (const type of [
+      "uint256[2][][3]",
+      "address[]",
+      "bytes32[4]",
+      "string",
+      longest,
+      ...everyDigit,
+    ]) {
       expect(() => validateAbiFunctionTypes(fn([{ type }], [{ type }])), type).not.toThrow();
     }
     expect(() => validateAbiFunctionTypes(fn([{ type: longest + "[1]" }]))).toThrow(

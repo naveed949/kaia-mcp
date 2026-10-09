@@ -108,10 +108,16 @@ describe("read_contract: aliased offsets cannot amplify the result (P-1)", () =>
   });
 
   it("refuses a huge length of zero-width elements without looping over it", async () => {
-    returned = `0x${word(32)}${word(2n ** 53n - 1n)}`;
+    // main: viem's read limit, -32001. Now the length is charged first: -32005.
+    returned = `0x${word(32)}${word(2n ** 53n - 1n)}${word(0)}`;
     const r = await refusal(read([{ name: "", type: "uint8[0][]" }]));
     expect(r).toMatchObject({ code: -32005, message: TEXT_LIMIT });
     expect(r.ms).toBeLessThan(200);
+    // With no data where the elements would start, it is bad data, as on main.
+    returned = `0x${word(32)}${word(2n ** 53n - 1n)}`;
+    expect(await refusal(read([{ name: "", type: "uint8[0][]" }]))).toMatchObject({
+      code: -32001,
+    });
   });
 });
 

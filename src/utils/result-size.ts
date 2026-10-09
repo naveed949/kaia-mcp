@@ -307,7 +307,8 @@ class Walk {
       this.at(staticPosition + 32);
       return 32;
     }
-    this.elementsInData(position, length, child.size);
+    // In place, without cursor moves: the last element with any data starts inside it.
+    if (child.size > 0) this.elementsInData(position, length, child.size);
     this.spendFrame(length, level);
     let consumed = 0;
     for (let i = 0; i < length; i++) {
@@ -317,13 +318,13 @@ class Walk {
   }
 
   /**
-   * viem reads an element at its start (an offset word, or the element's first non-empty
-   * member), so `length` elements of `size` bytes from `start` that run past the data fail
-   * in viem too. Found here, before the length is charged, so a bogus length reads as bad
-   * data rather than a result over the cap.
+   * viem moves its cursor to each element of a dynamic array, and of a fixed array of
+   * dynamic elements, and fails on the first position past the data (even for zero-width
+   * elements). The last element's position is the largest; checked here, before the length
+   * is charged, so a bogus length reads as bad data rather than a result over the cap.
    */
-  elementsInData(start: number, length: number, size: number): void {
-    if (size > 0 && length > 0) this.at(start + (length - 1) * size);
+  elementsInData(start: number, length: number, stride: number): void {
+    if (length > 0) this.at(start + (length - 1) * stride);
   }
 
   /**

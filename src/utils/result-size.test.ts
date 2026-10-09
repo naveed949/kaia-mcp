@@ -289,6 +289,13 @@ describe("viem's decoder quirks are mirrored, not tightened", () => {
     expect(() => printed([{ name: "", type: "uint256[]" }], data)).toThrow(/out of bounds/);
   });
 
+  it("a huge zero-width array whose elements start past the data is bad data, as in viem", () => {
+    const data = `0x${word(32)}${word(2n ** 40n)}` as Hex; // elements would start at 64 = end
+    const outputs = [{ name: "", type: "uint8[0][]" }];
+    expect(() => printed(outputs, data)).toThrow(/Position `64` is out of bounds/);
+    expect(() => checkResultSize(outputs, data)).toThrow(ResultDecodingError);
+  });
+
   it("an offset with high bytes set is bad data, even when its low bytes are a fine offset", () => {
     const data = `0x${word(2n ** 200n + 32n)}${word(0)}` as Hex;
     expect(() => printed([{ name: "", type: "string" }], data)).toThrow();

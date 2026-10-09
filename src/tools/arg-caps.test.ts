@@ -96,6 +96,23 @@ describe("tool argument caps", () => {
     });
   });
 
+  it("counts an object's (named tuple's) members and what they hold", async () => {
+    const abi = JSON.stringify([
+      {
+        type: "function",
+        name: "f",
+        stateMutability: "view",
+        inputs: [{ name: "t", type: "tuple", components: [{ name: "x", type: "uint256[]" }] }],
+        outputs: [],
+      },
+    ]);
+    // 1 argument + 1 member + 32766 elements = 32768: at the cap
+    await expect(encode(abi, [{ x: fill(32_766, 1) }])).resolves.toMatch(/^0x/);
+    expect((await refusal(encode(abi, [{ x: fill(32_767, 1) }]))).message).toContain(
+      "more than 32768 values"
+    );
+  });
+
   it("counts object keys (named tuple members) as characters", async () => {
     const abi = JSON.stringify([
       {

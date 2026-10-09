@@ -88,38 +88,31 @@ describe("validateAbiFunctionTypes is linear-time on caller types", () => {
     ).not.toThrow();
   });
 
-  it("array suffix stripping matches the old regex loop on random short types", () => {
-    const oldStrip = (t: string) => {
-      let base = t;
-      while (/\[\d*\]$/.test(base)) base = base.replace(/\[\d*\]$/, "");
-      return base;
-    };
+  it("the type grammar matches an anchored reference pattern on random short types", () => {
+    // Round 5: kaia's own linear grammar (abi.ts parseParamType). No whitespace and no
+    // trimming (viem cannot encode " uint8" either); otherwise what the old check accepted.
+    const reference =
+      /^(address|bool|string|bytes|tuple|bytes([1-9]|1[0-9]|2[0-9]|3[0-2])|u?int(8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)?)(\[[0-9]*\])*$/;
     let seed = 7;
     const rnd = () => {
       seed = (seed * 1103515245 + 12345) & 0x7fffffff;
       return seed / 0x7fffffff;
     };
-    const parts = ["uint", "uint8", "tuple", "[", "]", "[]", "[3]", "1", "0", "x", " ", "٣"];
-    for (let i = 0; i < 5000; i++) {
+    const parts = ["uint", "uint8", "int256", "bytes", "32", "33", "08", "tuple", "address"];
+    const more = ["[", "]", "[]", "[3]", "[03]", "1", "0", "x", " ", "٣", "\n"];
+    const all = [...parts, ...more];
+    for (let i = 0; i < 20000; i++) {
       let t = "";
-      const len = 1 + Math.floor(rnd() * 10);
-      for (let j = 0; j < len; j++) t += parts[Math.floor(rnd() * parts.length)];
-      const base = oldStrip(t.trim());
-      const oldOk =
-        ["address", "bool", "string", "bytes"].includes(base) ||
-        /^bytes([1-9]|1[0-9]|2[0-9]|3[0-2])$/.test(base) ||
-        /^u?int(8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)?$/.test(
-          base
-        );
-      const isTuple = base === "tuple";
-      const param = isTuple ? { type: t, components: [] } : { type: t };
+      const len = 1 + Math.floor(rnd() * 8);
+      for (let j = 0; j < len; j++) t += all[Math.floor(rnd() * all.length)];
+      const param = t.startsWith("tuple") ? { type: t, components: [] } : { type: t };
       let ok = true;
       try {
         validateAbiFunctionTypes(fn([param]));
       } catch {
         ok = false;
       }
-      expect(ok, JSON.stringify(t)).toBe(oldOk || isTuple);
+      expect(ok, JSON.stringify(t)).toBe(reference.test(t));
     }
   });
 });

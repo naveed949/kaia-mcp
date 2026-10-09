@@ -6,6 +6,7 @@
  * server.upstream-errors.test.ts.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { encodeAbiParameters, parseAbiParameters } from "viem";
 import { Client } from "@modelcontextprotocol/client";
 import { InMemoryTransport } from "@modelcontextprotocol/server";
 import { createKaiaMcpServer } from "./server.js";
@@ -15,14 +16,15 @@ import type { AuthContext } from "./auth/types.js";
 
 const getChainId = vi.fn();
 const getBalance = vi.fn();
-const readContract = vi.fn();
+// read_contract sends its calldata with `call` and decodes the result itself (PR #9 r5).
+const call = vi.fn();
 const estimateGas = vi.fn();
 const getGasPrice = vi.fn();
 vi.mock("./clients/rpc.js", () => ({
   createRpcClient: vi.fn(() => ({
     getChainId,
     getBalance,
-    readContract,
+    call,
     estimateGas,
     getGasPrice,
   })),
@@ -77,7 +79,7 @@ describe("tool argument validation -> -32602 at info; server faults -> -32603 at
     chunks.length = 0;
     getChainId.mockReset();
     getBalance.mockReset();
-    readContract.mockReset();
+    call.mockReset();
     estimateGas.mockReset();
     getGasPrice.mockReset();
     kaiascanGet.mockReset();
@@ -285,7 +287,7 @@ describe("tool argument validation -> -32602 at info; server faults -> -32603 at
       );
       expect(lines().filter((l) => l.includes(" level=error "))).toEqual([]);
       expect(chunks.join("")).not.toContain(MARKER);
-      expect(readContract).not.toHaveBeenCalled();
+      expect(call).not.toHaveBeenCalled();
       expect(getBalance).not.toHaveBeenCalled();
       expect(estimateGas).not.toHaveBeenCalled();
       expect(kaiascanGet).not.toHaveBeenCalled();
@@ -311,7 +313,12 @@ describe("tool argument validation -> -32602 at info; server faults -> -32603 at
   });
 
   it("valid ABIs with tuple, array and int-alias outputs pass validation and reach the RPC", async () => {
-    readContract.mockResolvedValue([1n, "0x"]);
+    call.mockResolvedValue({
+      data: encodeAbiParameters(
+        parseAbiParameters("(uint256 x,(bytes32[2] z) y)[], int, address[], bytes, string, bool"),
+        [[], 1n, [], "0x", "", true]
+      ),
+    });
     const client = await connect();
     const abi = [
       {
@@ -339,12 +346,12 @@ describe("tool argument validation -> -32602 at info; server faults -> -32603 at
       name: "read_contract",
       arguments: { contractAddress: ADDR, abi, functionName: "f", args: [1] },
     });
-    expect(readContract).toHaveBeenCalledTimes(1);
+    expect(call).toHaveBeenCalledTimes(1);
     expect(lines().filter((l) => l.includes("msg=Request denied"))).toEqual([]);
   });
 
   it("functionName as a 4-byte selector resolves to the function; a bogus 0x name is -32602", async () => {
-    readContract.mockResolvedValue(1n);
+    call.mockResolvedValue({ data: `0x${"0".repeat(63)}1` });
     const client = await connect();
     await client.callTool({
       name: "read_contract",
@@ -355,8 +362,8 @@ describe("tool argument validation -> -32602 at info; server faults -> -32603 at
         args: [ADDR],
       },
     });
-    expect(readContract).toHaveBeenCalledTimes(1);
-    expect(readContract.mock.calls[0][0]).toMatchObject({ functionName: "balanceOf" });
+    expect(call).toHaveBeenCalledTimes(1);
+    expect(String(call.mock.calls[0][0].data).slice(0, 10)).toBe("0x70a08231"); // balanceOf
     for (const name of ["0x", "0xzz", "0x12345678"]) {
       await expect(
         client.callTool({
@@ -376,7 +383,7 @@ describe("tool argument validation -> -32602 at info; server faults -> -32603 at
         })
       ).rejects.toMatchObject({ code: -32602 });
     }
-    expect(readContract).toHaveBeenCalledTimes(1);
+    expect(call).toHaveBeenCalledTimes(1);
     expect(lines().filter((l) => / level=error /.test(l))).toEqual([]);
   });
 
@@ -410,8 +417,10 @@ describe("tool argument validation -> -32602 at info; server faults -> -32603 at
     expect(lines().filter((l) => l.includes("msg=Request denied"))).toEqual([]);
   });
 
-  it("a failing readContract after valid arguments stays a server fault", async () => {
-    readContract.mockRejectedValue(new Error("execution reverted for reasons"));
+  it("a failing eth_call after valid arguments stays a server fault", async () => {
+    // Wrapped by getContractError exactly as viem's readContract wraps it, so it is reported
+    // as an upstream failure (-32001), not a caller mistake.
+    call.mockRejectedValue(new Error("execution reverted for reasons"));
     const client = await connect();
     await expect(
       client.callTool({
@@ -423,8 +432,8 @@ describe("tool argument validation -> -32602 at info; server faults -> -32603 at
           args: [ADDR],
         },
       })
-    ).rejects.toMatchObject({ code: -32603 });
-    expect(readContract).toHaveBeenCalledTimes(1);
+    ).rejects.toMatchObject({ code: -32001 });
+    expect(call).toHaveBeenCalledTimes(1);
     expect(lines().filter((l) => l.includes(" level=error msg=Tool error "))).toHaveLength(1);
   });
 });

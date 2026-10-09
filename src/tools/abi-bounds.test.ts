@@ -80,7 +80,7 @@ beforeEach(() => {
   resetConfigCache();
   vi.clearAllMocks();
   mockCreateRpcClient.mockReturnValue({
-    readContract: vi.fn().mockResolvedValue(7n),
+    call: vi.fn().mockResolvedValue({ data: `0x${"0".repeat(63)}7` }),
   } as unknown as ReturnType<typeof createRpcClient>);
 });
 
@@ -136,7 +136,9 @@ describe("M-A: hostile caller ABIs are refused in bounded time, before viem and 
         functionName: "f",
         args: Array(1000).fill("x"),
       },
-      /input parameter has unknown type "a{64}"/,
+      // Round 5: the bogus overload is set aside (it cannot be called); the other `f` takes
+      // one input, so 1000 args do not fit it.
+      /Invalid arguments: /,
     ],
     [
       "a 1 MB function name, overloaded",
@@ -375,7 +377,7 @@ describe("M-A: read_contract resolves the function once", () => {
     { type: "event", name: "Transfer", inputs: [{ type: "address", indexed: true }] },
   ];
 
-  it("one getAbiItem call per request, and readContract gets just the resolved item", async () => {
+  it("kaia resolves the overload (no getAbiItem), and the RPC gets that function's calldata", async () => {
     const res = await handleReadContract({
       contractAddress: ADDR,
       abi: ERC721,
@@ -384,15 +386,17 @@ describe("M-A: read_contract resolves the function once", () => {
       network: "mainnet",
     });
     expect(res.content[0].text).toBe("Result:\n7");
-    expect(getAbiItemSpy).toHaveBeenCalledTimes(1);
+    expect(getAbiItemSpy).not.toHaveBeenCalled();
     const client = mockCreateRpcClient.mock.results[0]?.value as {
-      readContract: ReturnType<typeof vi.fn>;
+      call: ReturnType<typeof vi.fn>;
     };
-    expect(client.readContract).toHaveBeenCalledWith({
-      address: ADDR,
-      abi: [ERC721[3]],
-      functionName: "balanceOf",
-      args: [ADDR, 5],
+    expect(client.call).toHaveBeenCalledWith({
+      to: ADDR,
+      data: viem.encodeFunctionData({
+        abi: [ERC721[3]] as viem.Abi,
+        functionName: "balanceOf",
+        args: [ADDR, 5n],
+      }),
     });
   });
 
@@ -405,7 +409,7 @@ describe("M-A: read_contract resolves the function once", () => {
     expect(one.content[0].text.slice(0, 10)).toBe(
       viem.toFunctionSelector("safeTransferFrom(address,address,uint256,bytes)")
     );
-    expect(getAbiItemSpy).toHaveBeenCalledTimes(1);
+    expect(getAbiItemSpy).not.toHaveBeenCalled();
     const sel = viem.toFunctionSelector("balanceOf(address)");
     const two = await handleEncodeFunctionData({ abi: ERC721, functionName: sel, args: [ADDR] });
     expect(two.content[0].text.slice(0, 10)).toBe(sel);

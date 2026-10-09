@@ -114,6 +114,7 @@ export async function handleEncodeFunctionData(args: {
   const abi = parseAbiInput(args.abi);
   const functionName = validateFunctionName(args.functionName);
   const callArgs = validateCallArgs(args.args);
+  // Only the one resolved function, kaia's own copy, reaches viem.
   const data = encodeCallData(resolveAbiFunction(abi, functionName, callArgs), callArgs);
 
   return {

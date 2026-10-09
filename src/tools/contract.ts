@@ -3,14 +3,15 @@
  * read_contract uses viem readContract; get_contract_abi/source use KaiaScan API.
  */
 
+import { BaseError, decodeFunctionResult, getContractError } from "viem";
 import { createRpcClient } from "../clients/rpc.js";
 import { createKaiaScanClient } from "../clients/kaiascan.js";
 import { KaiaScanApiError } from "../utils/errors.js";
 import {
   encodeCallData,
   parseAbiInput,
+  requireDecodableOutputs,
   resolveAbiFunction,
-  validateAbiFunctionTypes,
   validateAddress,
   validateCallArgs,
   validateFunctionName,
@@ -102,7 +103,8 @@ export async function handleReadContract(args: {
 }): Promise<{ content: Array<{ type: "text"; text: string }> }> {
   const contractAddress = validateAddress(args.contractAddress);
   const network = validateNetwork(args.network);
-  // parseAbiInput bounds every item (names, types, nesting, counts) before viem sees it.
+  // parseAbiInput copies the ABI into kaia's own strictly typed, bounded form; only the
+  // one function resolved from it ever reaches viem.
   const abi = parseAbiInput(args.abi);
   const functionName = validateFunctionName(args.functionName);
   const callArgs = validateCallArgs(args.args);
@@ -111,18 +113,30 @@ export async function handleReadContract(args: {
   const fn = resolveAbiFunction(abi, functionName, callArgs);
   // The result is decoded with the function's `outputs`: a missing or bogus output type is
   // the caller's mistake too, and must be caught here rather than after the RPC returns.
-  validateAbiFunctionTypes(fn, { requireOutputs: true });
-  encodeCallData(fn, callArgs);
+  requireDecodableOutputs(fn);
+  const data = encodeCallData(fn, callArgs);
 
+  // viem's readContract (call, then decode, errors through getContractError), with the
+  // calldata encoded above instead of encoding the args a second time.
   const client = createRpcClient(network);
-  const result = await client.readContract({
-    address: contractAddress,
-    // Just the resolved item: viem encodes and decodes by name, so it resolves the same
-    // function again, over one item instead of the caller's whole ABI.
-    abi: [fn],
-    functionName: fn.name,
-    args: callArgs,
-  });
+  let result: unknown;
+  try {
+    const { data: returned } = await client.call({ to: contractAddress, data });
+    result = decodeFunctionResult({
+      abi: [fn.item],
+      functionName: fn.item.name,
+      args: callArgs,
+      data: returned ?? "0x",
+    } as never);
+  } catch (err) {
+    throw getContractError(err as BaseError, {
+      abi: [fn.item],
+      address: contractAddress,
+      args: callArgs,
+      docsPath: "/docs/contract/readContract",
+      functionName: fn.item.name,
+    });
+  }
 
   const text =
     result === undefined || result === null

@@ -287,12 +287,13 @@ describe("M-A: hostile caller ABIs are refused in bounded time, before viem and 
     ],
     [
       // viem walks a 100 K-element argument once per overload: ~2.4 s here on bb8f099
-      // (1000 overloads and 200 K elements: 22 s).
-      "a hundred overloads and a 100 K-element array argument",
+      // (1000 overloads and 200 K elements: 22 s). The argument caps now refuse 100 K
+      // elements first, so this uses 30 K, within them.
+      "a hundred overloads and a 30 K-element array argument",
       {
         abi: Array.from({ length: 100 }, () => fnItem("f", [{ type: "uint8[]" }])),
         functionName: "f",
-        args: [Array(100_000).fill(1)],
+        args: [Array(30_000).fill(1)],
       },
       /more than 16 items match the function name or selector/,
     ],

@@ -229,6 +229,60 @@ describe("M-A: hostile caller ABIs are refused in bounded time, before viem and 
       /more than \d+ characters of names and types/,
     ],
     [
+      "64 KB output type in an item the call does not name",
+      {
+        abi: [
+          fnItem("g", [{ type: "uint256" }], [{ type: "a".repeat(65_536) }]),
+          fnItem("f", [{ type: "uint256" }]),
+        ],
+        functionName: "f",
+        args: ["1"],
+      },
+      /type longer than 256 characters/,
+    ],
+    [
+      "tuples nested deeper than 32 in an item the call does not name",
+      {
+        abi: [fnItem("g", [deepTuple(1_000)]), fnItem("f", [{ type: "uint256" }])],
+        functionName: "f",
+        args: ["1"],
+      },
+      /nests tuples too deeply/,
+    ],
+    [
+      "names that use up the character budget (every type short)",
+      {
+        abi: [
+          fnItem("f", [{ type: "uint256" }]),
+          fnItem(
+            "g",
+            Array.from({ length: 300 }, () => ({ name: "n".repeat(1000), type: "uint8" }))
+          ),
+        ],
+        functionName: "f",
+        args: ["1"],
+      },
+      /more than \d+ characters of names and types/,
+    ],
+    [
+      "a parameter whose type is not a string",
+      {
+        abi: [fnItem("g", [{ type: 5 } as unknown as Param]), fnItem("f", [{ type: "uint256" }])],
+        functionName: "f",
+        args: ["1"],
+      },
+      /parameter has no type/,
+    ],
+    [
+      "a parameter that is not an object",
+      {
+        abi: [fnItem("g", [5 as unknown as Param]), fnItem("f", [{ type: "uint256" }])],
+        functionName: "f",
+        args: ["1"],
+      },
+      /every parameter must be an object/,
+    ],
+    [
       "tuples nested deeper than 32, overloaded",
       {
         abi: [fnItem("f", [deepTuple(1_000)]), fnItem("f", [{ type: "uint256" }])],
@@ -356,6 +410,12 @@ describe("M-A: read_contract resolves the function once", () => {
     ];
     const r = await handleEncodeFunctionData({ abi, functionName: "f", args: ["1"] });
     expect(r.content[0].text.slice(0, 10)).toBe(viem.toFunctionSelector("f(uint256)"));
+    // By selector, only the function with that selector is a candidate: another function
+    // with as many inputs and a bad type is not compared, so it is not checked either.
+    const sel = viem.toFunctionSelector("f(uint256)");
+    const withOther = [fnItem("f", [{ type: "uint256" }]), fnItem("g", [{ type: "nope" }])];
+    const s2 = await handleEncodeFunctionData({ abi: withOther, functionName: sel, args: ["1"] });
+    expect(s2.content[0].text.slice(0, 10)).toBe(sel);
   });
 });
 

@@ -128,7 +128,8 @@ export function validateFunctionName(functionName: unknown): string {
  * Most values (array elements, tuple members and scalars, at every depth, over all
  * arguments) one call's `args` may hold. Each is at least one 32-byte word of calldata, so
  * this allows 1 MB of calldata or more, 8x the 128 KB transaction geth's pool accepts; at
- * the caps viem takes up to about 0.3 s to encode and returns up to about 6 MB of hex.
+ * the caps encoding takes up to about 0.8 s (24,900 distinct mixed-case addresses, each
+ * checksum-checked) and returns up to about 10.5 MB of hex (strings of 3-byte characters).
  */
 export const MAX_ARG_VALUES = 32_768;
 /** Deepest nesting of arrays and objects within one argument. */

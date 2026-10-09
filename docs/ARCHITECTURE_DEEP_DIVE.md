@@ -294,7 +294,8 @@ export function createRpcClient(network: KaiaNetwork, config?: Config): RpcClien
     },
   });
 
-  return createPublicClient({ chain, transport });
+  // ccipRead: false: never follow an EIP-3668 OffchainLookup revert (SSRF, unbounded decode)
+  return createPublicClient({ chain, transport, ccipRead: false });
 }
 ```
 

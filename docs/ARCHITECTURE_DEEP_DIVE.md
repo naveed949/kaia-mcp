@@ -290,8 +290,17 @@ export function createRpcClient(network: KaiaNetwork, config?: Config): RpcClien
     timeout: timeoutMs,
     fetchFn: async (input: RequestInfo | URL, init?: RequestInit) => {
       await limiter.acquire(); // Wait for token before every RPC request
-      return fetch(input, init);
+      try {
+        // Body read here, under the timeout; over 8 MiB refused; redirects not followed
+        return await fetchBounded(input, init, "RPC");
+      } catch (err) {
+        // An HttpRequestError with a code, so viem neither wraps nor retries it (-32005)
+        if (err instanceof UpstreamResponseTooLargeError)
+          throw new RpcResponseTooLargeError(err, String(input));
+        throw err;
+      }
     },
+    maxResponseBodySize: MAX_UPSTREAM_RESPONSE_BYTES,
   });
 
   // ccipRead: false: never follow an EIP-3668 OffchainLookup revert (SSRF, unbounded decode)
@@ -299,7 +308,7 @@ export function createRpcClient(network: KaiaNetwork, config?: Config): RpcClien
 }
 ```
 
-So: every viem RPC request goes through the custom `fetchFn`, which first acquires a token. So RPC is limited to `rateLimitRpc` requests per second (e.g. 10). The viem `http` transport’s `timeout` ensures a single request does not hang longer than `rpcTimeoutMs`.
+So: every viem RPC request goes through the custom `fetchFn`, which first acquires a token. So RPC is limited to `rateLimitRpc` requests per second (e.g. 10). The viem `http` transport’s `timeout` ensures a single request does not hang longer than `rpcTimeoutMs`: `fetchBounded` (`src/utils/upstream-fetch.ts`) reads the whole body inside the fetch, so the timeout covers the body as well as the headers. It also caps the body at `MAX_UPSTREAM_RESPONSE_BYTES` (8 MiB, counted after decompression, `Content-Length` checked early but never trusted alone, the stream cancelled over the cap) and uses `redirect: "manual"`, so a 3xx is an HTTP error rather than a request to the `Location` (see AUTH.md, "Upstream responses").
 
 ### 3.4 KaiaScan Client: Rate Limiter + Timeout + 429 Retry
 
@@ -320,7 +329,7 @@ async function doFetch<T>(path: string, params?: Record<string, string>, retry =
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(url, { ... });
+    const res = await fetchBounded(url, { ..., signal: controller.signal }, "KaiaScan"); // body read under the timeout, 8 MiB cap, no redirects
     clearTimeout(id);
     if (res.status === 429) {
       if (!retry) {

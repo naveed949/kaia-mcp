@@ -124,12 +124,77 @@ export function validateFunctionName(functionName: unknown): string {
   return name;
 }
 
-/** Optional call arguments: undefined/null, or an array. Throws InvalidParamsError. */
+/**
+ * Most values (array elements, tuple members and scalars, at every depth, over all
+ * arguments) one call's `args` may hold. Each is at least one 32-byte word of calldata, so
+ * this allows 1 MB of calldata or more, 8x the 128 KB transaction geth's pool accepts; at
+ * the caps viem takes up to about 0.3 s to encode and returns up to about 6 MB of hex.
+ */
+export const MAX_ARG_VALUES = 32_768;
+/** Deepest nesting of arrays and objects within one argument. */
+export const MAX_ARG_DEPTH = 32;
+/** Most characters of strings (and object keys) one call's `args` may hold in all. */
+export const MAX_ARG_CHARS = 1_048_576;
+
+const argsInvalid = (msg: string): InvalidParamsError =>
+  new InvalidParamsError(`Invalid args: ${msg}`);
+
+type ArgBudget = { values: number; chars: number };
+
+function spendChars(budget: ArgBudget, n: number): void {
+  budget.chars += n;
+  if (budget.chars > MAX_ARG_CHARS) {
+    throw argsInvalid(`more than ${MAX_ARG_CHARS} characters of strings in all.`);
+  }
+}
+
+function spendValues(budget: ArgBudget, n: number): void {
+  budget.values += n;
+  if (budget.values > MAX_ARG_VALUES) {
+    throw argsInvalid(
+      `more than ${MAX_ARG_VALUES} values (array elements, tuple members and scalars) in all.`
+    );
+  }
+}
+
+/**
+ * Counts what `v` holds against the caps. An array's or object's entries are charged before
+ * any is visited, so a walk stops within MAX_ARG_VALUES steps of the first container,
+ * whatever the input's size, and never recurses past MAX_ARG_DEPTH (a cycle hits the depth
+ * cap).
+ */
+function countArg(v: unknown, depth: number, budget: ArgBudget): void {
+  if (typeof v === "string") return spendChars(budget, v.length);
+  if (v instanceof Uint8Array) return spendChars(budget, v.length * 2);
+  if (v === null || typeof v !== "object") return;
+  if (depth >= MAX_ARG_DEPTH) {
+    throw argsInvalid(`arrays and objects nested more than ${MAX_ARG_DEPTH} deep.`);
+  }
+  if (Array.isArray(v)) {
+    spendValues(budget, v.length);
+    for (let i = 0; i < v.length; i++) countArg(v[i], depth + 1, budget);
+    return;
+  }
+  const keys = Object.keys(v);
+  spendValues(budget, keys.length);
+  for (const k of keys) {
+    spendChars(budget, k.length);
+    countArg((v as Record<string, unknown>)[k], depth + 1, budget);
+  }
+}
+
+/**
+ * Optional call arguments: undefined/null, or an array within the caps above, checked in one
+ * linear walk before the resolver or viem reads them. Throws InvalidParamsError.
+ */
 export function validateCallArgs(args: unknown): readonly unknown[] | undefined {
   if (args === undefined || args === null) return undefined;
   if (!Array.isArray(args)) {
     throw new InvalidParamsError("Invalid args: must be an array.");
   }
+  const budget: ArgBudget = { values: 0, chars: 0 };
+  spendValues(budget, args.length);
+  for (let i = 0; i < args.length; i++) countArg(args[i], 0, budget);
   return args;
 }
 

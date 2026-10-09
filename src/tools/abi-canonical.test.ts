@@ -276,7 +276,7 @@ describe("M-B: overloads are resolved by kaia in linear time; viem sees one func
   }
 
   it("a tuple arg with far more values than components costs one pass over the arg", async () => {
-    const c = tupleOverload(32_000, 600_000);
+    const c = tupleOverload(1_000, 32_767);
     const r = await timed("encode_function_data", c);
     expect(r.thrown).toBeUndefined();
     expect(r.ms, `${Math.round(r.ms)} ms`).toBeLessThan(2500);

@@ -516,6 +516,9 @@ export function requireDecodableOutputs(fn: ResolvedFunction): void {
   }
 }
 
+/** Longest part of a viem encode error passed on to the caller. */
+const MAX_ENCODE_ERROR_DETAIL = 256;
+
 /**
  * ABI-encodes a call to the resolved function. Encoding is pure (no I/O), so any failure
  * (an argument that does not fit its type) is the caller's: InvalidParamsError with viem's
@@ -533,7 +536,12 @@ export function encodeCallData(
       err instanceof BaseError
         ? err.shortMessage
         : "the abi, functionName and args could not be encoded.";
-    throw new InvalidParamsError(`Invalid arguments: ${detail}`);
+    // viem's message quotes the offending argument whole (a 1 MB string, a joined array).
+    const cut =
+      detail.length > MAX_ENCODE_ERROR_DETAIL
+        ? `${detail.slice(0, MAX_ENCODE_ERROR_DETAIL)}…`
+        : detail;
+    throw new InvalidParamsError(`Invalid arguments: ${cut}`);
   }
 }
 

@@ -129,6 +129,23 @@ describe("tool argument validation -> -32602 at info; server faults -> -32603 at
       { abi: PING_ABI, functionName: "x429_kaiascan_ECONNREFUSED" },
       /Invalid arguments/,
     ],
+    [
+      "encode_function_data",
+      "args over the value cap",
+      { abi: BALANCE_OF_ABI, functionName: "balanceOf", args: [Array(40_000).fill(1)] },
+      /^Invalid args: more than 32768 values/,
+    ],
+    [
+      "read_contract",
+      "args over the character cap, before any RPC",
+      {
+        contractAddress: ADDR,
+        abi: BALANCE_OF_ABI,
+        functionName: "balanceOf",
+        args: ["a".repeat(1_048_577)],
+      },
+      /^Invalid args: more than 1048576 characters/,
+    ],
     ["get_kaia_balance", "bad address", { address: "not-an-address" }, /Invalid address/],
     ["get_kaia_balance", "bad network", { address: ADDR, network: MARKER }, /Invalid network/],
     ["get_transaction", "bad tx hash", { txHash: "zz" }, /Invalid transaction hash/],

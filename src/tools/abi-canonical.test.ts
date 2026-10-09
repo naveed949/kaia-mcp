@@ -485,6 +485,45 @@ describe("nits", () => {
     expect(err.message).not.toMatch(/not found/);
   });
 
+  it("M07: exactly MAX_ABI_PARAMETERS parameters are accepted", async () => {
+    const wide = (n: number) => ({
+      type: "tuple",
+      components: Array.from({ length: n }, () => ({ type: "uint8" })),
+    });
+    // The tuple itself plus its components: MAX_ABI_PARAMETERS in all.
+    const abi = [fi("g", [wide(MAX_ABI_PARAMETERS - 1)], []), fi("f", [], [])];
+    const r = await handleEncodeFunctionData({ abi, functionName: "f", args: [] });
+    expect(r.content[0].text).toBe(viem.toFunctionSelector("f()"));
+    await refused(
+      "encode_function_data",
+      {
+        abi: [fi("g", [wide(MAX_ABI_PARAMETERS)], []), fi("f", [], [])],
+        functionName: "f",
+        args: [],
+      },
+      /more than \d+ parameters/
+    );
+  });
+
+  it("an item type outside the allowlist, or a function without a name, is refused", async () => {
+    for (const tool of tools) {
+      await refused(
+        tool,
+        { abi: [{ type: "comment", name: "x" }, fi("f", [])], functionName: "f", args: [] },
+        /every item type must be one of function, event, error, constructor, fallback, receive/
+      );
+      await refused(
+        tool,
+        {
+          abi: [{ type: "function", inputs: [], outputs: [] }, fi("f", [])],
+          functionName: "f",
+          args: [],
+        },
+        /every function needs a name/
+      );
+    }
+  });
+
   it("parameter count cap still applies on the canonical form", async () => {
     const abi = [
       fi("f", [

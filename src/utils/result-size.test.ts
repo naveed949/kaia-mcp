@@ -304,6 +304,17 @@ describe("viem's decoder quirks are mirrored, not tightened", () => {
     );
   });
 
+  it("byte 24 of an offset or length word counts (2^56 is not a safe integer)", () => {
+    const outputs = [{ name: "", type: "string" }];
+    // Only byte 24 set beyond a fine offset (32) or a fine length (0): bad data in viem.
+    const offset = `0x${word(2n ** 56n + 32n)}${word(0)}` as Hex;
+    const length = `0x${word(32)}${word(2n ** 56n)}` as Hex;
+    for (const data of [offset, length]) {
+      expect(() => printed(outputs, data)).toThrow();
+      expect(() => checkResultSize(outputs, data)).toThrow(ResultDecodingError);
+    }
+  });
+
   it("restoring the cursor past the end fails, as in viem (a 32-byte empty string)", () => {
     const data = `0x${word(0)}` as Hex; // offset 0: the length is this word, 0
     expect(() => printed([{ name: "", type: "string" }], data)).toThrow(/Position `32`/);

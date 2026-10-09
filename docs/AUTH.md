@@ -93,10 +93,10 @@ Measured (in-process, Node 22, this repo's box; live with the built server and a
 
 | Result                                                                 | Before                                                                             | Now                                                  |
 | ---------------------------------------------------------------------- | ---------------------------------------------------------------------------------- | ---------------------------------------------------- |
-| P-1 `string[]` (193 KB, 4,000 offsets to 64 KB)                        | 262 MB response, 4.1–4.6 s; live server with a 512 MB heap: killed (out of memory) | `-32005` in 80–88 ms live, an unrelated request 3 ms |
-| P-1 `bytes[]`                                                          | server killed (out of memory)                                                      | `-32005` in 23–29 ms live                            |
+| P-1 `string[]` (193 KB, 4,000 offsets to 64 KB)                        | 262 MB response, 4.1–4.6 s; live server with a 512 MB heap: killed (out of memory) | `-32005` in 79–88 ms live, an unrelated request 3 ms |
+| P-1 `bytes[]`                                                          | server killed (out of memory)                                                      | `-32005` in 21–29 ms live                            |
 | 31 offsets to 64 KB of `bytes` (4.06 M characters, just under the cap) | 0.40–0.42 s live                                                                   | same text, 0.37–0.39 s                               |
-| Multicall3 `aggregate3`, 9,000 results (1.44 MB)                       | 0.16–0.22 s live                                                                   | same text, 0.20–0.23 s                               |
+| Multicall3 `aggregate3`, 9,000 results (1.44 MB)                       | 0.16–0.22 s live                                                                   | same text, 0.20–0.24 s                               |
 | One 2 MiB `bytes` value (4.19 M characters)                            | 0.34–0.38 s live                                                                   | same text, 0.36 s                                    |
 | 8,192 addresses                                                        | 0.17–0.20 s live                                                                   | same text, 0.19–0.20 s                               |
 

@@ -150,6 +150,13 @@ export const MAX_ABI_NAME_LENGTH = 1024;
  * Seaport 1.6 (73 items, 470 parameters), the largest real ABI checked, needs about 9 K.
  */
 export const MAX_ABI_SIGNATURE_CHARS = 262_144;
+/**
+ * Most ABI items one call may choose between (overloads of a name, or items with one
+ * selector). viem walks the whole of `args` once per overload with as many inputs, so
+ * 1000 overloads with a 200 K-element array argument took 22 s; real ABIs have at most a
+ * few (Uniswap v4 PoolManager's `extsload`: 3).
+ */
+export const MAX_ABI_OVERLOADS = 16;
 
 /**
  * Bounds a caller ABI before viem sees any of it (PR #9 verify r3, M-A). viem's getAbiItem
@@ -297,6 +304,11 @@ export function resolveAbiFunction(
     ? items.filter((item) => matchesSelector(item, functionName))
     : items.filter((item) => (item as { name?: unknown }).name === functionName);
   if (candidates.length === 0) throw notFound();
+  if (candidates.length > MAX_ABI_OVERLOADS) {
+    throw new InvalidParamsError(
+      `Invalid ABI: more than ${MAX_ABI_OVERLOADS} items match the function name or selector.`
+    );
+  }
   const argCount = args?.length ?? 0;
   if (candidates.length > 1 && argCount > 0) {
     for (const c of candidates) {

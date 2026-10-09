@@ -19,6 +19,7 @@ import { InvalidParamsError } from "../utils/errors.js";
 import {
   MAX_ABI_ITEMS,
   MAX_ABI_NAME_LENGTH,
+  MAX_ABI_OVERLOADS,
   MAX_ABI_PARAMETERS,
   MAX_ABI_SIGNATURE_CHARS,
   MAX_ABI_TYPE_LENGTH,
@@ -283,6 +284,17 @@ describe("M-A: hostile caller ABIs are refused in bounded time, before viem and 
       /every parameter must be an object/,
     ],
     [
+      // viem walks a 100 K-element argument once per overload: ~2.4 s here on bb8f099
+      // (1000 overloads and 200 K elements: 22 s).
+      "a hundred overloads and a 100 K-element array argument",
+      {
+        abi: Array.from({ length: 100 }, () => fnItem("f", [{ type: "uint8[]" }])),
+        functionName: "f",
+        args: [Array(100_000).fill(1)],
+      },
+      /more than 16 items match the function name or selector/,
+    ],
+    [
       "tuples nested deeper than 32, overloaded",
       {
         abi: [fnItem("f", [deepTuple(1_000)]), fnItem("f", [{ type: "uint256" }])],
@@ -311,6 +323,8 @@ describe("M-A: hostile caller ABIs are refused in bounded time, before viem and 
   it("the caps: 256-character types, 1024-character names, generous item/parameter counts", () => {
     expect(MAX_ABI_TYPE_LENGTH).toBe(256);
     expect(MAX_ABI_NAME_LENGTH).toBe(1024);
+    // Real ABIs overload a name at most a few times (Uniswap v4 PoolManager extsload: 3).
+    expect(MAX_ABI_OVERLOADS).toBe(16);
     // Real ABIs: Seaport, Uniswap v4 PoolManager, Safe and 52 Kaia system contracts have
     // at most a few hundred items and a few thousand parameters in all.
     expect(MAX_ABI_ITEMS).toBeGreaterThanOrEqual(4096);
@@ -320,7 +334,7 @@ describe("M-A: hostile caller ABIs are refused in bounded time, before viem and 
   });
 
   it("an ABI at the item, parameter and character caps is still resolved in bounded time", async () => {
-    // MAX_ABI_ITEMS functions, half of them `f` overloads, whose parameters use up the
+    // MAX_ABI_ITEMS functions (MAX_ABI_OVERLOADS of them `f`), whose parameters use up the
     // parameter budget and (nearly) the character budget: the most work a bounded ABI can
     // ask of viem's lookup, by name and by selector.
     const perItem = Math.floor(MAX_ABI_PARAMETERS / MAX_ABI_ITEMS) - 1;
@@ -328,7 +342,7 @@ describe("M-A: hostile caller ABIs are refused in bounded time, before viem and 
     const type = "uint8" + "[]".repeat(Math.max(0, Math.floor((typeLen - 5) / 2)));
     const abi = Array.from({ length: MAX_ABI_ITEMS }, (_, i) =>
       fnItem(
-        i % 2 ? "f" : `g${i}`,
+        i < MAX_ABI_OVERLOADS ? "f" : `g${i}`,
         Array.from({ length: perItem }, () => ({ type })),
         []
       )
@@ -401,6 +415,26 @@ describe("M-A: read_contract resolves the function once", () => {
     await expect(
       handleEncodeFunctionData({ abi: ERC721, functionName: "Transfer", args: [ADDR] })
     ).rejects.toThrow(/Function "Transfer" not found on ABI/);
+  });
+
+  it("MAX_ABI_OVERLOADS overloads still resolve; one more is refused", async () => {
+    const abi = Array.from({ length: MAX_ABI_OVERLOADS }, (_, i) =>
+      fnItem(
+        "f",
+        Array.from({ length: i + 1 }, () => ({ type: "uint256" }))
+      )
+    );
+    const r = await handleEncodeFunctionData({ abi, functionName: "f", args: [1, 2, 3] });
+    expect(r.content[0].text.slice(0, 10)).toBe(
+      viem.toFunctionSelector("f(uint256,uint256,uint256)")
+    );
+    await expect(
+      handleEncodeFunctionData({
+        abi: [...abi, fnItem("f", [{ type: "address" }])],
+        functionName: "f",
+        args: [1, 2, 3],
+      })
+    ).rejects.toThrow(/more than 16 items match/);
   });
 
   it("a bad type in an overload the args cannot select is not checked (viem skips it too)", async () => {

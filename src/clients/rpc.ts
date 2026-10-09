@@ -46,5 +46,11 @@ export function createRpcClient(network: KaiaNetwork, config?: Config): RpcClien
   return createPublicClient({
     chain,
     transport,
+    // EIP-3668 offchain lookups (CCIP-read) off. With viem's default, an eth_call that
+    // reverts with OffchainLookup makes the server fetch URLs the contract chose (SSRF to
+    // internal services or cloud metadata, the response handed back to the caller), and
+    // viem decodes the revert's string[] urls with no size bound before kaia's result caps
+    // run (issue #11 P-1's amplification). Off, such a revert is an ordinary revert (-32001).
+    ccipRead: false,
   });
 }

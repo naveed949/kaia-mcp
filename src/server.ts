@@ -68,6 +68,8 @@ export function errorCategory(code: number): string {
       return "kaiascan_api";
     case MCP_ERROR_CODES.RateLimit:
       return "rate_limit";
+    case MCP_ERROR_CODES.ResultTooLarge:
+      return "result_too_large";
     case MCP_ERROR_CODES.InvalidParams:
       return "invalid_params";
     case MCP_ERROR_CODES.MethodNotFound:

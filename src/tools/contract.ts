@@ -7,6 +7,7 @@ import { BaseError, decodeFunctionResult, getContractError } from "viem";
 import { createRpcClient } from "../clients/rpc.js";
 import { createKaiaScanClient } from "../clients/kaiascan.js";
 import { KaiaScanApiError } from "../utils/errors.js";
+import { RESULT_LIMITS, ResultTooLargeError, checkResultSize } from "../utils/result-size.js";
 import {
   encodeCallData,
   parseAbiInput,
@@ -122,13 +123,19 @@ export async function handleReadContract(args: {
   let result: unknown;
   try {
     const { data: returned } = await client.call({ to: contractAddress, data });
+    const raw = returned ?? "0x";
+    // Size caps (issue #11 P-1) before viem decodes: the raw result's size, then a walk of
+    // the result that adds up its decoded text, counting aliased data every time it is
+    // referenced. Over a cap: -32005, with a message naming the limit.
+    checkResultSize(fn.item.outputs, raw);
     result = decodeFunctionResult({
       abi: [fn.item],
       functionName: fn.item.name,
       args: callArgs,
-      data: returned ?? "0x",
+      data: raw,
     } as never);
   } catch (err) {
+    if (err instanceof ResultTooLargeError) throw err;
     throw getContractError(err as BaseError, {
       abi: [fn.item],
       address: contractAddress,
@@ -144,6 +151,13 @@ export async function handleReadContract(args: {
       : typeof result === "object"
         ? JSON.stringify(result, (_, v) => (typeof v === "bigint" ? v.toString() : v), 2)
         : String(result);
+  // The walk above is an upper bound on this length; checked again so the response can
+  // never be larger than the cap whatever the decoder does.
+  if (text.length > RESULT_LIMITS.chars) {
+    throw new ResultTooLargeError(
+      `Contract call result is too large: its decoded text is over ${RESULT_LIMITS.chars} characters (the read_contract limit).`
+    );
+  }
 
   return {
     content: [{ type: "text" as const, text: `Result:\n${text}` }],

@@ -12,6 +12,7 @@
 
 import { BaseError, HttpRequestError, RpcRequestError, TimeoutError } from "viem";
 import { boundRedactionInput } from "./redact.js";
+import { ResultTooLargeError } from "./result-size.js";
 
 export const MCP_ERROR_CODES = {
   Parse: -32700,
@@ -26,6 +27,12 @@ export const MCP_ERROR_CODES = {
    */
   KaiaScanApiError: -32004,
   RateLimit: -32003,
+  /**
+   * A contract call result over kaia's size caps (read_contract). -32005 is EIP-1474's
+   * "Limit exceeded". kaia's own code: an RPC node's -32005 still maps to -32001, with the
+   * node's code in `data.upstreamCode`.
+   */
+  ResultTooLarge: -32005,
   Unauthorized: -32040,
   TokenExpired: -32041,
   InsufficientScope: -32042,
@@ -244,6 +251,10 @@ export function describeFailure(err: unknown): FailureDescription {
       upstreamStatus: err.status,
       detail: `${err.message}${causeText}`,
     };
+  }
+  if (err instanceof ResultTooLargeError) {
+    // kaia's own refusal, with a fixed message that names the limit (no upstream text).
+    return { code: MCP_ERROR_CODES.ResultTooLarge, message: err.message, detail: err.message };
   }
   if (err instanceof BaseError) return describeRpc(err);
   if (err && typeof err === "object" && (err as { status?: unknown }).status === 429) {

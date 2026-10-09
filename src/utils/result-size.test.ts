@@ -186,6 +186,30 @@ describe("what the walk charges", () => {
     expect(checkResultSize(outputs, data)).toBe(printed(outputs, data).length);
   });
 
+  it("charges object keys only for a tuple whose members are all named (as viem decodes)", () => {
+    for (const names of [
+      ["a", "b"],
+      ["a", ""],
+      ["", ""],
+    ]) {
+      const outputs = [
+        {
+          name: "",
+          type: "tuple",
+          components: [
+            { name: names[0], type: "bool" },
+            { name: names[1], type: "bytes2" },
+          ],
+        },
+      ];
+      const data = encodeAbiParameters(
+        outputs as never,
+        [names.every(Boolean) ? { a: true, b: "0x0102" } : [true, "0x0102"]] as never
+      );
+      expect(checkResultSize(outputs, data)).toBe(printed(outputs, data).length);
+    }
+  });
+
   it("bounds integers by their bit length, sign included", () => {
     for (const [type, v] of [
       ["int256", -(2n ** 255n)],
@@ -263,6 +287,22 @@ describe("viem's decoder quirks are mirrored, not tightened", () => {
       ResultDecodingError
     );
     expect(() => printed([{ name: "", type: "uint256[]" }], data)).toThrow(/out of bounds/);
+  });
+
+  it("an offset with high bytes set is bad data, even when its low bytes are a fine offset", () => {
+    const data = `0x${word(2n ** 200n + 32n)}${word(0)}` as Hex;
+    expect(() => printed([{ name: "", type: "string" }], data)).toThrow();
+    expect(() => checkResultSize([{ name: "", type: "string" }], data)).toThrow(
+      ResultDecodingError
+    );
+  });
+
+  it("restoring the cursor past the end fails, as in viem (a 32-byte empty string)", () => {
+    const data = `0x${word(0)}` as Hex; // offset 0: the length is this word, 0
+    expect(() => printed([{ name: "", type: "string" }], data)).toThrow(/Position `32`/);
+    expect(() => checkResultSize([{ name: "", type: "string" }], data)).toThrow(
+      ResultDecodingError
+    );
   });
 
   it("an offset that is not a safe integer is bad data (viem: IntegerOutOfRange)", () => {

@@ -7,12 +7,7 @@ import { BaseError, decodeFunctionResult, getContractError } from "viem";
 import { createRpcClient } from "../clients/rpc.js";
 import { createKaiaScanClient } from "../clients/kaiascan.js";
 import { KaiaScanApiError } from "../utils/errors.js";
-import {
-  RESULT_LIMITS,
-  ResultTooLargeError,
-  checkResultBytes,
-  checkResultSize,
-} from "../utils/result-size.js";
+import { RESULT_LIMITS, ResultTooLargeError, checkResultSize } from "../utils/result-size.js";
 import {
   encodeCallData,
   parseAbiInput,
@@ -132,7 +127,6 @@ export async function handleReadContract(args: {
     // Size caps (issue #11 P-1) before viem decodes: the raw result's size, then a walk of
     // the result that adds up its decoded text, counting aliased data every time it is
     // referenced. Over a cap: -32005, with a message naming the limit.
-    checkResultBytes(raw);
     checkResultSize(fn.item.outputs, raw);
     result = decodeFunctionResult({
       abi: [fn.item],

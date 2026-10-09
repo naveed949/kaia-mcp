@@ -206,7 +206,7 @@ class Walk {
         return 32;
       case "bool":
         this.readable(position, 32);
-        this.spend(5);
+        this.spend(this.bytes[position + 31] === 1 ? 4 : 5); // true, false (or viem throws)
         return 32;
       case "int":
         this.readable(position, 32);
@@ -226,7 +226,8 @@ class Walk {
   intChars(position: number, signed: boolean): number {
     const b = this.bytes;
     const negative = signed && b[position] >= 0x80;
-    // Magnitude of a negative two's-complement word: ~word + 1, at most one bit longer.
+    // A negative two's-complement word's magnitude is ~word + 1, at most 2^bits(~word): the
+    // same number of digits as 2^bits - 1 (a power of two is never a power of ten).
     const skip = negative ? 0xff : 0;
     let i = position;
     while (i < position + 32 && b[i] === skip) i++;
@@ -235,7 +236,6 @@ class Walk {
       const top = negative ? ~b[i] & 0xff : b[i];
       bits = (position + 32 - i - 1) * 8 + (top === 0 ? 0 : 32 - Math.clz32(top));
     }
-    if (negative) bits += 1;
     return Math.floor(bits * LOG10_2) + 1 + (negative ? 1 : 0) + 2;
   }
 
@@ -286,7 +286,8 @@ class Walk {
       this.spendFrame(length, level);
       let consumed = 0;
       for (let i = 0; i < length; i++) {
-        const p = startOfData + (child.dynamic ? i * 32 : consumed);
+        // viem: i * 32 for a dynamic element, which takes 32 bytes (its offset) in place.
+        const p = startOfData + consumed;
         this.at(p);
         consumed += this.value(child, p, startOfData, level + 1);
       }

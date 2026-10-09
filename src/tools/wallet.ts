@@ -13,6 +13,7 @@ import { AuthError } from "../utils/errors.js";
 import {
   encodeCallData,
   parseAbiInput,
+  resolveAbiFunction,
   validateCallArgs,
   validateFunctionName,
 } from "../utils/validation.js";
@@ -113,7 +114,7 @@ export async function handleEncodeFunctionData(args: {
   const abi = parseAbiInput(args.abi);
   const functionName = validateFunctionName(args.functionName);
   const callArgs = validateCallArgs(args.args);
-  const data = encodeCallData(abi, functionName, callArgs);
+  const data = encodeCallData(resolveAbiFunction(abi, functionName, callArgs), callArgs);
 
   return {
     content: [{ type: "text" as const, text: data }],

@@ -7,6 +7,8 @@ import {
   encodeFunctionData,
   getAbiItem,
   getAddress,
+  isHex,
+  toFunctionSelector,
   type Abi,
   type AbiFunction,
   type Address,
@@ -103,7 +105,8 @@ export function validateBlockNumberOrHash(blockNumberOrHash: unknown): bigint | 
 
 /**
  * Parses an ABI given as a JSON string or an array of ABI items (read_contract,
- * encode_function_data). Throws InvalidParamsError.
+ * encode_function_data) and bounds it (boundAbi) before any viem ABI code sees it.
+ * Throws InvalidParamsError.
  */
 export function parseAbiInput(abi: unknown): Abi {
   if (abi == null || (typeof abi !== "string" && !Array.isArray(abi))) {
@@ -124,15 +127,130 @@ export function parseAbiInput(abi: unknown): Abi {
   if (!Array.isArray(parsed)) {
     throw new InvalidParamsError("Invalid ABI: must be an array of ABI items.");
   }
+  boundAbi(parsed);
   return parsed as Abi;
 }
 
-/** A non-empty function name, trimmed. Throws InvalidParamsError. */
+/**
+ * Most items a caller ABI may have. Of 70 real ABIs (Seaport, Uniswap v4, Safe, 52 Kaia
+ * system contracts...) the largest has 136; a 4 MB body could hold ~10^6 tiny ones.
+ */
+export const MAX_ABI_ITEMS = 4096;
+/**
+ * Most parameters (inputs, outputs and tuple components, at every depth, over all items) a
+ * caller ABI may have. The most in those 70 real ABIs is 470 (Seaport 1.6).
+ */
+export const MAX_ABI_PARAMETERS = 32_768;
+/** Longest function, item or parameter name accepted (real names are well under 100). */
+export const MAX_ABI_NAME_LENGTH = 1024;
+/**
+ * Most characters of item names, parameter names and parameter types a caller ABI may have
+ * in all: what viem formats, normalizes and keccak-hashes to get selectors (~0.3 µs per
+ * character in all, so a 4 MB signature took over a second even with every type short).
+ * Seaport 1.6 (73 items, 470 parameters), the largest real ABI checked, needs about 9 K.
+ */
+export const MAX_ABI_SIGNATURE_CHARS = 262_144;
+
+/**
+ * Bounds a caller ABI before viem sees any of it (PR #9 verify r3, M-A). viem's getAbiItem
+ * filters every item by name (or, for a 0x name, hashes every function's signature), then
+ * tests each argument against each same-name overload's parameter types with an unanchored
+ * regex that is O(n²) in a type's length: one 64 KB type in an overloaded ABI cost seconds.
+ * Every item, not just the one the call names, so the selector path is bounded too:
+ * - at most MAX_ABI_ITEMS items, each an object;
+ * - item and parameter names (when strings) at most MAX_ABI_NAME_LENGTH characters;
+ * - inputs/outputs/components (when arrays) hold objects with a string `type` of at most
+ *   MAX_ABI_TYPE_LENGTH characters, nested at most MAX_TUPLE_DEPTH deep, and at most
+ *   MAX_ABI_PARAMETERS of them in all;
+ * - at most MAX_ABI_SIGNATURE_CHARS characters of names and types in all.
+ * Whether a type is a valid ABI type is checked later, only for the items viem compares
+ * (resolveAbiFunction) and the function called (validateAbiFunctionTypes): an unrelated
+ * item with an unusual but short type does not make the ABI unusable. Linear in the ABI.
+ */
+export function boundAbi(abi: readonly unknown[]): void {
+  if (abi.length > MAX_ABI_ITEMS) {
+    throw new InvalidParamsError(`Invalid ABI: more than ${MAX_ABI_ITEMS} items.`);
+  }
+  const budget = { params: 0, chars: 0 };
+  for (const item of abi) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new InvalidParamsError("Invalid ABI: every ABI item must be an object.");
+    }
+    const { name, inputs, outputs } = item as {
+      name?: unknown;
+      inputs?: unknown;
+      outputs?: unknown;
+    };
+    checkNameLength(name, "item");
+    spendChars(budget, typeof name === "string" ? name.length : 0);
+    boundParams(inputs, budget, 0);
+    boundParams(outputs, budget, 0);
+  }
+}
+
+function checkNameLength(name: unknown, what: "item" | "parameter"): void {
+  if (typeof name === "string" && name.length > MAX_ABI_NAME_LENGTH) {
+    throw new InvalidParamsError(
+      `Invalid ABI: ${what} name longer than ${MAX_ABI_NAME_LENGTH} characters.`
+    );
+  }
+}
+
+type AbiBudget = { params: number; chars: number };
+
+function spendChars(budget: AbiBudget, n: number): void {
+  budget.chars += n;
+  if (budget.chars > MAX_ABI_SIGNATURE_CHARS) {
+    throw new InvalidParamsError(
+      `Invalid ABI: more than ${MAX_ABI_SIGNATURE_CHARS} characters of names and types.`
+    );
+  }
+}
+
+function boundParams(params: unknown, budget: AbiBudget, depth: number): void {
+  if (!Array.isArray(params)) return;
+  if (depth > MAX_TUPLE_DEPTH) {
+    throw new InvalidParamsError("Invalid ABI: parameter nests tuples too deeply.");
+  }
+  budget.params += params.length;
+  if (budget.params > MAX_ABI_PARAMETERS) {
+    throw new InvalidParamsError(`Invalid ABI: more than ${MAX_ABI_PARAMETERS} parameters.`);
+  }
+  for (const p of params) {
+    if (!p || typeof p !== "object" || Array.isArray(p)) {
+      throw new InvalidParamsError("Invalid ABI: every parameter must be an object.");
+    }
+    const { name, type, components } = p as {
+      name?: unknown;
+      type?: unknown;
+      components?: unknown;
+    };
+    if (typeof type !== "string") {
+      throw new InvalidParamsError("Invalid ABI: parameter has no type.");
+    }
+    if (type.length > MAX_ABI_TYPE_LENGTH) {
+      throw new InvalidParamsError(
+        `Invalid ABI: parameter has a type longer than ${MAX_ABI_TYPE_LENGTH} characters.`
+      );
+    }
+    checkNameLength(name, "parameter");
+    spendChars(budget, type.length + (typeof name === "string" ? name.length : 0));
+    boundParams(components, budget, depth + 1);
+  }
+}
+
+/** A non-empty function name (or 0x selector), trimmed and length-capped. Throws InvalidParamsError. */
 export function validateFunctionName(functionName: unknown): string {
   if (typeof functionName !== "string" || !functionName.trim()) {
     throw new InvalidParamsError("Invalid functionName: must be a non-empty string.");
   }
-  return functionName.trim();
+  const name = functionName.trim();
+  if (name.length > MAX_ABI_NAME_LENGTH) {
+    throw new InvalidParamsError(
+      `Invalid functionName: longer than ${MAX_ABI_NAME_LENGTH} characters.`
+    );
+  }
+  return name;
 }
 
 /** Optional call arguments: undefined/null, or an array. Throws InvalidParamsError. */
@@ -144,44 +262,72 @@ export function validateCallArgs(args: unknown): readonly unknown[] | undefined 
   return args;
 }
 
+/** viem's selector match (getAbiItem): a function whose signature hashes to `selector`. */
+function matchesSelector(item: unknown, selector: string): boolean {
+  if ((item as { type?: unknown }).type !== "function") return false;
+  try {
+    return toFunctionSelector(item as AbiFunction) === selector;
+  } catch {
+    return false; // a malformed item viem could not format either
+  }
+}
+
 /**
  * The ABI function a call names: by name (overloads resolved by `args`, as viem does) or by
  * 4-byte selector. Throws InvalidParamsError when there is none. viem's encodeFunctionData
  * on its own treats any 0x-prefixed name as a raw selector ("0xzz" encodes to garbage),
  * while decoding the result looks the function up properly, so a read_contract would only
- * fail after the RPC call. Resolving once, up front, keeps both sides on the same item.
+ * fail after the RPC call. Resolve once, up front, and use the one item for both sides.
+ *
+ * `abi` must come from parseAbiInput (bounded). The candidates (the items viem would pick
+ * from) are found here, and when there are several, each one whose input count matches the
+ * args (the ones viem's getAbiItem tests the args against, type by type) must have valid
+ * input types first, so viem's per-type regex only ever sees short, well-formed types.
+ * getAbiItem then runs over the candidates alone.
  */
 export function resolveAbiFunction(
   abi: Abi,
   functionName: string,
   args: readonly unknown[] | undefined
 ): AbiFunction {
+  const notFound = () =>
+    new InvalidParamsError(`Invalid arguments: Function "${functionName}" not found on ABI.`);
+  const items = abi as readonly unknown[];
+  const candidates = isHex(functionName, { strict: false })
+    ? items.filter((item) => matchesSelector(item, functionName))
+    : items.filter((item) => (item as { name?: unknown }).name === functionName);
+  if (candidates.length === 0) throw notFound();
+  const argCount = args?.length ?? 0;
+  if (candidates.length > 1 && argCount > 0) {
+    for (const c of candidates) {
+      const inputs = (c as { inputs?: unknown }).inputs;
+      if (Array.isArray(inputs) && inputs.length === argCount) checkParams(inputs, "input");
+    }
+  }
   let item: unknown;
   try {
-    item = getAbiItem({ abi, name: functionName, args: args as never } as never);
+    item = getAbiItem({ abi: candidates, name: functionName, args: args as never } as never);
   } catch {
     item = undefined;
   }
   if (!item || typeof item !== "object" || (item as { type?: unknown }).type !== "function") {
-    throw new InvalidParamsError(`Invalid arguments: Function "${functionName}" not found on ABI.`);
+    throw notFound();
   }
   return item as AbiFunction;
 }
 
 /**
- * ABI-encodes a call from caller-supplied abi, functionName and args. Encoding is pure (no
- * I/O), so any failure (a function not on the ABI, an argument that does not fit its type,
- * a malformed ABI item) is the caller's: InvalidParamsError. viem's short message is kept
- * for the caller; other exception text is not passed on.
+ * ABI-encodes a call to an already-resolved function (resolveAbiFunction). Encoding is pure
+ * (no I/O), so any failure (an argument that does not fit its type, a malformed parameter)
+ * is the caller's: InvalidParamsError. viem's short message is kept for the caller; other
+ * exception text is not passed on.
  */
 export function encodeCallData(
-  abi: Abi,
-  functionName: string,
+  fn: AbiFunction,
   args: readonly unknown[] | undefined
 ): `0x${string}` {
   try {
-    const item = resolveAbiFunction(abi, functionName, args);
-    return encodeFunctionData({ abi: [item], functionName: item.name, args } as never);
+    return encodeFunctionData({ abi: [fn], functionName: fn.name, args } as never);
   } catch (err) {
     if (err instanceof InvalidParamsError) throw err;
     const detail =
@@ -319,8 +465,9 @@ function checkParams(params: unknown, kind: "input" | "output"): void {
 const MAX_TUPLE_DEPTH = 32;
 /**
  * Longest ABI parameter type accepted (`uint256[2][]`, `tuple[]`...; a tuple's members are
- * in `components`, not in the type). Far above any real type, and it bounds the work done
- * on caller text before any RPC call.
+ * in `components`, not in the type). Far above any real type (the longest in 70 real ABIs
+ * is 9 characters). boundAbi applies it to every parameter of every item when the ABI is
+ * parsed, before any viem ABI call; checkParam applies it again to the function called.
  */
 export const MAX_ABI_TYPE_LENGTH = 256;
 

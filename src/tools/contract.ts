@@ -102,22 +102,24 @@ export async function handleReadContract(args: {
 }): Promise<{ content: Array<{ type: "text"; text: string }> }> {
   const contractAddress = validateAddress(args.contractAddress);
   const network = validateNetwork(args.network);
+  // parseAbiInput bounds every item (names, types, nesting, counts) before viem sees it.
   const abi = parseAbiInput(args.abi);
   const functionName = validateFunctionName(args.functionName);
   const callArgs = validateCallArgs(args.args);
-  // Encode once up front: a function or argument that does not fit the ABI is the caller's
-  // mistake (-32602), found before any RPC call is made.
+  // Resolve once, up front: a function or argument that does not fit the ABI is the
+  // caller's mistake (-32602), found before any RPC call is made.
   const fn = resolveAbiFunction(abi, functionName, callArgs);
-  encodeCallData(abi, functionName, callArgs);
   // The result is decoded with the function's `outputs`: a missing or bogus output type is
   // the caller's mistake too, and must be caught here rather than after the RPC returns.
   validateAbiFunctionTypes(fn, { requireOutputs: true });
+  encodeCallData(fn, callArgs);
 
   const client = createRpcClient(network);
   const result = await client.readContract({
     address: contractAddress,
-    abi,
-    // The resolved name: viem decodes by name, so encode and decode use the same function.
+    // Just the resolved item: viem encodes and decodes by name, so it resolves the same
+    // function again, over one item instead of the caller's whole ABI.
+    abi: [fn],
     functionName: fn.name,
     args: callArgs,
   });
